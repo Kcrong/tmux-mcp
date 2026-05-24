@@ -116,6 +116,16 @@ Flags:
                           tmuxmcp_sessions_active at /metrics.
                           Default: "" (exporter disabled, no HTTP
                           listener opened).
+  -pid-file PATH          when set, atomically write the server PID as a
+                          single decimal line to PATH on startup
+                          (mode 0644) and remove it on graceful
+                          shutdown. Startup fails if PATH already
+                          exists, so two instances cannot silently
+                          clobber each other — operators can rm the
+                          stale file manually if the previous run
+                          died. Default: "" (no pid file written).
+                          Useful for systemd PIDFile=, supervisord,
+                          runit, or k8s preStop hooks.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -237,6 +247,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// binding to all interfaces should be a deliberate choice.
 	metricsAddr := fs.String("metrics-addr", "",
 		"listen address for Prometheus /metrics (e.g. 127.0.0.1:9090); empty disables")
+	// Empty default keeps the pid-file feature opt-in: existing
+	// deployments see no behaviour change. When set, the file is
+	// written atomically (write to PATH.tmp + rename) before any
+	// sockets are opened so a half-running process never appears in a
+	// supervisor's view of the world.
+	pidFile := fs.String("pid-file", "",
+		"path to write the server PID to; removed on graceful shutdown (default: disabled)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -304,6 +321,27 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// stdout magic value is honoured for debugging but corrupts the
 	// JSON-RPC framing if combined with serving stdio.
 	slog.SetDefault(slog.New(newLogHandler(logWriter, lvl, format, *logSource)))
+
+	// Write the pid file before opening any sockets so a permission /
+	// "stale pid file" failure surfaces as a clean startup error and we
+	// never half-run with sockets bound but no externalised PID. The
+	// defer covers every failure path below (tmuxctl, audit open,
+	// metrics bind, Serve return) so the file is removed on graceful
+	// shutdown regardless of where the bootstrap unwound.
+	if *pidFile != "" {
+		if perr := writePIDFile(*pidFile); perr != nil {
+			return perr
+		}
+		defer func() {
+			// Best-effort: a missing file (e.g. an operator removed it
+			// mid-run) or a permission flap on the parent dir is not
+			// worth surfacing as a non-zero exit — the process has
+			// already finished its real work.
+			if rerr := os.Remove(*pidFile); rerr != nil && !os.IsNotExist(rerr) {
+				slog.Warn("pid file cleanup failed", "path", *pidFile, "err", rerr)
+			}
+		}()
+	}
 
 	ctl, err := tmuxctl.NewWithSocket(*socket)
 	if err != nil {
@@ -531,6 +569,59 @@ func binaryVersion() string {
 		return info.Main.Version
 	}
 	return "dev"
+}
+
+// writePIDFile atomically writes the current process PID to path as a
+// single decimal line ("1234\n"). It is the body of the -pid-file flag
+// and the contract is precisely:
+//
+//   - If path already exists → return an "already exists (stale?)"
+//     error so two instances cannot silently clobber each other. The
+//     operator is expected to rm the file manually if they're sure the
+//     previous run died — better an explicit recovery step than a lost
+//     PID for a competing supervisor that's still tracking the old
+//     process.
+//   - Otherwise → write the PID to "path.tmp" first, then os.Rename it
+//     onto path so a reader at any moment sees either no file or a
+//     fully-written PID — never a half-written byte. Mode 0644 because
+//     pid files are not secrets.
+//   - On any failure (perm denied, parent dir missing, …) → return a
+//     wrapped error with the path so the operator immediately knows
+//     which file failed. Any temp file we created is cleaned up
+//     before returning so a retry isn't blocked by our own debris.
+func writePIDFile(path string) error {
+	// Stat-then-rename has an inherent race against another instance
+	// starting at the same instant, but the failure mode is "second
+	// starter wins" rather than "both run silently" — and we don't
+	// have a portable atomic-no-clobber rename in stdlib. The
+	// existence check is the operator-facing contract; the rename
+	// below keeps the *content* write atomic for any reader.
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("pid file %q already exists (stale?)", path)
+	} else if !os.IsNotExist(err) {
+		// Stat failed for a reason other than "missing" (e.g. a
+		// permission error on an ancestor directory). Surface that
+		// rather than silently proceeding to write — the rename below
+		// would just fail with a less informative error.
+		return fmt.Errorf("pid file %q: %w", path, err)
+	}
+
+	// Write to a sibling .tmp first so the final filename only ever
+	// appears with the complete PID. WriteFile truncates if .tmp
+	// already exists, which is the right thing for a leftover from a
+	// crashed previous attempt: it's debris, not state we want to
+	// preserve.
+	tmp := path + ".tmp"
+	content := fmt.Appendf(nil, "%d\n", os.Getpid())
+	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+		return fmt.Errorf("pid file %q: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Clean up the .tmp so a retry doesn't trip over our debris.
+		_ = os.Remove(tmp)
+		return fmt.Errorf("pid file %q: %w", path, err)
+	}
+	return nil
 }
 
 // errProbeFailed is the sentinel returned from [runProbe] when the
