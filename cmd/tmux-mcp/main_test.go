@@ -354,6 +354,20 @@ func TestShutdownTimeoutInUsage(t *testing.T) {
 	}
 }
 
+// TestMaxResponseBytesInUsage guards the help text: -max-response-bytes
+// must be documented in the usage block so operators discover the
+// response-size ceiling via `tmux-mcp -help`. Behavioural coverage for
+// the wire-side replacement lives in
+// internal/server/jsonrpc_test.go (TestOversizedResponse).
+func TestMaxResponseBytesInUsage(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "-max-response-bytes") {
+		t.Fatalf("expected -max-response-bytes in usage block, got %q", stderr.String())
+	}
+}
+
 // TestDebugLevelEmitsJSONLogs is a smoke test: with -log-level=debug
 // (and no -log-format) the legacy auto-promotion kicks in and a
 // malformed request line on stdin must produce a JSON-formatted slog
