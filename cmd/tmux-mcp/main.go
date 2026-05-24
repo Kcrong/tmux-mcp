@@ -51,6 +51,13 @@ Flags:
                           server emits text by default and switches to json
                           automatically when -log-level=debug. Passing this
                           flag explicitly overrides that auto-switch.
+  -log-source             include file:line of the call site in each log
+                          record (slight perf cost). Default: disabled.
+                          When enabled, JSON records gain a "source" object
+                          ({"function","file","line"}); text records gain a
+                          "source=…" key. Useful for ad-hoc debugging where
+                          you need to grep a log line back to the exact
+                          slog.Info call that produced it.
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
@@ -118,6 +125,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		"run a startup health check (verify tmux + version) and exit")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
 	logFormatRaw := fs.String("log-format", "text", "slog output format: text|json (debug auto-promotes to json when this flag is not set)")
+	// Off by default — AddSource walks runtime.Callers on every record
+	// and inflates structured-log volume, so we keep the legacy zero-cost
+	// path the default and let operators opt in when investigating.
+	logSource := fs.Bool("log-source", false,
+		"include file:line of the call site in each log record (slight perf cost)")
 	// Default to the env var so systemd / container deployments can
 	// pin a known socket path without rewriting argv. The flag, when
 	// passed, wins.
@@ -193,7 +205,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	// All structured logs go to stderr — stdout is reserved for the
 	// line-delimited JSON-RPC frames the MCP client consumes.
-	slog.SetDefault(slog.New(newLogHandler(stderr, lvl, format)))
+	slog.SetDefault(slog.New(newLogHandler(stderr, lvl, format, *logSource)))
 
 	ctl, err := tmuxctl.NewWithSocket(*socket)
 	if err != nil {
@@ -323,8 +335,15 @@ func resolveLogFormat(raw string, lvl slog.Level, explicit bool) (logFormat, err
 // newLogHandler returns the slog handler matching the resolved format.
 // It always writes to the supplied writer (stderr in production) so
 // stdout stays reserved for JSON-RPC frames.
-func newLogHandler(w io.Writer, lvl slog.Level, format logFormat) slog.Handler {
-	opts := &slog.HandlerOptions{Level: lvl}
+//
+// source toggles slog.HandlerOptions.AddSource: when true, every record
+// carries the file/line/function of the call site that produced it.
+// JSON records gain a "source" object ({"function","file","line"}) and
+// text records gain a "source=…" attribute. The flag is off by default
+// because AddSource walks runtime.Callers on every record — fine for
+// debugging, measurable on a hot logging path.
+func newLogHandler(w io.Writer, lvl slog.Level, format logFormat, source bool) slog.Handler {
+	opts := &slog.HandlerOptions{Level: lvl, AddSource: source}
 	if format == logFormatJSON {
 		return slog.NewJSONHandler(w, opts)
 	}
