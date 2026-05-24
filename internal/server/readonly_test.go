@@ -38,6 +38,7 @@ func TestIsReadOnlyTool_AllowlistMembers(t *testing.T) {
 		"show_message",
 		"session_describe",
 		"session_inspect",
+		"has_session",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
