@@ -381,6 +381,43 @@ RuntimeDirectory=tmux-mcp
 ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 ```
 
+### Idle session reaper (`-session-idle-timeout`)
+
+Long-running deployments accumulate orphaned tmux sessions: an agent
+loses interest, an MCP client crashes mid-task, a developer forgets a
+debug session running. Each one keeps a PTY, a shell, and the snapshot
+history in memory until the next operator-initiated cleanup. Set
+`-session-idle-timeout=DUR` to make the server reap sessions that have
+seen no tool-call activity within `DUR`:
+
+```sh
+# Auto-kill any session idle for 30 minutes.
+tmux-mcp -session-idle-timeout=30m
+
+# Keep historical behaviour — never reap (default).
+tmux-mcp -session-idle-timeout=0
+```
+
+Activity is any `tools/call` that names the session (`send_keys`,
+`capture`, `wait_for_*`, `resize`, `snapshot_diff`, `send_signal`,
+`pane_select`, `session_describe`, `list_panes` when scoped). The
+table-wide methods `session_list` and `kill_all_sessions` are
+deliberately **excluded** so polling for state cannot keep a dead
+session alive. `session_create` resets the timer for a freshly named
+session.
+
+Behaviour:
+
+- The reaper sweeps every `min(DUR/4, 30s)` (floor `1s`), so a session
+  is killed within roughly a quarter of the configured window after it
+  goes quiet.
+- Each kill is logged at `INFO` (`reaping idle session session=demo
+  idle=…`). Failures are logged and swallowed — one wedged session
+  does not strand the rest of the table.
+- Default `0` disables the feature entirely; the reaper goroutine and
+  per-session map are not allocated, so leaving the flag unset costs
+  nothing. Negative values are rejected at startup with a non-zero exit.
+
 ### Graceful shutdown (`-shutdown-timeout`)
 
 When a supervisor sends `SIGTERM` (or you hit `Ctrl+C`), `tmux-mcp` stops
@@ -470,6 +507,8 @@ embedded secrets stay out of the audit trail.
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
+| `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
+| `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
@@ -907,6 +946,18 @@ last `rpc start` with no matching `rpc end`, and confirm the
 Code surfaced to the client in this case is `-32003`
 ("context cancelled"), not `-32002` ("timeout"), so callers can
 distinguish "client gave up" from "wait budget exceeded".
+
+### Sessions disappear without an explicit `session_kill`
+
+If `-session-idle-timeout` is set, any session that goes silent for
+longer than the configured window is reaped automatically — see
+[Idle session reaper](#idle-session-reaper--session-idle-timeout). Look
+for `reaping idle session` in the structured log to confirm. Reduce
+the window's risk by either bumping `DUR`, calling a quick `capture`
+to renew the timer on sessions you want to keep, or set
+`-session-idle-timeout=0` to disable the feature entirely. Note:
+`session_list` and `kill_all_sessions` deliberately do **not** count as
+activity, so a polling client cannot keep a stale session alive.
 
 ### Tool calls deadlock under load
 
