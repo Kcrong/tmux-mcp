@@ -121,6 +121,16 @@ Flags:
                           reuse the port.
                           Default: "" (exporter disabled, no HTTP
                           listener opened).
+  -pprof                  when set, mount net/http/pprof handlers under
+                          /debug/pprof/ on the metrics listener (Index,
+                          cmdline, profile, symbol, trace, plus the
+                          goroutine/heap/allocs/block/mutex/threadcreate
+                          runtime profiles). Requires -metrics-addr to be
+                          set; startup fails otherwise. Disabled by
+                          default because heap and goroutine profiles can
+                          leak in-memory state — only enable on a
+                          loopback / private listener you trust to
+                          access. Default: false.
   -pid-file PATH          when set, atomically write the server PID as a
                           single decimal line to PATH on startup
                           (mode 0644) and remove it on graceful
@@ -174,6 +184,19 @@ func main() {
 // negative duration). main() recognises it via [errors.Is] and maps it
 // to exit code 2 — the conventional "CLI usage error" status.
 var errInvalidIdleTimeout = errors.New("invalid -session-idle-timeout")
+
+// errPprofRequiresMetricsAddr is the sentinel returned when -pprof is
+// enabled without -metrics-addr. The pprof handlers are co-located on
+// the metrics listener by design (single bind address, single shutdown
+// handle, single audit point for what the operator deliberately
+// exposed), so there is no surface to mount them on if -metrics-addr is
+// empty. Failing fast at startup is the right contract — silently
+// ignoring -pprof would leave operators thinking they had pprof when
+// they didn't, and auto-binding a default port behind their back would
+// expose a sensitive endpoint they never asked for. main() recognises
+// this via [errors.Is] but does not (currently) special-case the exit
+// code; the wrapped run() error is enough.
+var errPprofRequiresMetricsAddr = errors.New("-pprof requires -metrics-addr to be set")
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tmux-mcp", flag.ContinueOnError)
@@ -252,6 +275,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// binding to all interfaces should be a deliberate choice.
 	metricsAddr := fs.String("metrics-addr", "",
 		"listen address for Prometheus /metrics (e.g. 127.0.0.1:9090); empty disables")
+	// pprof is opt-in for two reasons: heap / goroutine snapshots can
+	// leak in-memory state (tool args have already been redacted from
+	// the audit log, but a process-memory dump bypasses that), and a
+	// /debug/pprof/profile request blocks for 30s by default — fine
+	// when an operator deliberately runs it, surprising if it appears
+	// silently. Bool default false keeps the metrics-only deployment
+	// (the dominant path) byte-identical to the pre-flag behaviour.
+	enablePprof := fs.Bool("pprof", false,
+		"mount net/http/pprof under /debug/pprof on the -metrics-addr listener (requires -metrics-addr; default: disabled)")
 	// Empty default keeps the pid-file feature opt-in: existing
 	// deployments see no behaviour change. When set, the file is
 	// written atomically (write to PATH.tmp + rename) before any
@@ -271,6 +303,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *sessionIdleTimeout < 0 {
 		_, _ = fmt.Fprintf(stderr, "tmux-mcp: -session-idle-timeout %s must not be negative\n", *sessionIdleTimeout)
 		return errInvalidIdleTimeout
+	}
+	// -pprof has no listener of its own — it co-mounts on the metrics
+	// server's mux. Demanding -metrics-addr keeps the contract
+	// auditable: the operator who chose the bind address is the
+	// operator who chose to expose pprof. Failing fast at the CLI
+	// boundary (before any side effects below) means a misconfigured
+	// systemd unit / Claude Desktop config surfaces the mistake
+	// immediately instead of half-running with a silently-disabled
+	// pprof.
+	if *enablePprof && *metricsAddr == "" {
+		_, _ = fmt.Fprintln(stderr, "tmux-mcp: -pprof requires -metrics-addr to be set")
+		return errPprofRequiresMetricsAddr
 	}
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
@@ -411,11 +455,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		reg.MustRegister(collectors.NewGoCollector())
 		reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 		metrics = server.NewMetrics(reg)
-		metricsServer, err = server.NewMetricsServer(*metricsAddr, reg, metrics)
+		metricsServer, err = server.NewMetricsServer(*metricsAddr, reg, metrics, *enablePprof)
 		if err != nil {
 			return fmt.Errorf("metrics listener %q: %w", *metricsAddr, err)
 		}
-		slog.Info("metrics exporter listening", "addr", metricsServer.Addr())
+		slog.Info("metrics exporter listening",
+			"addr", metricsServer.Addr(),
+			"pprof", *enablePprof,
+		)
 		go metrics.RunSessionsPoller(ctx, ctl, 5*time.Second)
 		// Drive a one-shot startup probe in the background so /healthz
 		// flips to 200 once tmux is reachable. We do this in a
