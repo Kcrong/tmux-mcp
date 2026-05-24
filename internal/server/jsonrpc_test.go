@@ -78,7 +78,7 @@ func TestServe_DispatchesAndReplies(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
 
@@ -127,7 +127,7 @@ func TestServe_RejectsMalformedJSON(t *testing.T) {
 	w := &lockedWriter{w: out, mu: mu}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(ctx, in, w, func(context.Context, string, json.RawMessage) (any, *rpcError) {
@@ -479,7 +479,7 @@ func TestServe_WaitsForInFlightHandlers(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
 

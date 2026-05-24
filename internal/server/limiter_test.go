@@ -281,7 +281,7 @@ func TestServe_GatesOnlyToolsCall(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(ctx, in, syncWriter, handler, WithMaxConcurrentCalls(1))
@@ -392,7 +392,7 @@ func TestServe_LimitZeroIsUnbounded(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		// limit=0 → no-op limiter.
@@ -471,7 +471,7 @@ func TestCallLimiter_DeadlineCancellationWrapsDeadlineExceeded(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := l.Acquire(ctx, "tools/call")
 	if err == nil {
 		t.Fatal("expected non-nil error after deadline elapsed, got nil")

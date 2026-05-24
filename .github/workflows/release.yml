@@ -18,9 +18,19 @@ permissions:
   # Required for pushing OCI images to ghcr.io.
   packages: write
 
+# Tag pushes / manual dispatches must never abort mid-publish; cosign +
+# goreleaser + ghcr push form a single transaction. Group by tag so
+# duplicate triggers queue rather than racing.
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    # goreleaser builds 5+ binaries, signs, and pushes multi-arch OCI
+    # images. 30 minutes covers a worst-case run with cold caches.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
@@ -36,8 +46,9 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Install syft (for SBOM generation)
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0

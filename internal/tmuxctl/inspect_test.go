@@ -20,7 +20,7 @@ func TestInspectSession_HappyPath(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	const name = "inspect_happy"
 	if err := c.CreateSession(ctx, SessionSpec{
@@ -64,7 +64,7 @@ func TestInspectSession_UnknownReturnsSentinel(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so we exercise the
 	// "server up, named session missing" branch (a fresh controller
@@ -89,7 +89,7 @@ func TestInspectSession_EmptyNameRejected(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if _, err := c.InspectSession(ctx, ""); err == nil {
 		t.Fatal("expected error for empty session name")

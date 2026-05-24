@@ -18,6 +18,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-log-source`              | `false`                         | —                   | Include file/line of the call site in each log record (slight perf cost). JSON records gain a `source` object, text records a `source=…` key. |
 | `-log-output`              | `stderr`                        | —                   | Destination for slog output: `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (opened append-only at mode `0600`). The file is closed cleanly on shutdown. tmux-mcp does not rotate the file — pair it with `logrotate(8)`. |
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
+| `-tmux-bin`                | `""` (resolve `tmux` from `$PATH`) | `TMUX_MCP_TMUX_BIN` | Absolute path to the tmux executable. Empty default keeps the legacy PATH lookup. When set the path must be absolute and point at an existing executable file; startup fails with `tmux binary "<path>" not executable: …` otherwise. Flag wins over env var. See **`-tmux-bin`** below. |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
 | `-max-response-bytes`      | `0` (disabled)                  | —                   | Hard ceiling on the marshalled JSON-RPC response body in bytes. When a reply exceeds the cap, the server replaces it with a typed JSON-RPC error (code `-32010`) so a misbehaving tool (e.g. `capture_pane` on a 10MB scrollback) cannot dump a multi-megabyte frame onto an MCP client whose reader can't tolerate it. Clients see the error, not a truncated payload. The audit + metrics records still fire with the oversize sentinel. `0` disables the ceiling (the historical behaviour). |
 | `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
@@ -95,6 +96,35 @@ a Claude Desktop config to a new socket path / audit log location.
   left intact, so unit restarts stay idempotent.
 - When neither the flag nor the env var is set, the legacy behaviour
   applies: a fresh tempdir under `$TMPDIR` holds the socket.
+
+## `-tmux-bin`
+
+- Empty default keeps the legacy behaviour: tmux-mcp resolves `tmux`
+  via `exec.LookPath` and uses whatever the deployment's `$PATH`
+  points at. Existing deployments see no change.
+- When set, the value must be an **absolute path** and must point at
+  an **existing executable file**. Validation runs at startup so a
+  bogus path surfaces a single clean diagnostic
+  (`tmux binary "<path>" not executable: …`) before any tmux command
+  is dispatched, rather than an obscure `fork/exec` failure once the
+  JSON-RPC loop is already serving requests.
+- The same validated path is used everywhere the binary is exec'd:
+  the controller's tmux invocations, the `-probe` health check, the
+  `-dry-run` bootstrap, and the `/healthz` background probe. So
+  `-probe` reflects exactly the binary the runtime would otherwise
+  drive.
+- The version floor (`tmux 3.0+`) applies to the override too — a
+  pinned tmux that's older than the floor is rejected with the same
+  upgrade-hint diagnostic the default path emits.
+- Useful for:
+  - **Nix / Homebrew**: pin a specific tmux store path so the binary
+    can't drift under tmux-mcp when the system PATH shifts.
+  - **Containers**: select between multiple tmux versions installed
+    side-by-side without rewriting PATH.
+  - **Sandboxes / static builds**: point at a vendored tmux that
+    lives outside any standard search path.
+  - **Testing**: drive integration tests against a known-good tmux
+    version regardless of what's on the developer's PATH.
 
 ## `-log-format` & `-log-source`
 
@@ -245,10 +275,11 @@ a Claude Desktop config to a new socket path / audit log location.
 
 ## Environment variables
 
-| Variable          | Used by    | Notes                                                         |
-| ----------------- | ---------- | ------------------------------------------------------------- |
-| `TMUX_MCP_SOCKET` | `-socket`  | Absolute path. Loses to `-socket` when both are set.          |
-| `TMPDIR`          | (default)  | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
+| Variable             | Used by      | Notes                                                         |
+| -------------------- | ------------ | ------------------------------------------------------------- |
+| `TMUX_MCP_SOCKET`    | `-socket`    | Absolute path. Loses to `-socket` when both are set.          |
+| `TMUX_MCP_TMUX_BIN`  | `-tmux-bin`  | Absolute path to the tmux executable. Loses to `-tmux-bin` when both are set; empty value keeps the legacy `exec.LookPath("tmux")` behaviour. |
+| `TMPDIR`             | (default)    | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
 
 ## Examples
 
@@ -266,6 +297,11 @@ tmux-mcp -log-output=/var/log/tmux-mcp/agent.log  # redirect slog to a file
 # pin the socket for a systemd unit / container
 tmux-mcp -socket=/run/tmux-mcp/sock
 TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
+
+# pin a specific tmux binary (Nix / Homebrew / vendored static build)
+tmux-mcp -tmux-bin=/nix/store/abcd-tmux-3.5a/bin/tmux
+tmux-mcp -tmux-bin=/opt/homebrew/Cellar/tmux/3.5a/bin/tmux
+TMUX_MCP_TMUX_BIN=/usr/local/bin/tmux tmux-mcp
 
 # liveness probe
 tmux-mcp -probe || echo "tmux missing or too old"
