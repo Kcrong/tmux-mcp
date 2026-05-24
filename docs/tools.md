@@ -1060,3 +1060,48 @@ Pair with `list_windows` to confirm the new label is visible:
 { "name": "list_windows",  "arguments": { "session": "demo" } }
 ```
 
+---
+
+## `window_move`
+
+Move a window via `tmux move-window -s <src> -t <dst>`. Useful for
+renumbering a window inside a session (compacting indices after a kill,
+opening up a slot before an `-a`-style insert) or relocating a window
+onto another session this server already manages.
+
+### Input
+
+| Field | Type   | Required | Notes                                                                                                                                        |
+| ----- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src` | string | yes      | source target in `<session>:<window>` form (e.g. `demo:0`); session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index |
+| `dst` | string | yes      | destination target in the same form (e.g. `demo:5`). The window part may be empty (`othersession:`) to let tmux pick the next available index |
+
+### Output
+
+Plain text block: `window "<src>" moved to "<dst>"`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `src` or `dst`, or either side outside the regex/length policy. `src` must always carry a non-empty window part. |
+| `-32000` | Source session does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the move — typically because the destination index is already in use ("index in use"). |
+
+### Examples
+
+```jsonc
+// renumber within a session
+{ "src": "demo:1", "dst": "demo:5" }
+
+// relocate onto another session, letting tmux pick the index
+{ "src": "demo:1", "dst": "archive:" }
+```
+
+Pair with `list_windows` to confirm the layout after the move:
+
+```jsonc
+{ "name": "window_move",  "arguments": { "src": "demo:1", "dst": "demo:5" } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
