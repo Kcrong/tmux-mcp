@@ -461,9 +461,9 @@ tmux-mcp -session-idle-timeout=0
 
 Activity is any `tools/call` that names the session (`send_keys`,
 `capture`, `wait_for_*`, `resize`, `snapshot_diff`, `send_signal`,
-`pane_select`, `session_describe`, `list_panes` when scoped). The
-table-wide methods `session_list` and `kill_all_sessions` are
-deliberately **excluded** so polling for state cannot keep a dead
+`pane_select`, `session_describe`, `session_rename`, `list_panes` when
+scoped). The table-wide methods `session_list` and `kill_all_sessions`
+are deliberately **excluded** so polling for state cannot keep a dead
 session alive. `session_create` resets the timer for a freshly named
 session.
 
@@ -559,6 +559,7 @@ embedded secrets stay out of the audit trail.
 | `session_kill` | Kill a session by name. |
 | `kill_all_sessions` | Kill every session this server manages and clear all snapshot history. |
 | `session_describe` | Return structured metadata for one session (windows, panes, size, creation time). |
+| `session_rename` | Rename an existing session via `tmux rename-session -t OLD NEW`. |
 | `session_inspect` | Return process-level metadata (pid, cwd, command) for a session's active pane. |
 | `send_keys` | Type into a session. Accepts literal text or named keys (`C-c`, `Up`, `Enter`, …). |
 | `capture` | Read the visible pane (or scrollback) as text, optionally with ANSI escapes. |
