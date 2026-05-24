@@ -1810,3 +1810,72 @@ the layout actually flipped:
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
 
+---
+
+## `set_buffer`
+
+Write `data` into a tmux paste buffer via `tmux set-buffer`. Buffers
+live on the tmux server (not on a session), so a caller can later read
+the value back from any session — useful for stashing large
+clipboard-style snippets between tool calls without serialising them
+through repeated `send_keys` frames. Pass an optional `name` to pin a
+stable buffer name (`-b NAME`); omit it to let tmux auto-assign
+`bufferN`. Set `append=true` to concatenate onto an existing buffer
+(`-a`); when the named buffer does not exist tmux silently creates it,
+matching the underlying CLI semantics.
+
+### Input
+
+| Field    | Type    | Required | Notes                                                                                                                                |
+| -------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `data`   | string  | yes      | buffer payload, stored verbatim. Empty string is allowed but tmux 3.4 silently drops empty buffers. Capped at 1 MiB (1 048 576 bytes). |
+| `name`   | string  | no       | optional buffer name to pin; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, tmux assigns the next `bufferN`.                     |
+| `append` | boolean | no       | when true, concatenate onto an existing buffer (`-a`) instead of replacing it. Defaults to false.                                     |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "set":  true,
+  "name": "buffer3"   // resolved buffer name; equal to the input `name` when one was pinned, otherwise the auto-assigned bufferN.
+}
+```
+
+The resolved `name` is recovered by running
+`tmux list-buffers -F '#{buffer_created} #{buffer_name}'` after the
+set and picking the most-recently-created entry. When the caller
+pinned a `name`, that lookup is skipped — tmux honours `-b NAME`
+verbatim and the resolved name is exactly what was passed.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `data` missing or > 1 MiB; `name` outside the regex/length policy; or an unknown field on `arguments`. |
+| `-32603` | tmux's set-buffer or follow-up list-buffers failed (rare; typically a fork/exec error). |
+
+### Examples
+
+```jsonc
+// Stash a snippet under tmux's auto-naming. The response carries
+// the buffer name a follow-up tool can target.
+{ "data": "hello world" }
+
+// Pin a stable name so a follow-up show_buffer doesn't have to
+// round-trip through list_buffers.
+{ "data": "the quick brown fox", "name": "snippet" }
+
+// Append to an existing buffer (or create it under that name).
+{ "data": "...continued", "name": "snippet", "append": true }
+```
+
+Pair with `show_buffer` (from `feat/buffer-tools`) once that tool lands
+to round-trip a snippet:
+
+```jsonc
+{ "name": "set_buffer",  "arguments": { "data": "the value", "name": "shared" } }
+{ "name": "show_buffer", "arguments": { "name": "shared" } }
+```
+
