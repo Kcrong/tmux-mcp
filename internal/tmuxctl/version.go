@@ -109,6 +109,14 @@ func (v tmuxVersion) String() string {
 // supported version. The returned error is suitable for surfacing to the
 // user — it names the offending version and points at upgrade commands.
 func checkTmuxVersion(ctx context.Context, bin string) error {
+	_, err := probeTmuxVersion(ctx, bin)
+	return err
+}
+
+// probeTmuxVersion runs `tmux -V` on bin, verifies the result meets the
+// minimum supported version, and returns the parsed version. Shared core
+// of [checkTmuxVersion] and [ProbeVersion].
+func probeTmuxVersion(ctx context.Context, bin string) (tmuxVersion, error) {
 	cmd := exec.CommandContext(ctx, bin, "-V")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -118,7 +126,7 @@ func checkTmuxVersion(ctx context.Context, bin string) error {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("tmux -V failed: %s", msg)
+		return tmuxVersion{}, fmt.Errorf("tmux -V failed: %s", msg)
 	}
 	// Some tmux builds print the banner on stderr; combine just in case.
 	out := stdout.String()
@@ -127,18 +135,40 @@ func checkTmuxVersion(ctx context.Context, bin string) error {
 	}
 	v, err := parseTmuxVersion(out)
 	if err != nil {
-		return err
+		return tmuxVersion{}, err
 	}
 	if !v.atLeast(minTmuxMajor, minTmuxMinor) {
 		// Wrap ErrTmuxVersionUnsupported so the dispatcher can surface a
 		// stable JSON-RPC code; the human-readable message keeps the
 		// upgrade hint intact.
-		return fmt.Errorf(
+		return v, fmt.Errorf(
 			"%w: tmux %d.%d+ required (found %s); upgrade with "+
 				"apt-get install tmux / brew upgrade tmux",
 			errs.ErrTmuxVersionUnsupported,
 			minTmuxMajor, minTmuxMinor, v,
 		)
 	}
-	return nil
+	return v, nil
+}
+
+// ProbeVersion locates tmux on PATH, runs `tmux -V`, verifies the version
+// meets the minimum supported version, and returns the version string
+// (e.g. "3.4" or the raw banner for unnumbered dev builds). It is the
+// fast-path used by `tmux-mcp -probe` so orchestrators (k8s liveness,
+// systemd ExecStartPre, Docker HEALTHCHECK) can confirm the binary is
+// functional without spinning up the JSON-RPC loop.
+func ProbeVersion(ctx context.Context) (string, error) {
+	bin, err := exec.LookPath("tmux")
+	if err != nil {
+		return "", fmt.Errorf(
+			"tmux not found on PATH — install it first "+
+				"(e.g. `apt-get install tmux`, `brew install tmux`): %w",
+			err,
+		)
+	}
+	v, err := probeTmuxVersion(ctx, bin)
+	if err != nil {
+		return "", err
+	}
+	return v.String(), nil
 }
