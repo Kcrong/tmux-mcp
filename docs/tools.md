@@ -265,3 +265,58 @@ call with the at-a-glance check first:
 { "name": "window_create", "arguments": { "session": "demo", "name": "scratch", "select": false } }
 { "name": "window_kill",   "arguments": { "session": "demo", "window": "scratch" } }
 ```
+
+## `session_inspect`
+
+Return process-level metadata for the active pane of a session: the
+foreground PID, current working directory, and command name. Useful
+for debugging a stuck shell, asserting that the expected program is
+still running before sending more keys, or routing follow-up commands
+based on the current cwd.
+
+Distinct from a layout-style describe: `session_inspect` reports the
+active pane's process state (pid / cwd / command), not session-wide
+window/pane geometry. Environment variables are intentionally NOT
+exposed because they routinely carry tokens, API keys, or other
+secrets that have no business crossing the JSON-RPC boundary.
+
+### Input
+
+| Field     | Type   | Required | Notes                                            |
+| --------- | ------ | -------- | ------------------------------------------------ |
+| `session` | string | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`   |
+
+### Output
+
+JSON block:
+
+```jsonc
+{ "name": "demo", "pid": 12345, "cwd": "/home/user/repo", "command": "bash" }
+```
+
+Fields come straight from a single `tmux display-message` against
+`#{pane_pid}` / `#{pane_current_path}` / `#{pane_current_command}`,
+so the data is exactly what tmux itself sees. No `/proc` reads, which
+keeps the implementation portable to macOS.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`.                                          |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux returned an unparseable response (e.g. `pane_pid` blank).      |
+
+### Example
+
+```jsonc
+{ "session": "demo" }
+```
+
+Pair with `send_signal` to drive a stuck program: inspect first to
+confirm the foreground PID, then signal it directly.
+
+```jsonc
+{ "name": "session_inspect", "arguments": { "session": "demo" } }
+{ "name": "send_signal",     "arguments": { "session": "demo", "signal": "TERM" } }
+```
