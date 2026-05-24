@@ -90,6 +90,46 @@ func TestDiffSince_HandlesRemovedLines(t *testing.T) {
 	}
 }
 
+func TestForget_DropsSessionHistory(t *testing.T) {
+	s := New()
+	first := s.Record("sess", "alpha\nbeta")
+	if first.Token == "" {
+		t.Fatal("token empty")
+	}
+	if !s.Has("sess") {
+		t.Fatal("Has should report true after Record")
+	}
+
+	// Sanity: prior token resolves before Forget.
+	if _, diffs := s.DiffSince("sess", first.Token, "alpha\nBETA"); len(diffs) != 1 {
+		t.Fatalf("pre-forget DiffSince should match prior token, got %d diffs", len(diffs))
+	}
+
+	// Forget dropped the entry, so the next access starts fresh.
+	s.Forget("sess")
+	if s.Has("sess") {
+		t.Fatal("Forget did not remove entry")
+	}
+
+	// Reusing the old token now yields a full reset because history is gone.
+	body := "one\ntwo"
+	snap, diffs := s.DiffSince("sess", first.Token, body)
+	if !snap.Changed {
+		t.Fatal("DiffSince after Forget should report Changed=true")
+	}
+	if len(diffs) != 2 {
+		t.Fatalf("expected full reset (2 added lines) after Forget, got %d diffs", len(diffs))
+	}
+	for i, d := range diffs {
+		if d.Line != i || d.Old != "" || d.New == "" {
+			t.Fatalf("line %d: expected added-line diff, got %+v", i, d)
+		}
+	}
+
+	// Forgetting an unknown session is a no-op (must not panic).
+	s.Forget("never-existed")
+}
+
 func TestDiffSince_PreservesPriorOnlyForOneStep(t *testing.T) {
 	// History keeps two entries — the snapshot you just took and the one
 	// before it. After three captures, the original token must be too
