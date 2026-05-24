@@ -1580,3 +1580,91 @@ Pair with `list_windows` to confirm the layout after the move:
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
 
+---
+
+## `show_options`
+
+Return the resolved tmux option set at a given scope. Wraps
+`tmux show-options` and parses its line-oriented output into a flat
+`key → value` map. Useful for confirming the runtime configuration an
+agent is operating against (status-line format, default-shell,
+escape-time, …) without forcing the caller to spawn a subshell.
+
+Scopes mirror tmux's own flag set:
+
+- `server` — server-wide options (`tmux show-options -s`). The session
+  and window arguments are ignored — server options are global to the
+  tmux server process and have no session/window qualifier.
+- `session` — per-session options for the named session
+  (`tmux show-options -t SESSION`). Set `global: true` to fall back to
+  the session-option defaults (`-g`); without it, only overrides set
+  on this specific session are returned (which is often empty on a
+  freshly created session).
+- `window` — per-window options for `SESSION:WINDOW`
+  (`tmux show-options -w -t SESSION:WINDOW`). `global: true` again
+  returns the window-option defaults.
+
+### Input
+
+| Field     | Type    | Required                           | Default | Notes                                                                                            |
+| --------- | ------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `scope`   | string  | yes                                | —       | one of `server`, `session`, `window`                                                             |
+| `session` | string  | yes when `scope` is `session`/`window` | —       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                                   |
+| `window`  | string  | yes when `scope` is `window`       | —       | window name (same regex as `session`) or numeric index                                           |
+| `global`  | boolean | no                                 | `false` | when true, query tmux's `-g` defaults instead of the override map. Ignored for `scope=server`. |
+
+### Output
+
+JSON block:
+
+```jsonc
+{
+  "options": {
+    "buffer-limit": "50",
+    "default-terminal": "tmux-256color",
+    "command-alias[2]": "\"server-info=show-messages -JT\"",
+    "history-file": "''"
+  }
+}
+```
+
+Values are returned verbatim — including any quoting tmux emits for
+strings with embedded spaces or specials — so callers wanting a
+normalised representation can do that on top of the raw map. Lines
+without a value (rare, but possible for empty array-style options) are
+recorded with an empty-string value so an option name is never
+silently dropped.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/unknown `scope`; `session` missing for `scope=session`/`window`; `window` missing for `scope=window`; bound violation on `session`/`window`. |
+| `-32000` | Referenced session (or session for the window target) does not exist on this server (`errs.ErrSessionNotFound`).     |
+| `-32603` | tmux refused the call for any other reason.                                                                          |
+
+### Examples
+
+```jsonc
+// Server-wide options.
+{ "scope": "server" }
+
+// Session overrides for the "demo" session (often empty without prior set-option).
+{ "scope": "session", "session": "demo" }
+
+// Session-option defaults (always populated).
+{ "scope": "session", "session": "demo", "global": true }
+
+// Window-option defaults for the first window of "demo".
+{ "scope": "window", "session": "demo", "window": "0", "global": true }
+```
+
+Pair with `session_describe` when triaging an unexpected behaviour:
+describe reports the layout, `show_options` reports the configuration
+that produced it.
+
+```jsonc
+{ "name": "session_describe", "arguments": { "name": "demo" } }
+{ "name": "show_options",     "arguments": { "scope": "session", "session": "demo", "global": true } }
+```
+
