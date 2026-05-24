@@ -535,6 +535,8 @@ embedded secrets stay out of the audit trail.
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
+| `window_select` | Make a window the active one of its session via `tmux select-window`. |
+| `window_rename` | Rename a window via `tmux rename-window` (same regex/length policy as window_create). |
 | `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 
 Per-tool reference (inputs, outputs, error codes, examples) lives in
