@@ -371,6 +371,8 @@ ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 | `wait_for_text` | Block until a regex appears on screen, then return the match + snapshot. |
 | `snapshot_diff` | Capture and return only what changed since a previous snapshot token. |
 | `resize` | Resize the pane (cols × rows). |
+| `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
+| `pane_select` | Make a `session:window.pane` target the active pane of its window. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
@@ -518,6 +520,27 @@ new).
 { "session": "demo", "width": 100, "height": 30 }
 // session: len 1-64, [A-Za-z0-9_-]; width: 20-1000; height: 5-500
 ```
+
+### `list_panes`
+
+```jsonc
+{ "session": "demo" }   // omit `session` to list every pane on the server
+```
+
+Returns
+`{"panes": [{"id": "%0", "title": "vim", "session_win": "demo:0", "index": 0, "active": true, "width": 120, "height": 40}, …]}`.
+Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
+`target` argument expected by `pane_select`.
+
+### `pane_select`
+
+```jsonc
+{ "target": "demo:0.1" }
+```
+
+Switches the active pane of the named window so subsequent `send_keys`
+and `capture` calls that name `demo` act on the new pane. Useful for
+multi-pane TUIs (vim+terminal split, zellij-style layouts).
 
 ## End-to-end example
 
