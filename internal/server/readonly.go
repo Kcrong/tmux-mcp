@@ -51,8 +51,12 @@ var readOnlyTools = map[string]struct{}{
 	// Buffer / option / message inspectors. show_buffer and
 	// show_options are spec-named for forward compatibility — neither
 	// is registered today, but adding them here means the policy is
-	// already correct on the day they land.
+	// already correct on the day they land. save_buffer is the
+	// canonical "I want the whole buffer payload" read path; it is
+	// inspection-only by construction (it never mutates tmux state)
+	// so it lives next to show_buffer here.
 	"show_buffer":  {},
+	"save_buffer":  {},
 	"show_options": {},
 	// "display_message" is the registered tool name; "show_message" is
 	// the spec-named alias the read-only feature reserves so callers

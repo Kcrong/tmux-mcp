@@ -740,6 +740,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// across every session-bearing tool so the JSON-RPC client sees its
 	// logical names and tmux sees the prefixed ones.
 	tools.SessionPrefix = *sessionPrefix
+	// Mirror -max-response-bytes onto the tool surface so handlers
+	// that want to enforce the cap up front (today: save_buffer with
+	// `error_on_truncation=true`) can reject oversize bodies before
+	// the dispatcher's framing-level guard rewrites them. Most
+	// handlers ignore this field entirely — the dispatcher already
+	// caps the response after marshal — so this assignment is a no-op
+	// for the rest of the surface.
+	tools.MaxResponseBytes = maxResponseBytes
 	// Install the operator-supplied allowlist (if any) before any
 	// tools/list / tools/call frame can reach the dispatcher. Validation
 	// runs against the live registry now that every init()-time
