@@ -854,6 +854,90 @@ ones have a human watching them:
 
 ---
 
+## `list_keys`
+
+Enumerate the key bindings on this controller's tmux server via
+`tmux list-keys`. Useful for an agent that needs to introspect what a
+key chord does before sending it through `send_keys`, or to confirm a
+custom binding installed by an init script took effect. Each entry
+carries `{ table, key, command }`.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `key_table`  | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`, `"copy-mode-vi"`); maps to `-T TABLE`. len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to list every table. |
+| `notes_only` | boolean | no       | When true, restrict the listing to bindings annotated with a `bind-key -N` note (`-N`). Default `false`.                             |
+| `prefix`     | string  | no       | Optional render-time prefix prepended to every rendered key chord (`-P PREFIX`); only meaningful in notes-only mode. len 1-64.       |
+
+The schema sets `additionalProperties: false`, so any field other than
+the three above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `keys`:
+
+```jsonc
+{
+  "keys": [
+    {
+      "table":   "prefix",
+      "key":     "C-b",
+      "command": "send-prefix"
+    },
+    {
+      "table":   "prefix",
+      "key":     "?",
+      "command": "List key bindings"
+    }
+  ]
+}
+```
+
+| Field     | Type   | Notes                                                                                                                                                     |
+| --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `table`   | string | The keymap the binding lives in. Empty only in `notes_only` mode without a `key_table` filter (tmux drops the column from its `-N` output in that case). |
+| `key`     | string | The key chord (e.g. `C-a`, `M-{`, `Space`, `Enter`). When `prefix` is set, the chord is rendered with that prefix prepended verbatim.                    |
+| `command` | string | The action the binding triggers. In the default rendering this is a tmux command line; in `notes_only` mode it is the binding's `-N` note text instead.  |
+
+A listing with no matching bindings (common for narrow filters)
+returns `{"keys": []}` — a clean empty list rather than an error — so
+callers can iterate the response without a separate "is this an error"
+branch.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `key_table` or `prefix` malformed / out of range, or an unknown field was sent.                                      |
+| `-32603` | tmux failed for an unexpected reason (e.g. `key_table` names a table that does not exist, server crashed, IO error). |
+
+### Examples
+
+```jsonc
+// Every binding, default rendering.
+{}
+
+// Just the prefix table.
+{ "key_table": "prefix" }
+
+// Annotated bindings only, with a leading "C-b " in the rendered key.
+{ "notes_only": true, "prefix": "C-b " }
+```
+
+Pair with `send_keys` once you've discovered which chord drives a
+given action — list_keys answers "what does C-b ? do?" so the agent
+doesn't have to memorise the default tmux key map:
+
+```jsonc
+{ "name": "list_keys", "arguments": { "key_table": "prefix" } }
+{ "name": "send_keys", "arguments": { "session": "demo", "keys": ["C-b", "?"] } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /

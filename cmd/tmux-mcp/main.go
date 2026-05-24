@@ -235,7 +235,7 @@ Flags:
                           mutate tmux state. Only inspection tools
                           (capture, wait_for_text, session_list,
                           list_panes, list_windows, list_clients,
-                          display_message, session_describe,
+                          list_keys, display_message, session_describe,
                           session_inspect, plus the spec-named aliases
                           capture_pane / list_sessions / list_buffers /
                           show_buffer / show_options / show_message)
