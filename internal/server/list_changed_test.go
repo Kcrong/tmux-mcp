@@ -170,7 +170,7 @@ func TestServe_WiresListChangedNotificationToStdout(t *testing.T) {
 	syncWriter := &lockedWriter{w: out, mu: outMu}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(

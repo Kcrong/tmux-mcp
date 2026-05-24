@@ -19,10 +19,21 @@ linters:
     - errorlint
     - copyloopvar
     - nilerr
+    - paralleltest
   settings:
     govet:
       enable:
         - shadow
+    paralleltest:
+      # Ignore missing calls to `t.Parallel()` and only report incorrect uses of it.
+      ignore-missing: true
+      # Ignore missing calls to `t.Parallel()` in subtests.
+      # Top-level tests are still required to have `t.Parallel`,
+      # but subtests are allowed to skip it.
+      ignore-missing-subtests: true
+      # Check that `defer` is not used with `t.Parallel`.
+      # (use `t.Cleanup` instead to ensure cleanup runs after parallel subtests complete).
+      check-cleanup: true
     revive:
       rules:
         - name: var-naming
