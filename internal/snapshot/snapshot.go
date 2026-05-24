@@ -44,6 +44,25 @@ type Snapshot struct {
 	Changed bool
 }
 
+// Forget drops any history we kept for session. Callers should invoke
+// it after a session is killed so long-running servers don't leak
+// per-session entries across many session_create / session_kill cycles.
+// Forgetting an unknown session is a no-op.
+func (s *Store) Forget(session string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, session)
+}
+
+// Has reports whether the store currently retains any history for
+// session. It is intended for tests and diagnostics.
+func (s *Store) Has(session string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.entries[session]
+	return ok
+}
+
 // Record stores body under session and returns a token derived from the
 // content. Changed is true when the body differs from the prior call.
 func (s *Store) Record(session, body string) Snapshot {
