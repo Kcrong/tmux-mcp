@@ -9,6 +9,12 @@ Right now the page documents only the per-tool details that don't fit
 into the at-a-glance table in [`README.md`](../README.md). Additional
 tool sections will be added here as their schemas become public.
 
+The server supports dynamic tool registration: `tools/list` reflects
+the live surface, and the server emits
+`notifications/tools/list_changed` (per the MCP spec) whenever a tool
+is added or removed at runtime — clients see `tools.listChanged: true`
+in the `initialize` capabilities reply.
+
 ## `list_windows`
 
 Enumerate windows visible to this server. Useful for an agent that

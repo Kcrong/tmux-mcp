@@ -88,6 +88,17 @@ type serveConfig struct {
 	// session-bearing tools/call. nil disables the feature, matching
 	// the -session-idle-timeout=0 default.
 	reaper *IdleReaper
+	// installListChanged is the hook Serve uses to hand a
+	// writeMu-bound emitter to whoever owns tool-surface mutations.
+	// The callback receives a parameterless `notify` closure that, on
+	// every invocation, writes a single
+	// `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`
+	// frame through the same writeMu the response path uses — so a
+	// notification cannot interleave with a half-written reply. The
+	// callback runs once during Serve setup, before the read loop, so
+	// the receiver has the emitter in place by the time the client's
+	// first frame arrives.
+	installListChanged func(notify func())
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -152,6 +163,22 @@ func WithSessionIdleTimeout(d time.Duration, kill KillFunc) ServeOption {
 // map it to a non-zero exit code.
 var ErrShutdownTimedOut = errors.New("shutdown drain timed out")
 
+// WithToolsListChangedNotifier wires the spec-defined
+// notifications/tools/list_changed surface. Serve runs setter once,
+// before the read loop starts, with a parameterless emitter that
+// pushes a single
+// `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`
+// frame through the same writeMu the response path uses. Pass
+// e.g. `WithToolsListChangedNotifier(tools.SetNotifier)` so a
+// runtime RegisterTool / UnregisterTool call automatically pushes a
+// spec-compliant frame to the client.
+//
+// Passing a nil setter is a no-op so callers that only sometimes
+// care about the notifier (e.g. tests) don't have to branch.
+func WithToolsListChangedNotifier(setter func(notify func())) ServeOption {
+	return func(c *serveConfig) { c.installListChanged = setter }
+}
+
 // Serve runs the JSON-RPC dispatch loop on a line-delimited reader and
 // writer until the reader hits EOF or the context is cancelled.
 //
@@ -215,6 +242,26 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		defer writeMu.Unlock()
 		_, _ = out.Write(buf)
 		_, _ = out.Write([]byte{'\n'})
+	}
+	// Build the spec-defined list-change emitter and hand it to
+	// whoever opted in via WithToolsListChangedNotifier (typically
+	// *Tools.SetNotifier). The frame carries no id/params per the MCP
+	// spec, so we marshal a fixed payload here instead of going
+	// through send/rpcResponse — those types always emit either a
+	// result or an error field. Installed BEFORE the reader goroutine
+	// starts so the receiver has the emitter in place by the time the
+	// client's first frame arrives.
+	if cfg.installListChanged != nil {
+		// Pre-marshal once: the payload is constant and avoiding the
+		// per-call json.Marshal keeps the notifier cheap when
+		// register/unregister fires in a hot loop.
+		notifyFrame := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` + "\n")
+		notify := func() {
+			writeMu.Lock()
+			defer writeMu.Unlock()
+			_, _ = out.Write(notifyFrame)
+		}
+		cfg.installListChanged(notify)
 	}
 	// readFrame ferries lines from the blocking ReadBytes call into a
 	// channel so the dispatch loop can select on ctx.Done() too. Without
