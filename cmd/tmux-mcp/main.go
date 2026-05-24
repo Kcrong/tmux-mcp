@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/Kcrong/tmux-mcp/internal/server"
@@ -32,8 +34,9 @@ client (Claude Desktop, an agent framework, etc.) — running it directly
 in a terminal is only useful for smoke tests.
 
 Flags:
-  -version    print version and exit
-  -help       print this message and exit
+  -version          print version and exit
+  -help             print this message and exit
+  -log-level LEVEL  log verbosity: error|warn|info|debug (default "info")
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -43,7 +46,10 @@ Docs:  https://github.com/Kcrong/tmux-mcp
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "tmux-mcp:", err)
+		// Logger may or may not be initialised yet (e.g. flag parsing
+		// failed). slog falls back to a default text handler on stderr,
+		// which is fine — stdout is reserved for JSON-RPC frames.
+		slog.Error("startup failed", "err", err)
 		os.Exit(1)
 	}
 }
@@ -53,6 +59,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	showVersion := fs.Bool("version", false, "print version and exit")
+	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -64,6 +71,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	lvl, err := parseLogLevel(*logLevel)
+	if err != nil {
+		return err
+	}
+	// All structured logs go to stderr — stdout is reserved for the
+	// line-delimited JSON-RPC frames the MCP client consumes.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: lvl})))
+
 	ctl, err := tmuxctl.New()
 	if err != nil {
 		return err
@@ -74,6 +89,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	tools := server.NewTools(ctl)
 	return server.Serve(ctx, stdin, stdout, tools.Handle)
+}
+
+// parseLogLevel maps the -log-level flag value onto a slog.Level.
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "error":
+		return slog.LevelError, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	}
+	return 0, fmt.Errorf("invalid -log-level %q (want error|warn|info|debug)", s)
 }
 
 // versionString returns a human-readable version string. Prefers the

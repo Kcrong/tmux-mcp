@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 )
 
@@ -76,13 +77,16 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 		}
 		var req rpcRequest
 		if jerr := json.Unmarshal(line, &req); jerr != nil {
+			slog.Warn("invalid request", "err", jerr)
 			send(rpcResponse{Error: &rpcError{Code: codeParseError, Message: jerr.Error()}})
 			continue
 		}
 		if req.JSONRPC != "2.0" || req.Method == "" {
+			slog.Warn("invalid request", "method", req.Method, "jsonrpc", req.JSONRPC)
 			send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInvalidRequest, Message: "expected jsonrpc=2.0 with method"}})
 			continue
 		}
+		slog.Debug("rpc request", "method", req.Method, "id", string(req.ID))
 		// Dispatch each request on its own goroutine so a slow tool call
 		// doesn't block other traffic on the same stdio pipe.
 		go func(req rpcRequest) {
@@ -92,6 +96,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 				return
 			}
 			if rerr != nil {
+				slog.Warn("rpc error", "method", req.Method, "code", rerr.Code, "message", rerr.Message)
 				send(rpcResponse{ID: req.ID, Error: rerr})
 				return
 			}
