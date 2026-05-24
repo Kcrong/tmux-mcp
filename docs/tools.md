@@ -30,6 +30,7 @@ Tool calls fail with a JSON-RPC `error` object. Codes are stable:
 | `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
 | `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
 | `-32004` | `errs.ErrSessionExists`        | A session name collides with an existing one (e.g. `session_rename` to a name in use). |
+| `-32005` | `errs.ErrPaneActive`           | `respawn_pane` targeted a pane whose original command is still running and `kill` was not set; retry with `kill=true`. |
 | `-32010` | `errs.ErrOversizedResponse`    | Marshalled response exceeded the `-max-response-bytes` ceiling; the original payload was suppressed. The underlying call did execute. |
 
 Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
@@ -1237,6 +1238,78 @@ and then promote it into a window of its own:
 { "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
 { "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `respawn_pane`
+
+Restart the command running in an existing pane via
+`tmux respawn-pane [-k] -t <session>:<window>.<pane> [command]`. The
+pane id, layout slot, and surrounding window are all preserved — only
+the foreground process changes. Useful when a long-running command
+inside a pane has exited (e.g. a build watcher crashed, a REPL
+quit) and the agent wants to bring it back without recreating the
+pane and re-shuffling the layout. When `command` is omitted tmux
+re-runs whatever was used to start the pane originally; when it is
+set, tmux executes it via `/bin/sh -c` exactly as it would for
+`session_create` / `pane_split`.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                              |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string  | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                     |
+| `window`  | string  | yes      | window name (`^[A-Za-z0-9_-]+$`, len 1-64) or numeric index (`^[0-9]+$`)           |
+| `pane`    | string  | yes      | pane index (`^[0-9]+$`) or tmux `%N` pane id (`^%[0-9]+$`)                         |
+| `command` | string  | no       | optional command (≤ 4096 bytes, no newlines); empty re-runs the pane's original    |
+| `kill`    | boolean | no       | when `true`, tmux SIGKILLs the running process before respawning (`-k`); default `false` |
+
+`command` is forwarded to tmux as a single trailing argv and run via
+`/bin/sh -c` on the tmux side. Newlines (`\n` / `\r`) are rejected
+up front — they would otherwise break the "single command" contract
+when tmux hands the string to the shell.
+
+### Output
+
+JSON block: `{"respawned": true}`. The pane keeps its tmux pane id
+(`%N`), layout, and surrounding window — only the foreground process
+is replaced. Follow up with `capture` / `wait_for_text` if you need to
+observe the restarted command's output.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/malformed `session` / `window` / `pane`, or `command` with newline / over 4096 bytes. |
+| `-32000` | `session:window.pane` does not resolve on this server (`errs.ErrSessionNotFound`). |
+| `-32005` | Pane is still running its original command and `kill` was not set (`errs.ErrPaneActive`). Retry with `kill=true`. |
+| `-32603` | tmux refused the respawn for any other reason (e.g. internal tmux failure).        |
+
+### Example
+
+Bring a crashed build watcher back to life without reshuffling the
+layout. The first attempt without `kill` will trip `-32005` if the
+old process is still running; the typed code lets the agent recover
+deterministically:
+
+```jsonc
+{ "name": "respawn_pane",
+  "arguments": { "session": "demo", "window": "0", "pane": "1",
+                 "command": "npm run watch" } }
+
+// If the previous command is still active, retry with kill=true:
+{ "name": "respawn_pane",
+  "arguments": { "session": "demo", "window": "0", "pane": "1",
+                 "command": "npm run watch", "kill": true } }
+```
+
+Omit `command` to re-run whatever the pane was originally started
+with (typically the user's default shell):
+
+```jsonc
+{ "name": "respawn_pane",
+  "arguments": { "session": "demo", "window": "0", "pane": "1" } }
 ```
 
 ---

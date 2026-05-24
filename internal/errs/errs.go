@@ -38,6 +38,13 @@ const (
 	// sentinel for "name does not exist") so clients can branch on the
 	// collision case explicitly.
 	CodeSessionExists = -32004
+	// CodePaneActive is returned when a request to respawn a pane (via
+	// `respawn_pane`) targets a pane whose original command is still
+	// running and the caller did not pass `kill=true`. Distinct from
+	// CodeInvalidParams so clients can recognise "the request itself
+	// was well-formed but the pane is busy" and retry with kill=true,
+	// rather than treating it as a malformed-arguments problem.
+	CodePaneActive = -32005
 	// CodeOversizedResponse is returned when a handler's marshalled
 	// JSON-RPC response body exceeds the cap configured via the server's
 	// -max-response-bytes flag. The dispatcher replaces the original
@@ -88,6 +95,14 @@ var (
 	// can recognise the rejection via [errors.Is] instead of substring-
 	// matching the message.
 	ErrReadOnly = errors.New("server in read-only mode")
+	// ErrPaneActive signals that a `respawn_pane` request targeted a
+	// pane whose original command is still running, while the caller
+	// did not opt into the kill-then-respawn behaviour with `kill=true`.
+	// tmux returns this (with stderr "pane <target> still active")
+	// instead of forcibly stopping the foreground process — the typed
+	// sentinel lets the JSON-RPC layer surface a stable code so clients
+	// can recognise the case and re-issue the call with kill=true.
+	ErrPaneActive = errors.New("pane still active")
 )
 
 // CodeOf returns the JSON-RPC error code that best describes err. It
@@ -110,6 +125,8 @@ func CodeOf(err error) int {
 		return CodeOversizedResponse
 	case errors.Is(err, ErrReadOnly):
 		return CodeReadOnly
+	case errors.Is(err, ErrPaneActive):
+		return CodePaneActive
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return CodeContextCancelled
 	}
