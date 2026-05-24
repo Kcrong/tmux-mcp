@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Kcrong/tmux-mcp/internal/server"
+	"github.com/Kcrong/tmux-mcp/internal/snapshot"
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
 )
 
@@ -63,6 +64,11 @@ Flags:
                           (opened append-only at mode 0600).
                           Records carry args_size_bytes only — never
                           args content. Default: disabled.
+  -snapshot-ttl D         maximum idle time a session's snapshot history may
+                          sit in memory before it is pruned (default 1h).
+                          A value of 0 disables cleanup entirely (history is
+                          only released when the session is killed). Accepts
+                          any Go duration: 30s, 5m, 2h, …
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -123,6 +129,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the slog stream; any other value is a filesystem path.
 	auditLog := fs.String("audit-log", "",
 		"path for JSONL audit records (\"stderr\" or a file path; default: disabled)")
+	// Default mirrors snapshot.DefaultTTL so the help text and the
+	// library default cannot drift apart. 0 disables cleanup, which
+	// preserves pre-flag behaviour for anyone who explicitly opts out.
+	snapshotTTL := fs.Duration("snapshot-ttl", snapshot.DefaultTTL,
+		"max idle time a session's snapshot history is kept (0 disables cleanup)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -186,7 +197,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = audit.Close() }()
 
-	tools := server.NewTools(ctl)
+	tools := server.NewTools(ctl, snapshot.WithTTL(*snapshotTTL))
 	// Propagate the ldflags-injected binary version so MCP clients see
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
