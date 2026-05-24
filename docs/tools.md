@@ -1885,6 +1885,100 @@ the layout actually flipped:
 
 ---
 
+## `choose_tree`
+
+Snapshot the (session, window) tree this server's tmux holds, in the
+shape `tmux choose-tree` produces in its non-interactive form. Useful
+for an LLM agent that needs to "see the whole topology" of the server
+in one call without iterating `list_sessions` × `list_windows`. The
+interactive picker is intentionally not reachable: this tool always
+returns a structured snapshot.
+
+Under the hood the tool runs `tmux list-windows -F ...` with the
+appropriate `-a` / `-t` filter — `tmux choose-tree` itself is
+interactive-only on tmux 3.4 (it opens a picker inside an attached
+client), so the snapshot we expose to agents wraps `list-windows`
+instead, against the same headless tmux servers the rest of the
+surface targets.
+
+### Input
+
+| Field     | Type   | Required                          | Notes                                                                                          |
+| --------- | ------ | --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `scope`   | string | no (defaults to `"all"`)          | one of `"all"`, `"session"`, `"window"`. `"all"` walks every window on the server.             |
+| `session` | string | when `scope` is `session`/`window`| len 1-64, regex `^[A-Za-z0-9_-]+$`.                                                            |
+| `window`  | string | when `scope` is `window`          | window name (len 1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`).                           |
+
+The schema sets `additionalProperties: false`, so any field other than
+`scope` / `session` / `window` is rejected with `-32602` before tmux
+is consulted.
+
+`scope="all"` does not accept `session` or `window`: passing them
+alongside the default scope is rejected with `-32602` so a caller who
+meant `scope="session"` but forgot to flip the field gets a fast,
+pointed error rather than a silent server-wide listing.
+
+### Output
+
+JSON text block with a flat object keyed by `rows`:
+
+```jsonc
+{
+  "rows": [
+    {
+      "session":      "demo",
+      "window_index": 0,
+      "window_name":  "shell",
+      "pane_count":   1,
+      "active":       true
+    }
+  ]
+}
+```
+
+| Field          | Type    | Notes                                                                          |
+| -------------- | ------- | ------------------------------------------------------------------------------ |
+| `session`      | string  | tmux session name this row belongs to. Equal to the value used as a target.   |
+| `window_index` | integer | Numeric window index within the session (0-based).                            |
+| `window_name`  | string  | Human-readable window label tmux assigned.                                    |
+| `pane_count`   | integer | Number of panes currently in the window.                                      |
+| `active`       | boolean | `true` when this window is the currently focused one of its session.          |
+
+A server with no windows visible (e.g. a session-scoped call right
+after the last window of that session was killed) returns
+`{"rows": []}` — a clean empty list rather than an error — so callers
+can iterate the response without a separate "is this an error" branch.
+
+### Errors
+
+| Code     | Cause                                                                                  |
+| -------- | -------------------------------------------------------------------------------------- |
+| `-32602` | `scope` invalid; `session` / `window` malformed; required field missing for the chosen scope; or an unknown field on `arguments`. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`).                   |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                       |
+
+### Examples
+
+```jsonc
+// Default scope: snapshot every window on the server.
+{}
+
+// Scope to a single session.
+{ "scope": "session", "session": "demo" }
+
+// Drill into a single window.
+{ "scope": "window", "session": "demo", "window": "build" }
+```
+
+Pair with `session_list` to find live sessions, then walk the tree:
+
+```jsonc
+{ "name": "session_list", "arguments": {} }
+{ "name": "choose_tree",  "arguments": { "scope": "session", "session": "demo" } }
+```
+
+---
+
 ## `set_buffer`
 
 Write `data` into a tmux paste buffer via `tmux set-buffer`. Buffers

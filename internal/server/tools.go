@@ -768,6 +768,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listWindows(ctx, call.Arguments)
 	case "list_clients":
 		return t.listClients(ctx, call.Arguments)
+	case "choose_tree":
+		return t.chooseTree(ctx, call.Arguments)
 	case "show_options":
 		return t.showOptions(ctx, call.Arguments)
 	case "set_buffer":
