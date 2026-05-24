@@ -163,9 +163,12 @@ type Tools struct {
 	Version string
 }
 
-// NewTools wires a Controller and Store together.
-func NewTools(c *tmuxctl.Controller) *Tools {
-	return &Tools{Ctl: c, Snap: snapshot.New()}
+// NewTools wires a Controller and Store together. Any [snapshot.Option]
+// args are forwarded verbatim to [snapshot.New], so callers can tune
+// behaviour like the snapshot TTL without breaking the zero-arg call
+// site (`NewTools(c)`) used by tests and the default deployment.
+func NewTools(c *tmuxctl.Controller, opts ...snapshot.Option) *Tools {
+	return &Tools{Ctl: c, Snap: snapshot.New(opts...)}
 }
 
 // serverVersion returns the version string the server should advertise
