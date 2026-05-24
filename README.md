@@ -917,6 +917,22 @@ process needs to disappear immediately. A `-shutdown-timeout` flag is
 on the roadmap for a hard ceiling on the drain; until it lands, rely
 on per-call timeouts plus the supervisor's own `TimeoutStopSec=`.
 
+### Why are my hangs so long after the client closed?
+
+When the MCP client closes its end of the stdio pipe (process exit, pipe
+break, IDE shutdown without SIGTERM), `tmux-mcp` cancels every in-flight
+handler's request context immediately — a `wait_for_text` call with
+`timeout_ms=10000` returns within one poll step (~100 ms) instead of
+riding out the full 10 seconds. If you're seeing a multi-second hang
+after a client disconnect, the call is almost certainly stuck inside
+tmux itself rather than spinning on its own polling loop; check the
+structured log (each request carries an `rid` correlation key) for the
+last `rpc start` with no matching `rpc end`, and confirm the
+`-shutdown-timeout` you've configured (default `5s`) bounds the wait.
+Code surfaced to the client in this case is `-32003`
+("context cancelled"), not `-32002` ("timeout"), so callers can
+distinguish "client gave up" from "wait budget exceeded".
+
 ### Tool calls deadlock under load
 
 The [concurrency cap](#concurrency-cap) (`-max-concurrent-calls`,

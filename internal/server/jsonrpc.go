@@ -138,6 +138,17 @@ var ErrShutdownTimedOut = errors.New("shutdown drain timed out")
 // finish — bounded by [WithShutdownTimeout] (default: unbounded) — so
 // in-flight responses get a chance to land on the wire before the
 // process exits.
+//
+// Client disconnect (EOF on stdin) is treated like ctx cancellation for
+// the purpose of in-flight handlers: the request-scoped context Serve
+// passes to each Handler invocation is derived from a child context
+// that is cancelled both on parent ctx.Done() and on stdin EOF. A
+// long-running poll loop (e.g. wait_for_text with timeout_ms=10000)
+// that watches its own request ctx therefore exits within one poll
+// step of the disconnect, instead of running until its timeout fires
+// — there is nobody on the other side to receive the eventual
+// response. The drain still bounds Serve's return; cancelling the
+// dispatch ctx just unblocks handlers that were watching it.
 func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...ServeOption) error {
 	var cfg serveConfig
 	for _, o := range opts {
@@ -147,6 +158,15 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 	audit := cfg.audit
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
+	// dispatchCtx is the parent of every request-scoped context Serve
+	// hands to a Handler. It is cancelled on either parent ctx.Done()
+	// (signal-driven shutdown) or stdin EOF / read error (client
+	// disconnect). Without this child context, a `wait_for_text`
+	// polling loop with a 10s timeout would keep running for the full
+	// 10s after the client closed the pipe, even though no response
+	// can ever land on the wire — burning CPU and tmux IPC for nothing.
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	defer cancelDispatch()
 	// wg tracks every dispatched handler goroutine so Serve can hold
 	// shutdown until all in-flight calls have written their response.
 	var wg sync.WaitGroup
@@ -301,8 +321,18 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		}
 		if f.err != nil {
 			if errors.Is(f.err, io.EOF) {
+				// Client closed stdin: cancel any in-flight handler
+				// contexts so polling loops (wait_for_text, …) bail
+				// out promptly instead of running until their per-call
+				// timeout. drain() then bounds how long Serve waits
+				// for those handlers to actually return.
+				cancelDispatch()
 				return drain()
 			}
+			// Non-EOF read errors are also a terminal condition — the
+			// pipe is in an unrecoverable state, so propagate the
+			// cancellation to in-flight handlers the same way.
+			cancelDispatch()
 			if derr := drain(); derr != nil {
 				return derr
 			}
@@ -348,7 +378,12 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		// stream share a correlation key.
 		rid := newRequestID()
 		reqLogger := slog.Default().With("rid", rid, "method", req.Method)
-		reqCtx := WithLogger(ctx, reqLogger)
+		// Derive from dispatchCtx (not ctx) so a stdin EOF cancels the
+		// handler's view of the world even when the parent context
+		// itself is still alive. Signal-driven shutdown reaches the
+		// handler the same way: cancelling ctx propagates to
+		// dispatchCtx by parentage.
+		reqCtx := WithLogger(dispatchCtx, reqLogger)
 		reqLogger.Debug("rpc start", "id", string(req.ID))
 		// Dispatch each request on its own goroutine so a slow tool call
 		// doesn't block other traffic on the same stdio pipe.
