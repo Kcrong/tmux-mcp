@@ -12,15 +12,23 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
-// Standard JSON-RPC 2.0 error codes.
+// JSON-RPC 2.0 framing-level error codes. These cover failures detected
+// before a method handler runs (parse/dispatch errors). Codes for handler
+// failures live in internal/errs and are stable across the server's life.
 const (
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
+	// codeInvalidParams and codeInternalError are kept here as aliases of
+	// the canonical constants in internal/errs so the dispatcher and the
+	// rest of the server can keep using the short names while sharing the
+	// same underlying values.
+	codeInvalidParams = errs.CodeInvalidParams
+	codeInternalError = errs.CodeInternal
 )
 
 type rpcRequest struct {
@@ -167,9 +175,11 @@ func invalidParams(format string, args ...any) *rpcError {
 }
 
 // internalError builds a typed JSON-RPC error wrapping an upstream
-// failure (tmux exit, regex error, etc.).
+// failure (tmux exit, regex error, etc.). The wire code is selected by
+// errs.CodeOf so known sentinels (session not found, timeout, ...) get
+// stable codes while everything else falls back to -32603.
 func internalError(err error) *rpcError {
-	return &rpcError{Code: codeInternalError, Message: err.Error()}
+	return &rpcError{Code: errs.CodeOf(err), Message: err.Error()}
 }
 
 // methodNotFound for unsupported MCP methods.
