@@ -238,6 +238,10 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sessionDescribe(ctx, call.Arguments)
 	case "send_signal":
 		return t.sendSignal(ctx, call.Arguments)
+	case "window_create":
+		return t.windowCreate(ctx, call.Arguments)
+	case "window_kill":
+		return t.windowKill(ctx, call.Arguments)
 	}
 	return nil, methodNotFound("tools/call:" + call.Name)
 }

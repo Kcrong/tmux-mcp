@@ -455,6 +455,8 @@ embedded secrets stay out of the audit trail.
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
+| `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
+| `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
