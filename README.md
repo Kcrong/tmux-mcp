@@ -53,6 +53,7 @@ see [Install](#install). For the full tool reference, jump to
 - [Why tmux](#why-tmux)
 - [Requirements](#requirements)
 - [Install](#install)
+- [Embed as a Go library](#embed-as-a-go-library)
 - [Wire it up](#wire-it-up)
 - [Tool surface](#tool-surface)
 - [Tool reference](#tool-reference)
@@ -167,6 +168,31 @@ so stdin/stdout stay attached):
 
 Pin a specific version (e.g. `ghcr.io/kcrong/tmux-mcp:v0.2.0`) instead
 of `latest` if you want reproducibility.
+
+### Embed as a Go library
+
+If you'd rather drive a tmux session from your own Go program instead
+of speaking JSON-RPC over stdio, import the public
+[`pkg/tmuxctl`](https://pkg.go.dev/github.com/Kcrong/tmux-mcp/pkg/tmuxctl)
+package — it exposes the same `Controller` the binary uses internally:
+
+```go
+import "github.com/Kcrong/tmux-mcp/pkg/tmuxctl"
+
+c, _ := tmuxctl.New()
+defer c.Shutdown(context.Background())
+
+ctx := context.Background()
+_ = c.CreateSession(ctx, tmuxctl.SessionSpec{Name: "demo", Command: "/bin/sh"})
+_ = c.SendKeys(ctx, "demo", []string{"echo hello", "Enter"}, false)
+body, _ := c.WaitForStable(ctx, "demo",
+    300*time.Millisecond, 100*time.Millisecond, 5*time.Second)
+fmt.Println(body)
+```
+
+A runnable end-to-end version lives at
+[`examples/go-library/`](examples/go-library/) (in its own Go module so
+its dependencies don't bloat the main `go.sum`).
 
 ## Wire it up
 
