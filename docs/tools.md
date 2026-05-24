@@ -975,6 +975,59 @@ new size:
 
 ---
 
+## `pane_break`
+
+Detach a pane from its window into a brand-new window via
+`tmux break-pane -P -F "#{window_id}" -s <target>`. tmux moves the
+targeted pane out of its current window (which keeps its remaining
+panes) and re-homes it as the sole pane of a freshly-created window
+on the same session. Useful when an agent split a side-car pane next
+to the main work and later wants to give it its own window —
+typically to free up the original layout for an unrelated task
+without losing the running process.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                              |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `target` | string | yes      | tmux pane-target form (`session`, `session:window`, or `session:window.pane`)      |
+
+`target` must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+JSON block: `{"window": "@7"}`. `window` is the tmux `#{window_id}`
+the new home of the broken-off pane received. Stable for the lifetime
+of the window and unique across the whole tmux server, so callers
+can hand it straight to `window_select` / `list_panes` / `send_keys`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/empty `target`, or malformed `target` (regex/length policy). |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the break for any other reason (e.g. internal tmux failure). |
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1" }
+```
+
+Pair with `pane_split` and `list_windows` to wind a side-car pane up
+and then promote it into a window of its own:
+
+```jsonc
+{ "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
+{ "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
