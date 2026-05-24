@@ -1871,11 +1871,122 @@ verbatim and the resolved name is exactly what was passed.
 { "data": "...continued", "name": "snippet", "append": true }
 ```
 
-Pair with `show_buffer` (from `feat/buffer-tools`) once that tool lands
-to round-trip a snippet:
+Pair with `show_buffer` to round-trip a snippet:
 
 ```jsonc
 { "name": "set_buffer",  "arguments": { "data": "the value", "name": "shared" } }
 { "name": "show_buffer", "arguments": { "name": "shared" } }
+```
+
+---
+
+## `list_buffers`
+
+Enumerate the paste buffers tmux is currently holding on this server.
+Useful when an agent has stashed multiple snippets via `set-buffer`
+and needs to discover the assigned names before fetching contents
+with `show_buffer`. Buffers live on the tmux server (not on a
+session), so a bare list call returns every buffer regardless of
+which session originally created it.
+
+### Input
+
+No fields. Pass `{}`. The schema sets `additionalProperties: false`,
+so any unknown field is rejected with `-32602` before tmux is
+consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "buffers": [
+    { "name": "buffer0", "size": 11,  "created_at": "2026-05-24T22:51:31Z" },
+    { "name": "pinned",  "size": 7,   "created_at": "2026-05-24T22:51:32Z" }
+  ]
+}
+```
+
+| Field        | Type    | Notes                                                                |
+| ------------ | ------- | -------------------------------------------------------------------- |
+| `name`       | string  | tmux buffer name; either auto-assigned (`bufferN`) or pinned via `set-buffer -b NAME`. |
+| `size`       | integer | byte length of the buffer's contents.                                |
+| `created_at` | string  | RFC3339 (UTC) timestamp tmux first stored the buffer.                |
+
+Returns `{"buffers": []}` (not an error) when no buffers exist —
+including against a freshly-spawned controller whose tmux server has
+not even started yet.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Unknown field on `arguments`.                                      |
+| `-32603` | tmux returned an unparseable list-buffers response.                |
+
+### Example
+
+```jsonc
+{}
+```
+
+Pair with `show_buffer` to fetch a specific buffer's contents:
+
+```jsonc
+{ "name": "list_buffers", "arguments": {} }
+{ "name": "show_buffer",  "arguments": { "name": "pinned" } }
+```
+
+---
+
+## `show_buffer`
+
+Return the raw text content of a tmux paste buffer. Omit `name` (or
+pass an empty string) to dump the most-recently-added buffer,
+matching the tmux CLI default — the common case after a fresh
+`set-buffer`. When `name` is supplied, `tmux show-buffer -b <name>`
+runs and the value round-trips verbatim.
+
+### Input
+
+| Field  | Type   | Required | Notes                                                                                            |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `name` | string | no       | optional buffer name; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty / omitted → most-recent buffer. |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "name": "pinned",         // echoed back when the caller pinned a name; empty otherwise.
+  "data": "the quick brown fox"
+}
+```
+
+`data` is the buffer body verbatim — tmux does not append a trailing
+newline, so an agent that expects one should add it explicitly.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `name` outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | The named buffer does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the show for an unexpected reason.                    |
+
+### Example
+
+```jsonc
+{ "name": "pinned" }
+```
+
+A typical chain looks like: stash a snippet, list to discover the
+assigned name, then read it back.
+
+```jsonc
+{ "name": "list_buffers", "arguments": {} }
+{ "name": "show_buffer",  "arguments": { "name": "buffer0" } }
 ```
 
