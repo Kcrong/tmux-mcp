@@ -322,15 +322,26 @@ would otherwise look like key names.
 
 ```jsonc
 {
-  "session": "demo",
-  "mode":    "visible",   // or "scrollback"
-  "ansi":    false        // true keeps colour escape sequences
+  "session":   "demo",
+  "mode":      "visible",   // or "scrollback"
+  "ansi":      false,       // true keeps colour escape sequences
+  "max_lines": 0            // 0 = no cap for visible, default 5000-line cap for scrollback
 }
 ```
 
 Returns
-`{"snapshot": "...", "token": "ab12cd34", "changed": true}`. Hold on to
-`token` if you plan to call `snapshot_diff` later.
+`{"snapshot": "...", "token": "ab12cd34", "changed": true, "truncated": false}`.
+Hold on to `token` if you plan to call `snapshot_diff` later.
+
+`mode=scrollback` is bounded at **5000 lines by default** so a long-lived
+session does not return tens of MB of JSON in a single response. Pass
+`max_lines` to override (any positive integer; pass a small value to
+keep responses tight, or a larger one when you need deeper history).
+For `mode=visible`, the default `max_lines: 0` means "no cap" — the
+visible region is already bounded by the terminal size, so behaviour is
+unchanged from earlier releases. When the snapshot is truncated, the
+oldest (top) lines are dropped so the most recent activity is preserved
+and `truncated: true` appears in the response.
 
 ### `wait_for_stable`
 
