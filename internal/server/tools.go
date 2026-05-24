@@ -252,6 +252,9 @@ func (t *Tools) sessionKill(ctx context.Context, raw json.RawMessage) (any, *rpc
 	if err := t.Ctl.KillSession(ctx, args.Name); err != nil {
 		return nil, internalError(err)
 	}
+	// Drop snapshot history for the dead session so we don't leak
+	// per-session entries across many create/kill cycles.
+	t.Snap.Forget(args.Name)
 	return textBlock(fmt.Sprintf("session %q killed", args.Name)), nil
 }
 
