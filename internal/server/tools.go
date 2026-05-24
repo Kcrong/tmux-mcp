@@ -804,6 +804,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.showBuffer(ctx, call.Arguments)
 	case "switch_client":
 		return t.switchClient(ctx, call.Arguments)
+	case "delete_buffer":
+		return t.deleteBuffer(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path

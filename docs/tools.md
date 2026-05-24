@@ -2854,6 +2854,64 @@ Pair with `session_list` to find live sessions, then walk the tree:
 
 ---
 
+## `delete_buffer`
+
+Drop a single named tmux paste buffer via `tmux delete-buffer -b NAME`.
+Useful for an agent that stashed a snippet via `set_buffer` and wants
+to release the storage once the value has been consumed — buffers
+persist on the tmux server until explicitly deleted (or until tmux's
+`buffer-limit` rotates them out), so a long-running agent that writes
+many buffers should clean up the ones it no longer needs.
+
+The boundary always requires `name`. tmux's bare `delete-buffer` (no
+`-b`) drops the most-recently-added buffer, but exposing that
+"delete the last thing you stored" path through a programmatic agent
+invites accidental destruction of buffers another caller just minted.
+Forcing the name keeps the operation deterministic from the caller's
+point of view.
+
+### Input
+
+| Field  | Type   | Required | Notes                                                                                            |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `name` | string | yes      | buffer name to drop; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty string is rejected with -32602.  |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "deleted": true,
+  "name":    "pinned"   // echoed back so the caller can correlate the response with the request.
+}
+```
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `name` missing/empty, outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | The named buffer does not exist on this server (`errs.ErrSessionNotFound`); the same stable wire code `show_buffer` uses for the same conceptual outcome. |
+| `-32603` | tmux refused the delete for any other reason (e.g. internal tmux failure). |
+
+### Example
+
+```jsonc
+{ "name": "pinned" }
+```
+
+A typical chain looks like: stash a snippet under a known name, read
+it back once, then drop it so the buffer table stays small.
+
+```jsonc
+{ "name": "set_buffer",    "arguments": { "data": "the value", "name": "shared" } }
+{ "name": "show_buffer",   "arguments": { "name": "shared" } }
+{ "name": "delete_buffer", "arguments": { "name": "shared" } }
+```
+
+---
+
 ## `set_buffer`
 
 Write `data` into a tmux paste buffer via `tmux set-buffer`. Buffers

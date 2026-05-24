@@ -348,3 +348,86 @@ func TestShowBuffer_MissingWrapsSentinel(t *testing.T) {
 		t.Fatalf("error %v does not wrap errs.ErrSessionNotFound", err)
 	}
 }
+
+// TestDeleteBuffer_RemovesNamedBuffer is the load-bearing happy path:
+// seed two named buffers via `tmux set-buffer -b NAME`, drop one
+// through DeleteBuffer, and confirm the remaining buffer is the only
+// entry list-buffers reports. Probing list-buffers directly (rather
+// than going through ListBuffers) keeps this test focused on the
+// delete primitive — a regression in ListBuffers should not mask a
+// regression in DeleteBuffer.
+func TestDeleteBuffer_RemovesNamedBuffer(t *testing.T) {
+	t.Parallel()
+	skipIfNoTmux(t)
+	c := newCtl(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	// Anchor with a session so the tmux server is definitely up;
+	// buffers live on the server, not on a session.
+	if err := c.CreateSession(ctx, SessionSpec{Name: "del_anchor", Command: "/bin/sh"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, err := c.run(ctx, "set-buffer", "-b", "doomed", "goodbye"); err != nil {
+		t.Fatalf("set-buffer doomed: %v", err)
+	}
+	if _, err := c.run(ctx, "set-buffer", "-b", "survivor", "still_here"); err != nil {
+		t.Fatalf("set-buffer survivor: %v", err)
+	}
+
+	if err := c.DeleteBuffer(ctx, "doomed"); err != nil {
+		t.Fatalf("DeleteBuffer(doomed): %v", err)
+	}
+
+	out, err := c.run(ctx, "list-buffers", "-F", "#{buffer_name}")
+	if err != nil {
+		t.Fatalf("list-buffers: %v", err)
+	}
+	out = strings.TrimRight(out, "\n")
+	names := strings.Split(out, "\n")
+	for _, n := range names {
+		if n == "doomed" {
+			t.Errorf("list-buffers still contains %q after DeleteBuffer; output=%q", n, out)
+		}
+	}
+	survivorSeen := false
+	for _, n := range names {
+		if n == "survivor" {
+			survivorSeen = true
+			break
+		}
+	}
+	if !survivorSeen {
+		t.Errorf("list-buffers missing survivor after DeleteBuffer; output=%q", out)
+	}
+}
+
+// TestDeleteBuffer_MissingWrapsSentinel pins the typed-error contract
+// for "delete a buffer that doesn't exist": tmux emits "no buffer
+// NAME" (or the older "unknown buffer NAME") and DeleteBuffer must
+// surface that as a wrapped errs.ErrSessionNotFound so the JSON-RPC
+// dispatcher maps it to the same CodeSessionNotFound that ShowBuffer
+// uses for the same conceptual outcome.
+func TestDeleteBuffer_MissingWrapsSentinel(t *testing.T) {
+	t.Parallel()
+	skipIfNoTmux(t)
+	c := newCtl(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	// Anchor with a session so we exercise "server up, buffer missing"
+	// rather than "no server" (different stderr shape — different code
+	// path inside run()).
+	if err := c.CreateSession(ctx, SessionSpec{Name: "del_missing_anchor", Command: "/bin/sh"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	err := c.DeleteBuffer(ctx, "ghost_buffer_nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing buffer")
+	}
+	if !errors.Is(err, errs.ErrSessionNotFound) {
+		t.Fatalf("error %v does not wrap errs.ErrSessionNotFound", err)
+	}
+}
