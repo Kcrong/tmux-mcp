@@ -206,6 +206,39 @@ func TestHandle_SnapshotDiff(t *testing.T) {
 	}
 }
 
+func TestHandle_SessionKillForgetsSnapshotHistory(t *testing.T) {
+	skipIfNoTmux(t)
+	tools := newTools(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	call := func(name string, args any) any {
+		t.Helper()
+		params := mustJSON(t, map[string]any{"name": name, "arguments": args})
+		res, rerr := tools.Handle(ctx, "tools/call", params)
+		if rerr != nil {
+			t.Fatalf("%s: %s", name, rerr.Message)
+		}
+		return res
+	}
+
+	call("session_create", map[string]any{
+		"name": "kf", "command": "/bin/sh", "width": 80, "height": 20,
+	})
+
+	// Populate snapshot history for the session.
+	_ = extractText(t, call("capture", map[string]any{"session": "kf"}))
+	if !tools.Snap.Has("kf") {
+		t.Fatal("expected snapshot history for kf after capture")
+	}
+
+	call("session_kill", map[string]any{"name": "kf"})
+
+	if tools.Snap.Has("kf") {
+		t.Fatal("session_kill should have forgotten snapshot history for kf")
+	}
+}
+
 func TestHandle_ToolCallUnknown(t *testing.T) {
 	skipIfNoTmux(t)
 	tools := newTools(t)
