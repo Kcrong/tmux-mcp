@@ -132,7 +132,7 @@ func TestMetrics_RunSessionsPoller(t *testing.T) {
 		called: make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	go m.RunSessionsPoller(ctx, stub, 10*time.Millisecond)
 
 	// The poller calls ListSessions once immediately (priming the
@@ -254,7 +254,7 @@ func TestMetricsServer_ServesMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /metrics: status %d", resp.StatusCode)
 	}
@@ -290,7 +290,7 @@ func TestMetricsServer_ShutdownReleasesAddress(t *testing.T) {
 	}
 	addr := srv.Addr()
 	shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if serr := srv.Shutdown(shutCtx); serr != nil {
 		t.Fatalf("Shutdown: %v", serr)
 	}
@@ -352,7 +352,7 @@ func TestServe_RecordsMetrics(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler, WithMetrics(m)) }()
 

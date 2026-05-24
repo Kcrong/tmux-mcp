@@ -19,7 +19,7 @@ func TestRenameSession_HappyPath(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	const oldName = "rename_old"
 	const newName = "rename_new"
@@ -74,7 +74,7 @@ func TestRenameSession_UnknownOldWrapsSentinel(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so we exercise the
 	// "server up, named session missing" branch (a fresh controller
@@ -100,7 +100,7 @@ func TestRenameSession_DuplicateNewWrapsSentinel(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "dup_a", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession dup_a: %v", err)
@@ -131,7 +131,7 @@ func TestRenameSession_EmptyOldNameRejected(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.RenameSession(ctx, "", "any"); err == nil {
 		t.Fatal("expected error for empty old session name")
@@ -147,7 +147,7 @@ func TestRenameSession_EmptyNewNameRejected(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.RenameSession(ctx, "any", ""); err == nil {
 		t.Fatal("expected error for empty new session name")

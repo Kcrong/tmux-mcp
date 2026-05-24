@@ -1005,6 +1005,63 @@ layout actually flipped:
 
 ---
 
+## `pane_join`
+
+Move a pane out of its current window and re-attach it to another
+window via `tmux join-pane -s <src> -t <dst>` (with `-h` when
+`horizontal` is true). The source pane keeps its `#{pane_id}`,
+contents, and running process — only the layout slot changes — so
+follow-up `pane_select` / `send_keys` calls against the moved pane see
+the new placement immediately. Useful for consolidating panes from
+multiple windows back into one (e.g. moving a long-lived REPL out of
+its own window and into the editor's window without restarting the
+process).
+
+When the donor window has no remaining panes after the join, tmux
+reaps it: a `list_windows` call after a join may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                       |
+| ------------ | ------- | -------- | --------------------------------------------------------------------------- |
+| `src`        | string  | yes      | Source pane target (e.g. `"mysession:1.0"`)                                 |
+| `dst`        | string  | yes      | Destination window target (e.g. `"mysession:0"`)                            |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.   |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the join (e.g. trying to join a pane to its own window).                              |
+
+### Example
+
+```jsonc
+{ "src": "mysession:1.0", "dst": "mysession:0" }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "mysession" } }
+{ "name": "pane_join",    "arguments": { "src": "mysession:1.0", "dst": "mysession:0" } }
+{ "name": "list_windows", "arguments": { "session": "mysession" } }
+```
+
+---
+
 ## `pane_resize`
 
 Resize a pane via `tmux resize-pane -t <target> -{U|D|L|R} <amount>`.
