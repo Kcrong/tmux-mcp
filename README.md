@@ -61,11 +61,22 @@ gain a `source=…` attribute. Off by default because `AddSource` walks
 path); flip it on for ad-hoc debugging when you need to grep a log line
 back to the exact `slog.Info` call that produced it.
 
+Pass `-log-output=PATH` to redirect the slog stream to a file instead
+of stderr — useful when the launcher (Claude Desktop, an agent
+framework, …) discards stderr and you still want a durable log. The
+file is opened append-only at mode `0600` and closed cleanly on
+shutdown. **DANGER:** `-log-output=stdout` is honoured for ad-hoc
+debugging in tandem with `-dry-run` / `-version`, but using it while
+the server is actually serving stdio interleaves slog records with
+JSON-RPC frames and corrupts the protocol. tmux-mcp does not rotate
+the log — pair the file with `logrotate(8)` on long-lived hosts.
+
 | Flag             | Default  | Notes                                               |
 | ---------------- | -------- | --------------------------------------------------- |
 | `-log-level`     | `info`   | `error\|warn\|info\|debug`                          |
 | `-log-format`    | `text`   | `text\|json`; `debug` auto-promotes to `json` when unset |
 | `-log-source`    | `false`  | include `file:line` of each call site (slight perf cost) |
+| `-log-output`    | `stderr` | `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (append-only, mode `0600`) |
 
 ---
 

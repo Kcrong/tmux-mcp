@@ -16,6 +16,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-log-level`               | `info`                          | —                   | Log verbosity. One of `error`, `warn`, `info`, `debug`. Logs go to stderr; stdout stays JSON-RPC.                 |
 | `-log-format`              | `text` (auto `json` at `debug`) | —                   | slog output format: `text` or `json`. Unset + `-log-level=debug` auto-promotes to `json`; passing the flag pins the chosen value. |
 | `-log-source`              | `false`                         | —                   | Include file/line of the call site in each log record (slight perf cost). JSON records gain a `source` object, text records a `source=…` key. |
+| `-log-output`              | `stderr`                        | —                   | Destination for slog output: `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (opened append-only at mode `0600`). The file is closed cleanly on shutdown. tmux-mcp does not rotate the file — pair it with `logrotate(8)`. |
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
 | `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
@@ -59,13 +60,15 @@ live agent.
 Steps the dry run executes (in order):
 
 1. Parse flags, validate `-log-format` / `-session-idle-timeout`.
-2. Initialise the tmux controller (`tmuxctl.NewWithSocket`) — fails if
+2. Open the slog destination (`-log-output`) — fails if a file path
+   is supplied and the path is not writable at mode `0600`.
+3. Initialise the tmux controller (`tmuxctl.NewWithSocket`) — fails if
    `tmux` is missing on `$PATH`, the version is below the floor, or the
    `-socket` parent directory is wrong.
-3. Open the audit sink (`-audit-log`) — fails if the path is not
+4. Open the audit sink (`-audit-log`) — fails if the path is not
    writable at mode `0600`.
-4. Build the in-memory tool surface (`server.NewTools` + options).
-5. Print `dry-run ok\ttmux=<tmux-ver>\ttmux-mcp=<binary-ver>` to stdout
+5. Build the in-memory tool surface (`server.NewTools` + options).
+6. Print `dry-run ok\ttmux=<tmux-ver>\ttmux-mcp=<binary-ver>` to stdout
    and exit 0.
 
 On any failure the diagnostic goes to stderr (no stdout output) and
@@ -101,6 +104,25 @@ a Claude Desktop config to a new socket path / audit log location.
   `runtime.Callers` on every record, so leaving it off keeps the
   zero-cost path. Enable it ad-hoc when you need to grep a log line
   back to the exact `slog.*` call that produced it.
+
+## `-log-output`
+
+- Default is `stderr`, which preserves the legacy behaviour of
+  routing structured logs to the inherited stderr stream. Useful
+  when the launcher (`systemd`, a container runtime, …) already
+  captures stderr.
+- `stdout` is honoured as a magic value for ad-hoc debugging in
+  tandem with `-dry-run` / `-version`. **DANGER:** using it while
+  the server is actually serving stdio interleaves slog records
+  with JSON-RPC frames and corrupts the protocol — only useful for
+  the one-shot paths.
+- Any other value is treated as a filesystem path opened
+  append-only with mode `0600` (same shape as `-audit-log`). The
+  file is closed cleanly on shutdown so the last record is
+  flushed.
+- tmux-mcp does **not** rotate the log file. Pair it with
+  `logrotate(8)` (or equivalent) on long-lived hosts so the file
+  does not grow without bound.
 
 ## `-max-concurrent-calls`
 
@@ -185,6 +207,7 @@ tmux-mcp -version-json | jq
 tmux-mcp -log-level=debug
 tmux-mcp -log-level=debug -log-format=text   # pin text even at debug
 tmux-mcp -log-source                         # add file:line to every record
+tmux-mcp -log-output=/var/log/tmux-mcp/agent.log  # redirect slog to a file
 
 # pin the socket for a systemd unit / container
 tmux-mcp -socket=/run/tmux-mcp/sock
