@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
 )
@@ -138,6 +139,30 @@ var windowToolDefs = []map[string]any{
 			"additionalProperties": false,
 		},
 	},
+	{
+		"name": "window_move",
+		"description": "Move a window via `tmux move-window -s <src> -t <dst>`. `src` is the source " +
+			"target in tmux `<session>:<window>` form (e.g. `demo:0`); `dst` is the destination " +
+			"target in the same form (e.g. `demo:5`) and may carry an empty window part " +
+			"(e.g. `archive:`) to let tmux pick the next available index in the destination " +
+			"session. Useful for renumbering a window inside a session or relocating it onto " +
+			"another session this server already manages.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"src": map[string]any{
+					"type":        "string",
+					"description": "Source target like `mysession:0`; session 1-64, window name (1-64, [A-Za-z0-9_-]) or numeric index.",
+				},
+				"dst": map[string]any{
+					"type":        "string",
+					"description": "Destination target like `mysession:5` or `othersession:` (empty window part lets tmux pick).",
+				},
+			},
+			"required":             []string{"src", "dst"},
+			"additionalProperties": false,
+		},
+	},
 }
 
 // windowNameRE mirrors sessionNameRE so window names share the same
@@ -198,6 +223,61 @@ func validateWindowTarget(target string) *rpcError {
 	}
 	if !windowTargetRE.MatchString(target) {
 		return invalidParams("window %q must match %s", target, windowTargetRE.String())
+	}
+	return nil
+}
+
+// validateWindowMoveSrc enforces the policy on window_move's `src`
+// argument. The src must be a complete `<session>:<window>` reference
+// because tmux's `move-window -s` needs an unambiguous source — leaving
+// the window part empty would let tmux pick the "current" window of the
+// session, which is rarely what an agent meant.
+func validateWindowMoveSrc(src string) *rpcError {
+	if src == "" {
+		return invalidParams("src required")
+	}
+	idx := strings.Index(src, ":")
+	if idx < 0 {
+		return invalidParams("src %q must be in `<session>:<window>` form", src)
+	}
+	session := src[:idx]
+	window := src[idx+1:]
+	if rerr := validateSessionRef(session); rerr != nil {
+		return invalidParams("src session: %s", rerr.Message)
+	}
+	if rerr := validateWindowTarget(window); rerr != nil {
+		return invalidParams("src window: %s", rerr.Message)
+	}
+	return nil
+}
+
+// validateWindowMoveDst enforces the policy on window_move's `dst`
+// argument. dst must include the `:` separator so a typo like
+// "othersession" cannot accidentally be parsed as a session-only
+// target; the window part *is* allowed to be empty (e.g.
+// "othersession:") to let tmux pick the next available index in the
+// destination session — that is one of move-window's documented modes.
+func validateWindowMoveDst(dst string) *rpcError {
+	if dst == "" {
+		return invalidParams("dst required")
+	}
+	idx := strings.Index(dst, ":")
+	if idx < 0 {
+		return invalidParams("dst %q must be in `<session>:<window>` form", dst)
+	}
+	session := dst[:idx]
+	window := dst[idx+1:]
+	if rerr := validateSessionRef(session); rerr != nil {
+		return invalidParams("dst session: %s", rerr.Message)
+	}
+	// Empty window part is intentionally allowed — tmux interprets
+	// `<session>:` as "pick the next free index in <session>". When
+	// supplied, the value must satisfy the same regex/length policy as
+	// every other window target.
+	if window != "" {
+		if rerr := validateWindowTarget(window); rerr != nil {
+			return invalidParams("dst window: %s", rerr.Message)
+		}
 	}
 	return nil
 }
@@ -392,4 +472,32 @@ func (t *Tools) windowRename(ctx context.Context, raw json.RawMessage) (any, *rp
 		return nil, internalError(err)
 	}
 	return textBlock(fmt.Sprintf("window %q renamed to %q", args.Session+":"+args.Target, args.Name)), nil
+}
+
+// windowMove drives tmuxctl.Controller.MoveWindow. Both `src` and `dst`
+// arrive as full tmux target strings (`<session>:<window>`); the
+// boundary parses each on the `:` separator, applies the standard
+// session and window-target regex/length policy to each half, and only
+// then asks tmux to perform the move. Empty window parts are tolerated
+// in `dst` (lets tmux pick the next free index in the destination
+// session) but not in `src`, which would otherwise resolve to whatever
+// tmux considers the session's current window.
+func (t *Tools) windowMove(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Src string `json:"src"`
+		Dst string `json:"dst"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("window_move: %v", err)
+	}
+	if rerr := validateWindowMoveSrc(args.Src); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateWindowMoveDst(args.Dst); rerr != nil {
+		return nil, rerr
+	}
+	if err := t.Ctl.MoveWindow(ctx, args.Src, args.Dst); err != nil {
+		return nil, internalError(err)
+	}
+	return textBlock(fmt.Sprintf("window %q moved to %q", args.Src, args.Dst)), nil
 }
