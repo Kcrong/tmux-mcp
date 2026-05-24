@@ -391,7 +391,7 @@ func TestNewLogHandler(t *testing.T) {
 		t.Run(string(tc.format), func(t *testing.T) {
 			t.Parallel()
 			var buf bytes.Buffer
-			h := newLogHandler(&buf, slog.LevelInfo, tc.format)
+			h := newLogHandler(&buf, slog.LevelInfo, tc.format, false)
 			slog.New(h).Info("hello", "k", "v")
 			out := strings.TrimSpace(buf.String())
 			if out == "" {
@@ -402,6 +402,137 @@ func TestNewLogHandler(t *testing.T) {
 					tc.format, tc.wantPrefix, out)
 			}
 		})
+	}
+}
+
+// TestNewLogHandlerLogSource is the focused unit test for the
+// -log-source wiring. It pins three contracts:
+//
+//  1. With source=true, the JSON record carries a structured "source"
+//     object ({"function","file","line"}) — that is the slog AddSource
+//     emission shape, and operators rely on it for log-aggregation
+//     pipelines that key off file/line.
+//  2. The "source.file" path ends with this test file's basename, so we
+//     know the AddSource walker captured the actual call site of
+//     slog.Info rather than a frame from inside slog itself.
+//  3. With source=false, no "source" key is emitted at all (so the
+//     default config stays byte-identical to the legacy output).
+func TestNewLogHandlerLogSource(t *testing.T) {
+	t.Parallel()
+
+	// source=true: the JSON record must carry a "source" object whose
+	// "file" field ends with this test file's basename.
+	t.Run("json-with-source", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		h := newLogHandler(&buf, slog.LevelInfo, logFormatJSON, true)
+		slog.New(h).Info("hello", "k", "v")
+
+		var rec map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+			t.Fatalf("expected one JSON record, got %q (err=%v)", buf.String(), err)
+		}
+		src, ok := rec["source"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected source object in record, got %v", rec)
+		}
+		// AddSource always populates function/file/line — assert all three
+		// rather than just one so a future slog change that drops a field
+		// also trips this test.
+		for _, k := range []string{"function", "file", "line"} {
+			if _, ok := src[k]; !ok {
+				t.Fatalf("expected source.%s, got %v", k, src)
+			}
+		}
+		file, _ := src["file"].(string)
+		if !strings.HasSuffix(file, "main_test.go") {
+			t.Fatalf("expected source.file to end with main_test.go, got %q", file)
+		}
+	})
+
+	// source=false: the JSON record must NOT carry a "source" key. This
+	// guards the zero-overhead default — flipping AddSource on by
+	// accident would inflate structured-log volume on every deployment.
+	t.Run("json-without-source", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		h := newLogHandler(&buf, slog.LevelInfo, logFormatJSON, false)
+		slog.New(h).Info("hello", "k", "v")
+
+		var rec map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+			t.Fatalf("expected one JSON record, got %q (err=%v)", buf.String(), err)
+		}
+		if _, ok := rec["source"]; ok {
+			t.Fatalf("expected no source key with source=false, got %v", rec)
+		}
+	})
+
+	// Text handler also honours AddSource — assert the on-the-wire
+	// "source=…" attribute appears so the flag is useful regardless of
+	// the chosen format.
+	t.Run("text-with-source", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		h := newLogHandler(&buf, slog.LevelInfo, logFormatText, true)
+		slog.New(h).Info("hello", "k", "v")
+		out := buf.String()
+		if !strings.Contains(out, "source=") {
+			t.Fatalf("expected text record to contain source=…, got %q", out)
+		}
+		if !strings.Contains(out, "main_test.go") {
+			t.Fatalf("expected text record to mention main_test.go, got %q", out)
+		}
+	})
+}
+
+// TestLogSourceFlag_AcceptedAndDocumented confirms the -log-source
+// flag is wired up end-to-end through run() (not just the helper) and
+// that its help line ships in -help output. Behaviour for the
+// underlying handler is covered in TestNewLogHandlerLogSource — here
+// we just guard the CLI surface so a future rename trips a test.
+func TestLogSourceFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-log-source") {
+		t.Fatalf("expected -log-source in usage block, got %q", stderr.String())
+	}
+
+	// Smoke-test the flag is parsed (i.e. registered with FlagSet) by
+	// running with -log-format=json -log-source=true and a malformed
+	// stdin line. The resulting JSON slog record on stderr must carry
+	// a "source" object — proving the flag flowed through to the
+	// installed handler, not just that it was accepted by FlagSet.
+	stdout.Reset()
+	stderr.Reset()
+	err = run([]string{"-log-format=json", "-log-source=true"},
+		strings.NewReader("not json\n"), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run: %v stderr=%q", err, stderr.String())
+	}
+	sawSource := false
+	for line := range strings.SplitSeq(stderr.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		if _, ok := rec["source"]; ok {
+			sawSource = true
+			break
+		}
+	}
+	if !sawSource {
+		t.Fatalf("expected at least one JSON record with source key on stderr, got %q",
+			stderr.String())
 	}
 }
 
