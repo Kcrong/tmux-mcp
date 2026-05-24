@@ -257,6 +257,20 @@ printf '%s\n' \
 Each line is one JSON-RPC frame. The server responds line-by-line with
 the same framing.
 
+### Health check
+
+For orchestrators that just need to confirm the binary is functional
+(k8s liveness probes, systemd `ExecStartPre=`, Docker `HEALTHCHECK`),
+use `-probe`:
+
+```sh
+tmux-mcp -probe   # prints "ok\ttmux=3.4\ttmux-mcp=v0.4.0" and exits 0
+```
+
+On failure (no tmux on `$PATH`, version too old, …) it prints a
+`probe failed: …` diagnostic to stderr and exits non-zero — stdout
+stays empty so a parser can rely on the `ok\t…` shape.
+
 ### Process management (systemd, containers, supervisors)
 
 By default `tmux-mcp` puts its private socket inside a freshly created
