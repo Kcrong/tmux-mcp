@@ -69,6 +69,13 @@ Flags:
                           "source=…" key. Useful for ad-hoc debugging where
                           you need to grep a log line back to the exact
                           slog.Info call that produced it.
+  -log-output PATH        destination for slog output: "stderr" (default),
+                          "stdout" (DANGER — corrupts JSON-RPC frames; only
+                          useful with -dry-run / -version), or a file path
+                          (opened append-only at mode 0600). The file is
+                          closed cleanly on shutdown. tmux-mcp does not
+                          rotate the file — pair it with logrotate(8) or
+                          equivalent.
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
@@ -177,6 +184,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// path the default and let operators opt in when investigating.
 	logSource := fs.Bool("log-source", false,
 		"include file:line of the call site in each log record (slight perf cost)")
+	// "stderr" preserves the legacy behaviour so existing deployments
+	// see no behaviour change. "stdout" is a magic escape hatch
+	// (debugging with -dry-run); any other value is a filesystem path
+	// opened append-only at mode 0600. tmux-mcp does not rotate the
+	// file — operators pair it with logrotate(8) on long-lived hosts.
+	logOutput := fs.String("log-output", LogOutputStderr,
+		"slog destination: \"stderr\" (default), \"stdout\" (DANGER), or a file path (append-only, mode 0600)")
 	// Default to the env var so systemd / container deployments can
 	// pin a known socket path without rewriting argv. The flag, when
 	// passed, wins.
@@ -270,9 +284,26 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", err)
 		return err
 	}
-	// All structured logs go to stderr — stdout is reserved for the
-	// line-delimited JSON-RPC frames the MCP client consumes.
-	slog.SetDefault(slog.New(newLogHandler(stderr, lvl, format, *logSource)))
+	// Resolve -log-output before installing the slog handler so a bad
+	// path (parent missing, no write permission) surfaces as a clean
+	// startup error instead of half-running with logs lost on the
+	// floor. The default value is "stderr", which preserves the legacy
+	// behaviour of routing structured logs to the supplied stderr
+	// writer; stdout is a magic value for ad-hoc debugging in tandem
+	// with -dry-run / -version, and any other value is a filesystem
+	// path opened append-only at mode 0600.
+	logWriter, closeLogOutput, err := openLogOutput(*logOutput, stderr, stdout)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", err)
+		return err
+	}
+	defer func() { _ = closeLogOutput() }()
+	// Structured logs go to the resolved writer — by default that is
+	// stderr (stdout stays reserved for JSON-RPC frames). Operators
+	// who passed -log-output=PATH get a private append-only file; the
+	// stdout magic value is honoured for debugging but corrupts the
+	// JSON-RPC framing if combined with serving stdio.
+	slog.SetDefault(slog.New(newLogHandler(logWriter, lvl, format, *logSource)))
 
 	ctl, err := tmuxctl.NewWithSocket(*socket)
 	if err != nil {
