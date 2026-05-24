@@ -172,8 +172,11 @@ func (c *Controller) SendKeys(ctx context.Context, session string, keys []string
 // CaptureMode selects the area to capture.
 type CaptureMode int
 
+// Capture areas.
 const (
+	// CaptureVisible captures only the currently visible region of the pane.
 	CaptureVisible CaptureMode = iota
+	// CaptureScrollback captures the visible region plus all scrollback.
 	CaptureScrollback
 )
 

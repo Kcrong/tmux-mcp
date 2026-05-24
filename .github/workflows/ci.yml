@@ -81,5 +81,32 @@ jobs:
       - name: build
         run: go build -trimpath ./...
 
-      - name: test
-        run: go test ./... -count=1 -race
+      - name: test (race + coverage)
+        run: go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -n 40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  govulncheck:
+    runs-on:
+      - codebuild-tmux-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: govulncheck
+        run: |
+          set -eux
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
