@@ -34,6 +34,13 @@ func New() (*Controller, error) {
 			err,
 		)
 	}
+	// Verify the tmux on PATH is new enough before doing any other work.
+	// Older tmux silently rejects flags this package relies on.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := checkTmuxVersion(ctx, bin); err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp("", "tmux-mcp-*")
 	if err != nil {
 		return nil, err
