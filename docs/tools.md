@@ -1745,3 +1745,68 @@ that produced it.
 { "name": "show_options",     "arguments": { "scope": "session", "session": "demo", "global": true } }
 ```
 
+---
+
+## `swap_window`
+
+Exchange two windows of the same session in place via
+`tmux swap-window -s <session>:<src> -t <session>:<dst>`. tmux trades
+the layout slots: each window keeps its `#{window_id}`, contents,
+panes, and running processes while the position indices/names trade.
+Pairs with `pane_swap` (panes inside a window) and `window_move`
+(relocation across sessions or to a new index).
+
+### Input
+
+| Field       | Type    | Required | Default | Notes                                                                              |
+| ----------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `session`   | string  | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `src`       | string  | yes      | —       | source window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`)             |
+| `dst`       | string  | yes      | —       | destination window name (same regex/length policy as `src`) or numeric index       |
+| `no_select` | boolean | no       | `false` | when `true`, do not change the active window after the swap (tmux's `-d` flag)     |
+
+`src` and `dst` must differ — passing the same value rejects with
+`-32602` ("src and dst must differ") before tmux is consulted, so the
+boundary surfaces a more informative error than tmux's own no-op
+refusal. The schema sets `additionalProperties: false`, so any unknown
+field is rejected up front.
+
+`no_select=true` is the most useful setting for autonomous agents: it
+prevents tmux from shifting the active window pointer to follow the
+swap, keeping a chained `send_keys` / `capture` deterministic.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "swapped": true }
+```
+
+The boundary deliberately does not echo the post-swap layout — a
+follow-up `list_windows` is one call away if the caller wants to
+confirm the new index/name pairing.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `session`, `src`, or `dst`; `src == dst`; or an unknown field was sent. |
+| `-32000` | `session` does not exist on this server, or one of the targets does not match a window (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the swap for an unexpected reason.                                    |
+
+### Example
+
+```jsonc
+{ "session": "demo", "src": "0", "dst": "1", "no_select": true }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the layout actually flipped:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "swap_window",  "arguments": { "session": "demo", "src": "0", "dst": "1", "no_select": true } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
