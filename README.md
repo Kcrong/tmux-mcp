@@ -550,6 +550,7 @@ embedded secrets stay out of the audit trail.
 | `clear_history` | Drop the scrollback buffer of a pane via `tmux clear-history`; visible region and running process are untouched. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
+| `new_window` | Like `window_create` but returns a JSON payload with the new window's index, id, and name; supports an `after_index` insertion slot. |
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
 | `window_select` | Make a window the active one of its session via `tmux select-window`. |
 | `window_rename` | Rename a window via `tmux rename-window` (same regex/length policy as window_create). |
