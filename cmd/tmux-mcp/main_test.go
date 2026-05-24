@@ -68,6 +68,37 @@ func TestInvalidLogLevelRejected(t *testing.T) {
 	}
 }
 
+// TestSessionIdleTimeoutFlag_RejectsNegative pins the contract that a
+// negative -session-idle-timeout is a startup error with a non-zero
+// exit (mapped via [errInvalidIdleTimeout] in main()), and that the
+// flag is documented in the -help usage block so operators discover
+// it. Positive zero is the documented "disabled" case and must NOT
+// error — that's what the second case asserts.
+func TestSessionIdleTimeoutFlag_RejectsNegative(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-session-idle-timeout=-1m"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for negative -session-idle-timeout, got nil")
+	}
+	if !errors.Is(err, errInvalidIdleTimeout) {
+		t.Fatalf("expected errInvalidIdleTimeout, got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "must not be negative") {
+		t.Fatalf("expected stderr to explain the rejection, got %q", stderr.String())
+	}
+
+	// -help must document the flag so operators can discover it.
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr); err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-session-idle-timeout") {
+		t.Fatalf("expected -session-idle-timeout in usage block, got %q", stderr.String())
+	}
+}
+
 // TestSnapshotTTLFlag_AcceptedAndDocumented confirms that the
 // -snapshot-ttl flag is parsed (i.e. not rejected as "unknown flag")
 // and that its help line is part of the -help usage block. Behavioural

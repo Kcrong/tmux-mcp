@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml)
+[![lint-actions](https://github.com/Kcrong/tmux-mcp/actions/workflows/lint-actions.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/lint-actions.yml)
 [![codecov](https://codecov.io/gh/Kcrong/tmux-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/Kcrong/tmux-mcp)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
@@ -401,6 +402,43 @@ RuntimeDirectory=tmux-mcp
 ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 ```
 
+### Idle session reaper (`-session-idle-timeout`)
+
+Long-running deployments accumulate orphaned tmux sessions: an agent
+loses interest, an MCP client crashes mid-task, a developer forgets a
+debug session running. Each one keeps a PTY, a shell, and the snapshot
+history in memory until the next operator-initiated cleanup. Set
+`-session-idle-timeout=DUR` to make the server reap sessions that have
+seen no tool-call activity within `DUR`:
+
+```sh
+# Auto-kill any session idle for 30 minutes.
+tmux-mcp -session-idle-timeout=30m
+
+# Keep historical behaviour — never reap (default).
+tmux-mcp -session-idle-timeout=0
+```
+
+Activity is any `tools/call` that names the session (`send_keys`,
+`capture`, `wait_for_*`, `resize`, `snapshot_diff`, `send_signal`,
+`pane_select`, `session_describe`, `list_panes` when scoped). The
+table-wide methods `session_list` and `kill_all_sessions` are
+deliberately **excluded** so polling for state cannot keep a dead
+session alive. `session_create` resets the timer for a freshly named
+session.
+
+Behaviour:
+
+- The reaper sweeps every `min(DUR/4, 30s)` (floor `1s`), so a session
+  is killed within roughly a quarter of the configured window after it
+  goes quiet.
+- Each kill is logged at `INFO` (`reaping idle session session=demo
+  idle=…`). Failures are logged and swallowed — one wedged session
+  does not strand the rest of the table.
+- Default `0` disables the feature entirely; the reaper goroutine and
+  per-session map are not allocated, so leaving the flag unset costs
+  nothing. Negative values are rejected at startup with a non-zero exit.
+
 ### Graceful shutdown (`-shutdown-timeout`)
 
 When a supervisor sends `SIGTERM` (or you hit `Ctrl+C`), `tmux-mcp` stops
@@ -489,7 +527,11 @@ embedded secrets stay out of the audit trail.
 | `resize` | Resize the pane (cols × rows). |
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
+| `pane_split` | Split a pane horizontally or vertically; optionally run a command in the new pane. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
+| `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
+| `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
+| `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
@@ -662,6 +704,21 @@ Returns
 Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
 `target` argument expected by `pane_select`.
 
+### `list_windows`
+
+```jsonc
+{ "session": "demo" }   // omit `session` to list every window on the server
+```
+
+Returns
+`{"windows": [{"index": 0, "name": "bash", "active": true, "panes": 1}, …]}`.
+Combine the session name with `index` (e.g. `demo:0`) to build a
+window target string for follow-up `window_kill` / `send_keys` calls.
+Unknown session names yield JSON-RPC code `-32000`
+(`CodeSessionNotFound`); the schema rejects unknown fields up front
+(`additionalProperties: false`) so a typo in the argument name fails
+fast with `-32602` (invalid params).
+
 ### `pane_select`
 
 ```jsonc
@@ -671,6 +728,23 @@ Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
 Switches the active pane of the named window so subsequent `send_keys`
 and `capture` calls that name `demo` act on the new pane. Useful for
 multi-pane TUIs (vim+terminal split, zellij-style layouts).
+
+### `pane_split`
+
+```jsonc
+{
+  "session":     "demo",        // required; len 1-64, [A-Za-z0-9_-]
+  "target_pane": "demo:0.0",    // optional; tmux target form, defaults to active pane
+  "direction":   "vertical",    // required; "horizontal" (-h) or "vertical" (-v)
+  "command":     "/bin/sh",     // optional; defaults to user's shell, max 4096 chars
+  "detach":      true            // optional; true = stay focused on original pane (-d)
+}
+```
+
+Returns `{"id": "%5", "index": 1}` — the new pane's tmux id and 0-based
+index. Combine those with the original session/window to address the
+new pane in follow-up `pane_select` / `send_keys` calls (e.g. write
+`demo:0.1` to drive what `pane_split` just created).
 
 ### `send_signal`
 
@@ -929,6 +1003,18 @@ last `rpc start` with no matching `rpc end`, and confirm the
 Code surfaced to the client in this case is `-32003`
 ("context cancelled"), not `-32002` ("timeout"), so callers can
 distinguish "client gave up" from "wait budget exceeded".
+
+### Sessions disappear without an explicit `session_kill`
+
+If `-session-idle-timeout` is set, any session that goes silent for
+longer than the configured window is reaped automatically — see
+[Idle session reaper](#idle-session-reaper--session-idle-timeout). Look
+for `reaping idle session` in the structured log to confirm. Reduce
+the window's risk by either bumping `DUR`, calling a quick `capture`
+to renew the timer on sessions you want to keep, or set
+`-session-idle-timeout=0` to disable the feature entirely. Note:
+`session_list` and `kill_all_sessions` deliberately do **not** count as
+activity, so a polling client cannot keep a stale session alive.
 
 ### Tool calls deadlock under load
 
