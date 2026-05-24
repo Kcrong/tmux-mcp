@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -159,4 +160,173 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// withCapturedLogs swaps slog.Default() for a JSON-handler writing to
+// the returned synchronised buffer for the duration of the test, so
+// assertions can inspect emitted fields. The original default logger
+// is restored on cleanup.
+func withCapturedLogs(t *testing.T) *threadSafeBuffer {
+	t.Helper()
+	buf := &threadSafeBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+func TestServe_LogsCarryRequestID(t *testing.T) {
+	logs := withCapturedLogs(t)
+
+	in := &threadSafeBuffer{}
+	out := &bytes.Buffer{}
+	outMu := &sync.Mutex{}
+	syncWriter := &lockedWriter{w: out, mu: outMu}
+
+	// Handler also emits a log line via the request-scoped logger; we
+	// assert the same rid shows up there as well as in the start/end
+	// pair from Serve itself.
+	handler := func(ctx context.Context, _ string, _ json.RawMessage) (any, *rpcError) {
+		LoggerFrom(ctx).Debug("handler ran")
+		return map[string]any{"ok": true}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+
+	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":42,"method":"trace_me"}` + "\n"))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		outMu.Lock()
+		body := out.String()
+		outMu.Unlock()
+		if strings.Contains(body, `"ok":true`) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	in.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit after EOF")
+	}
+
+	logs.Close()
+	raw, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+
+	var (
+		startRid, endRid, handlerRid string
+		sawMethod                    bool
+		sawDurMs                     bool
+	)
+	for _, line := range bytes.Split(raw, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		rid, _ := rec["rid"].(string)
+		if rec["method"] == "trace_me" {
+			sawMethod = true
+		}
+		switch rec["msg"] {
+		case "rpc start":
+			startRid = rid
+		case "rpc end":
+			endRid = rid
+			if _, ok := rec["dur_ms"]; ok {
+				sawDurMs = true
+			}
+		case "handler ran":
+			handlerRid = rid
+		}
+	}
+	if startRid == "" {
+		t.Fatalf("expected rpc start log line with non-empty rid, logs=%s", raw)
+	}
+	if len(startRid) != 8 {
+		t.Fatalf("rid expected to be 8 hex chars, got %q", startRid)
+	}
+	if endRid != startRid {
+		t.Fatalf("rpc end rid %q did not match rpc start rid %q", endRid, startRid)
+	}
+	if handlerRid != startRid {
+		t.Fatalf("handler rid %q did not match rpc start rid %q", handlerRid, startRid)
+	}
+	if !sawMethod {
+		t.Fatalf("expected method=trace_me on log lines, logs=%s", raw)
+	}
+	if !sawDurMs {
+		t.Fatalf("expected rpc end to carry dur_ms, logs=%s", raw)
+	}
+}
+
+func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
+	logs := withCapturedLogs(t)
+
+	in := &threadSafeBuffer{}
+	out := &bytes.Buffer{}
+	outMu := &sync.Mutex{}
+	syncWriter := &lockedWriter{w: out, mu: outMu}
+
+	handler := func(_ context.Context, _ string, _ json.RawMessage) (any, *rpcError) {
+		return nil, &rpcError{Code: -32000, Message: "boom"}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+
+	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"explode"}` + "\n"))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		outMu.Lock()
+		body := out.String()
+		outMu.Unlock()
+		if strings.Contains(body, "-32000") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	in.Close()
+	<-done
+	logs.Close()
+	raw, _ := io.ReadAll(logs)
+
+	var startRid, errRid string
+	for _, line := range bytes.Split(raw, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		rid, _ := rec["rid"].(string)
+		switch rec["msg"] {
+		case "rpc start":
+			startRid = rid
+		case "rpc error":
+			errRid = rid
+		}
+	}
+	if startRid == "" || errRid == "" {
+		t.Fatalf("missing start or error log: logs=%s", raw)
+	}
+	if errRid != startRid {
+		t.Fatalf("error rid %q did not match start rid %q", errRid, startRid)
+	}
 }
