@@ -356,14 +356,19 @@ All tools share the same envelope: a JSON-RPC `tools/call` with
 
 ```jsonc
 {
-  "name":    "demo",            // required
+  "name":    "demo",            // required; len 1-64, [A-Za-z0-9_-]
   "command": "/bin/sh",         // optional; defaults to the user's shell
-  "cwd":     "/tmp",            // optional
-  "width":   120,               // optional, default 120
-  "height":  40,                // optional, default 40
+  "cwd":     "/tmp",            // optional; must be absolute if set
+  "width":   120,               // optional, default 120; range 20-1000
+  "height":  40,                // optional, default 40;  range 5-500
   "env":     { "PS1": "$ " }    // optional
 }
 ```
+
+Inputs outside these bounds are rejected with JSON-RPC code `-32602`
+(invalid params) before any tmux call is made — the bounds keep a
+buggy or hostile caller from forcing tmux to allocate huge pty buffers
+on absurd terminal sizes.
 
 ### `session_list`
 
@@ -376,15 +381,15 @@ Returns `{"sessions": ["demo", …]}`.
 ### `session_kill`
 
 ```jsonc
-{ "name": "demo" }
+{ "name": "demo" }   // len 1-64, [A-Za-z0-9_-]
 ```
 
 ### `send_keys`
 
 ```jsonc
 {
-  "session": "demo",
-  "keys":    ["echo hello", "Enter"],   // tmux key names recognised
+  "session": "demo",                    // len 1-64, [A-Za-z0-9_-]
+  "keys":    ["echo hello", "Enter"],   // non-empty; tmux key names recognised
   "literal": false                       // true → bypass key-name parsing
 }
 ```
@@ -401,8 +406,8 @@ would otherwise look like key names.
 
 ```jsonc
 {
-  "session":   "demo",
-  "mode":      "visible",   // or "scrollback"
+  "session":   "demo",      // len 1-64, [A-Za-z0-9_-]
+  "mode":      "visible",   // "visible" or "scrollback"
   "ansi":      false,       // true keeps colour escape sequences
   "max_lines": 0            // 0 = no cap for visible, default 5000-line cap for scrollback
 }
@@ -429,10 +434,10 @@ return the snapshot.
 
 ```jsonc
 {
-  "session":    "demo",
-  "quiet_ms":   400,    // default
-  "step_ms":    100,    // poll interval
-  "timeout_ms": 10000
+  "session":    "demo",  // len 1-64, [A-Za-z0-9_-]
+  "quiet_ms":   400,     // default; range 0-600000
+  "step_ms":    100,     // poll interval; range 0-600000
+  "timeout_ms": 10000    // range 0-600000 (10 min cap)
 }
 ```
 
@@ -442,10 +447,10 @@ Block until a Go-regex pattern matches the visible pane.
 
 ```jsonc
 {
-  "session":    "demo",
+  "session":    "demo",        // len 1-64, [A-Za-z0-9_-]
   "pattern":    "READY-\\d+",
-  "step_ms":    100,
-  "timeout_ms": 10000
+  "step_ms":    100,           // range 0-600000
+  "timeout_ms": 10000          // range 0-600000 (10 min cap)
 }
 ```
 
@@ -457,7 +462,7 @@ Capture and return only the lines that changed since `prior_token`. Use
 an empty string on the first call.
 
 ```jsonc
-{ "session": "demo", "prior_token": "" }
+{ "session": "demo", "prior_token": "" }   // session: len 1-64, [A-Za-z0-9_-]
 ```
 
 Returns
@@ -470,6 +475,7 @@ new).
 
 ```jsonc
 { "session": "demo", "width": 100, "height": 30 }
+// session: len 1-64, [A-Za-z0-9_-]; width: 20-1000; height: 5-500
 ```
 
 ## End-to-end example
