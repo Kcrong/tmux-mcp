@@ -1448,6 +1448,83 @@ call with the at-a-glance check first:
 
 ---
 
+## `kill_window`
+
+Destroy a single window via `tmux kill-window -t <session>:<window>`,
+honouring tmux's natural cascade: when the targeted window is the only
+window left in the session, killing it also reaps the session and the
+response surfaces that fact via `session_killed: true` instead of
+rejecting the call. Pairs with `pane_kill` and `kill_all_sessions` to
+round out the kill-X surface.
+
+Distinct from the older `window_kill` tool: `window_kill` refuses to
+destroy the only window of a session (returns `-32602` with a
+"`session_kill` instead" hint), while `kill_window` lets the cascade
+fire and reports it explicitly. Both tools coexist so callers can pick
+the contract that suits them — UI-style flows that want to keep
+session and window lifecycles strictly separate stick with
+`window_kill`; bulk-cleanup loops that want a single tool to "make
+this window go away whatever the consequences" use `kill_window`.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `window`  | string | yes      | window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric tmux index (`\d+`)               |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` / `window` is rejected with `-32602` (invalid params) before
+tmux is consulted.
+
+### Output
+
+JSON block. The common case (window goes away, session lives on):
+
+```jsonc
+{ "killed": true }
+```
+
+The cascade case (window was the last one, session reaped along with
+it):
+
+```jsonc
+{ "killed": true, "session_killed": true }
+```
+
+`session_killed` is **only** present when the cascade fires, so
+agents that branch on its presence don't have to filter out a noisy
+`false` in the common case. Snapshot history kept for the reaped
+session is dropped automatically, mirroring the `session_kill`
+cleanup contract — the next `capture` against a fresh session of the
+same name seeds a new entry.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session` or `window`, or an unknown field was sent. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the kill (e.g. window not found in the session).      |
+
+### Example
+
+```jsonc
+{ "session": "demo", "window": "build" }
+```
+
+A bulk-cleanup loop that walks `list_windows` output and asks tmux to
+remove each entry — without caring whether the final pass also ends
+the session — looks like:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "kill_window",  "arguments": { "session": "demo", "window": "build" } }
+{ "name": "kill_window",  "arguments": { "session": "demo", "window": "test" } }
+```
+
+---
+
 ## `window_select`
 
 Make `target` the active window of `session` via `tmux select-window`.
