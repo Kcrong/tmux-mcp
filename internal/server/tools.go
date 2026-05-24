@@ -330,7 +330,7 @@ func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcErro
 	if rerr := validateSessionRef(args.Session); rerr != nil {
 		return nil, rerr
 	}
-	mode := tmuxctl.CaptureVisible
+	var mode tmuxctl.CaptureMode
 	switch args.Mode {
 	case "", "visible":
 		mode = tmuxctl.CaptureVisible
