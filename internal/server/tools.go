@@ -146,11 +146,26 @@ var toolDefs = []map[string]any{
 type Tools struct {
 	Ctl  *tmuxctl.Controller
 	Snap *snapshot.Store
+	// Version is the binary version reported in the MCP initialize
+	// response's serverInfo.version. It is populated from main.version
+	// (ldflags-injected) at construction time. Empty/zero values fall
+	// back to "dev" so the field always carries a sensible string.
+	Version string
 }
 
 // NewTools wires a Controller and Store together.
 func NewTools(c *tmuxctl.Controller) *Tools {
 	return &Tools{Ctl: c, Snap: snapshot.New()}
+}
+
+// serverVersion returns the version string the server should advertise
+// to clients in initialize. Falling back to "dev" matches the binary's
+// default when ldflags didn't set a value.
+func (t *Tools) serverVersion() string {
+	if t.Version == "" {
+		return "dev"
+	}
+	return t.Version
 }
 
 // Handle is the dispatcher passed to server.Serve. It implements MCP's
@@ -161,7 +176,7 @@ func (t *Tools) Handle(ctx context.Context, method string, params json.RawMessag
 		return map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "tmux-mcp", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "tmux-mcp", "version": t.serverVersion()},
 		}, nil
 	case "notifications/initialized":
 		return nil, nil
