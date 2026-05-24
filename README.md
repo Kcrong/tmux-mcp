@@ -8,6 +8,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/Kcrong/tmux-mcp?display_name=tag&sort=semver)](https://github.com/Kcrong/tmux-mcp/releases/latest)
 
+Coverage is enforced via [`.codecov.yml`](.codecov.yml): project coverage
+must stay at or above 70%, and patch (new) code must hit 80%, both with a
+1% drop tolerance.
+
 A Model Context Protocol (MCP) stdio server that exposes a real `tmux`
 session to an LLM agent so it can drive a terminal the way a human
 does — typing into a real PTY, waiting for the screen to settle, reading
