@@ -307,6 +307,15 @@ On failure (no tmux on `$PATH`, version too old, …) it prints a
 `probe failed: …` diagnostic to stderr and exits non-zero — stdout
 stays empty so a parser can rely on the `ok\t…` shape.
 
+### Concurrency cap
+
+`-max-concurrent-calls=N` caps simultaneously-executing `tools/call`
+frames; excess callers wait for back-pressure rather than failing
+(default `64`, `0` disables the cap entirely). `initialize`,
+`tools/list`, and notifications stay ungated so probes/listings remain
+snappy. When a call blocks more than 100ms a single `slog.Warn` records
+the method, queue depth, and configured limit so saturation is visible.
+
 ### Process management (systemd, containers, supervisors)
 
 By default `tmux-mcp` puts its private socket inside a freshly created
