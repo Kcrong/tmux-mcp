@@ -5,8 +5,49 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  build-test:
+  lint:
+    runs-on:
+      - codebuild-tmux-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: gofmt
+        run: |
+          set -eux
+          out="$(gofmt -s -l .)"
+          if [ -n "$out" ]; then
+            echo "files need formatting:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy (verify)
+        run: |
+          set -eux
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "go.mod/go.sum out of sync — run \`go mod tidy\` and commit" >&2
+            exit 1
+          fi
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          args: --timeout=5m
+
+  test:
     runs-on:
       - codebuild-tmux-mcp-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -36,19 +77,6 @@ jobs:
         with:
           go-version: '1.24'
           cache: true
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: gofmt
-        run: |
-          set -eux
-          out="$(gofmt -s -l .)"
-          if [ -n "$out" ]; then
-            echo "files need formatting:" >&2
-            echo "$out" >&2
-            exit 1
-          fi
 
       - name: build
         run: go build -trimpath ./...
