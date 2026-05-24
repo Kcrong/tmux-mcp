@@ -90,6 +90,16 @@ func TestCodeOf(t *testing.T) {
 			want: CodeReadOnly,
 		},
 		{
+			name: "ErrPaneActive direct",
+			err:  ErrPaneActive,
+			want: CodePaneActive,
+		},
+		{
+			name: "ErrPaneActive wrapped",
+			err:  fmt.Errorf("respawn-pane: %w: pane demo:0.0", ErrPaneActive),
+			want: CodePaneActive,
+		},
+		{
 			name: "context.Canceled",
 			err:  context.Canceled,
 			want: CodeContextCancelled,
@@ -131,6 +141,7 @@ func TestCodes_Stable(t *testing.T) {
 		{"CodeTimeout", CodeTimeout, -32002},
 		{"CodeContextCancelled", CodeContextCancelled, -32003},
 		{"CodeSessionExists", CodeSessionExists, -32004},
+		{"CodePaneActive", CodePaneActive, -32005},
 		{"CodeOversizedResponse", CodeOversizedResponse, -32010},
 		{"CodeReadOnly", CodeReadOnly, -32011},
 	}
@@ -154,16 +165,22 @@ func TestSentinels_Distinct(t *testing.T) {
 		errors.Is(ErrSessionNotFound, ErrSessionExists) ||
 		errors.Is(ErrSessionNotFound, ErrOversizedResponse) ||
 		errors.Is(ErrSessionNotFound, ErrReadOnly) ||
+		errors.Is(ErrSessionNotFound, ErrPaneActive) ||
 		errors.Is(ErrSessionExists, ErrTmuxVersionUnsupported) ||
 		errors.Is(ErrSessionExists, ErrTimeout) ||
 		errors.Is(ErrSessionExists, ErrOversizedResponse) ||
 		errors.Is(ErrSessionExists, ErrReadOnly) ||
+		errors.Is(ErrSessionExists, ErrPaneActive) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrTimeout) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrOversizedResponse) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrReadOnly) ||
+		errors.Is(ErrTmuxVersionUnsupported, ErrPaneActive) ||
 		errors.Is(ErrTimeout, ErrOversizedResponse) ||
 		errors.Is(ErrTimeout, ErrReadOnly) ||
-		errors.Is(ErrOversizedResponse, ErrReadOnly) {
+		errors.Is(ErrTimeout, ErrPaneActive) ||
+		errors.Is(ErrOversizedResponse, ErrReadOnly) ||
+		errors.Is(ErrOversizedResponse, ErrPaneActive) ||
+		errors.Is(ErrReadOnly, ErrPaneActive) {
 		t.Fatal("sentinel errors must be distinct")
 	}
 }
