@@ -56,12 +56,16 @@ func (t *Tools) sessionDescribe(ctx context.Context, raw json.RawMessage) (any, 
 	if rerr := validateSessionName(args.Name); rerr != nil {
 		return nil, rerr
 	}
-	info, err := t.Ctl.DescribeSession(ctx, args.Name)
+	info, err := t.Ctl.DescribeSession(ctx, t.resolveSessionRef(args.Name))
 	if err != nil {
 		return nil, internalError(err)
 	}
+	// Echo the logical name (i.e. what the client supplied) instead of
+	// info.Name (the prefixed tmux session), so a client running under
+	// -session-prefix sees the same identifier it created. The
+	// downstream window / pane counts are unaffected by the rewrite.
 	return jsonBlock(map[string]any{
-		"name":       info.Name,
+		"name":       args.Name,
 		"windows":    info.Windows,
 		"panes":      info.Panes,
 		"width":      info.Width,

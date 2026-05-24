@@ -180,6 +180,23 @@ Flags:
                           tools (kill_all_sessions, pane_kill,
                           session_kill, send_signal) for untrusted
                           contexts.
+  -session-prefix STRING  when set, every session this server creates
+                          lands on tmux as "<prefix><name>", and every
+                          session-bearing tool (capture, send_keys,
+                          session_kill, …) resolves the bare name back
+                          to the prefixed identity transparently.
+                          session_list and kill_all_sessions are
+                          scoped to the prefix and strip it from the
+                          response, so a co-tenant agent's sessions
+                          (created with a different prefix or none)
+                          stay invisible to this instance. The prefix
+                          must match [A-Za-z0-9_-]+, may not end with
+                          '-', and must leave at least one byte for a
+                          user-supplied session name (combined length
+                          ≤ 64). Default: "" (no prefix — the
+                          original single-tenant behaviour). Useful
+                          when several agents share one tmux-mcp
+                          server and need disjoint session namespaces.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -205,6 +222,12 @@ func main() {
 	if errors.Is(err, errInvalidIdleTimeout) {
 		os.Exit(2)
 	}
+	// Same convention for an invalid -session-prefix (bad regex, trailing
+	// dash, or no room left for a session name). The validator already
+	// wrote a single-line diagnostic to stderr.
+	if errors.Is(err, errInvalidSessionPrefix) {
+		os.Exit(2)
+	}
 	// The -probe path has already written a "probe failed: …" line to
 	// stderr; logging the error again via slog would just duplicate it.
 	// Every other failure mode goes through slog so it shows up in the
@@ -223,6 +246,15 @@ func main() {
 // negative duration). main() recognises it via [errors.Is] and maps it
 // to exit code 2 — the conventional "CLI usage error" status.
 var errInvalidIdleTimeout = errors.New("invalid -session-idle-timeout")
+
+// errInvalidSessionPrefix is the sentinel returned when -session-prefix
+// receives a value [server.ValidateSessionPrefix] rejects: anything
+// outside the [A-Za-z0-9_-]+ regex, a value ending in '-', or a prefix
+// long enough to leave no room for a user-supplied session name within
+// the 64-byte tmux session-name budget. main() recognises it via
+// [errors.Is] and maps it to exit code 2 — the conventional "CLI usage
+// error" status used by stdlib `flag` and most Unix utilities.
+var errInvalidSessionPrefix = errors.New("invalid -session-prefix")
 
 // errPprofRequiresMetricsAddr is the sentinel returned when -pprof is
 // enabled without -metrics-addr. The pprof handlers are co-located on
@@ -362,6 +394,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// touching this flag.
 	allowlist := fs.String("allowlist", "",
 		"comma-separated list of tool names to expose; empty = no filter (default)")
+	// Empty default keeps the prefix feature opt-in: existing
+	// deployments see no behaviour change. When set, every session
+	// session_create lands on tmux as "<prefix><name>" and every other
+	// session-bearing tool resolves the bare name back to the prefixed
+	// identity transparently. session_list/kill_all_sessions filter the
+	// view to entries inside the prefix so co-tenant agents stay
+	// isolated.
+	sessionPrefix := fs.String("session-prefix", "",
+		"when set, prepend this string to every session name created on tmux (regex [A-Za-z0-9_-]+, no trailing '-')")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -386,6 +427,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *enablePprof && *metricsAddr == "" {
 		_, _ = fmt.Fprintln(stderr, "tmux-mcp: -pprof requires -metrics-addr to be set")
 		return errPprofRequiresMetricsAddr
+	}
+	// Validate -session-prefix at startup — a malformed value must abort
+	// before any tmux state is created so the operator never half-runs
+	// with a prefix that would hit tmux as a name no other tool can
+	// validly reference. The empty default is always accepted (no
+	// prefixing). Diagnostics go to stderr; main() maps the sentinel to
+	// exit code 2.
+	if perr := server.ValidateSessionPrefix(*sessionPrefix); perr != nil {
+		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", perr)
+		return fmt.Errorf("%w: %w", errInvalidSessionPrefix, perr)
 	}
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
@@ -576,6 +627,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
+	// Hand the (already-validated) -session-prefix value to the tool
+	// surface. Empty keeps the historical no-prefix behaviour; non-empty
+	// arms resolveSessionRef / resolvePaneTarget / resolveWindowMoveTarget
+	// across every session-bearing tool so the JSON-RPC client sees its
+	// logical names and tmux sees the prefixed ones.
+	tools.SessionPrefix = *sessionPrefix
 	// Install the operator-supplied allowlist (if any) before any
 	// tools/list / tools/call frame can reach the dispatcher. Validation
 	// runs against the live registry now that every init()-time
@@ -627,6 +684,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		// without main needing to know about the notification shape.
 		server.WithToolsListChangedNotifier(tools.SetNotifier),
 		server.WithMetrics(metrics),
+		// Mirror the prefix into the dispatcher so the [IdleReaper]'s
+		// activity table keys on the same tmux-real names the controller
+		// kills against. *Tools.SessionPrefix already takes care of the
+		// handler side; this option is the dispatcher-side counterpart.
+		server.WithSessionPrefix(*sessionPrefix),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can
