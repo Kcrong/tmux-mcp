@@ -8,6 +8,7 @@ import (
 )
 
 func TestCodeOf(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -76,6 +77,7 @@ func TestCodeOf(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := CodeOf(tc.err); got != tc.want {
 				t.Fatalf("CodeOf(%v) = %d, want %d", tc.err, got, tc.want)
 			}
@@ -86,6 +88,7 @@ func TestCodeOf(t *testing.T) {
 // TestCodes_Stable pins the wire codes. Bumping any of these is a
 // breaking change for clients and must be done deliberately.
 func TestCodes_Stable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		got  int
@@ -100,6 +103,7 @@ func TestCodes_Stable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if tc.got != tc.want {
 				t.Fatalf("%s = %d, want %d (changing this is a wire-breaking change)",
 					tc.name, tc.got, tc.want)
@@ -111,6 +115,7 @@ func TestCodes_Stable(t *testing.T) {
 // TestSentinels_Distinct guards against accidentally pointing two of the
 // public sentinels at the same underlying error value.
 func TestSentinels_Distinct(t *testing.T) {
+	t.Parallel()
 	if errors.Is(ErrSessionNotFound, ErrTmuxVersionUnsupported) ||
 		errors.Is(ErrSessionNotFound, ErrTimeout) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrTimeout) {
