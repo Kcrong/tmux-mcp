@@ -412,15 +412,64 @@ wait_for_stable session=demo  quiet_ms=200
 
 ## Verifying a release
 
-Each release publishes a `checksums.txt` next to the archive. Verify
-the file you downloaded:
+Each release ships three layers of provenance:
+
+1. **`checksums.txt`** — SHA-256 of every archive.
+2. **Cosign keyless signatures** — every archive, `checksums.txt`, and
+   every SBOM is signed via GitHub Actions OIDC (no long-lived key) and
+   the signing event is recorded in the public
+   [Rekor transparency log](https://docs.sigstore.dev/logging/overview/).
+   Each artifact has a sibling `<artifact>.sig` (signature) and
+   `<artifact>.pem` (signing certificate).
+3. **SPDX SBOMs** — one
+   [SPDX 2.3 JSON](https://spdx.dev/use/specifications/) document per
+   archive, named `<archive>.sbom.json`, listing every Go module that
+   went into the binary.
+
+### Step 1 — checksums
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
 ```
 
-`checksums.txt` itself is built by GoReleaser inside the release
-workflow — the [release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
+### Step 2 — cosign signatures
+
+Install [cosign](https://docs.sigstore.dev/cosign/installation/) (e.g.
+`brew install cosign`), then verify any artifact against the GitHub
+Actions OIDC identity that produced the release:
+
+```sh
+# Replace <tag> with the release tag (e.g. v0.2.0) and <archive> with
+# the file you downloaded (e.g. tmux-mcp_Linux_x86_64.tar.gz).
+TAG=<tag>
+ARCHIVE=<archive>
+
+cosign verify-blob \
+  --certificate "${ARCHIVE}.pem" \
+  --signature   "${ARCHIVE}.sig" \
+  --certificate-identity-regexp \
+    "https://github.com/Kcrong/tmux-mcp/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "${ARCHIVE}"
+```
+
+The same command verifies `checksums.txt` and any
+`*.sbom.json` — just point `ARCHIVE` at that file. A successful verify
+prints `Verified OK` and confirms the artifact came from this repo's
+release workflow at the given tag, with the event logged to Rekor.
+
+### Step 3 — SBOM
+
+Each `<archive>.sbom.json` is an SPDX 2.3 document. Inspect it with
+[`syft`](https://github.com/anchore/syft), `jq`, or any SPDX-aware tool:
+
+```sh
+syft convert tmux-mcp_Linux_x86_64.tar.gz.sbom.json -o table
+```
+
+`checksums.txt`, signatures, certificates, and SBOMs are all built by
+GoReleaser inside the release workflow — the
+[release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
 in GitHub Actions is the authoritative provenance.
 
 ## License
