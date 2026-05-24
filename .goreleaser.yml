@@ -47,6 +47,66 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# Generate one SPDX-JSON SBOM per archive using syft.
+# Produces files like tmux-mcp_Linux_x86_64.tar.gz.sbom.json next to each archive.
+sboms:
+  - id: archive
+    artifacts: archive
+    documents:
+      - '{{ .ArtifactName }}.sbom.json'
+    cmd: syft
+    args:
+      - '$artifact'
+      - '--output'
+      - 'spdx-json={{ .Document }}'
+
+# Keyless cosign signatures using the GitHub Actions OIDC identity.
+# Signs every release archive, the checksums.txt file, and each SBOM.
+# Signatures (.sig) and certificates (.pem) are uploaded to the release and
+# the signing event is logged to the public Rekor transparency log.
+signs:
+  - id: cosign-archives
+    cmd: cosign
+    artifacts: archive
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--yes'
+      - '--oidc-provider=github-actions'
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+    output: true
+
+  - id: cosign-checksum
+    cmd: cosign
+    artifacts: checksum
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--yes'
+      - '--oidc-provider=github-actions'
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+    output: true
+
+  - id: cosign-sbom
+    cmd: cosign
+    artifacts: sbom
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--yes'
+      - '--oidc-provider=github-actions'
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '${artifact}'
+    output: true
+
 snapshot:
   version_template: '{{ incpatch .Version }}-next'
 
