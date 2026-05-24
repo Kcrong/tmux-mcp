@@ -21,6 +21,7 @@ func FuzzRecordAndDiff(f *testing.F) {
 	f.Add([]byte("line1\rline2"), []byte("line1\nline2"))
 
 	f.Fuzz(func(t *testing.T, oldBody, newBody []byte) {
+		t.Parallel()
 		s := New()
 		const sess = "fuzz"
 
@@ -104,6 +105,7 @@ func FuzzLineDiff(f *testing.F) {
 	f.Add([]byte("\n\n\n"), []byte(""))
 
 	f.Fuzz(func(t *testing.T, oldBody, newBody []byte) {
+		t.Parallel()
 		oldStr, newStr := string(oldBody), string(newBody)
 		diffs := lineDiff(oldStr, newStr)
 
