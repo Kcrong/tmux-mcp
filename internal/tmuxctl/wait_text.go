@@ -19,6 +19,10 @@ func (c *Controller) WaitForText(ctx context.Context, session, pattern string, s
 	if pattern == "" {
 		return TextMatch{}, fmt.Errorf("pattern required")
 	}
+	// Compile once per call, before the polling loop. Recompiling on
+	// every iteration would be wasted work for any non-trivial regex
+	// and a measurable hot path on long timeouts. An invalid pattern
+	// must also surface immediately, not after the first poll.
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return TextMatch{}, fmt.Errorf("invalid regex %q: %w", pattern, err)
