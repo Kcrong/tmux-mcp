@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 // minTmuxMajor and minTmuxMinor define the lowest supported tmux version.
@@ -128,9 +130,13 @@ func checkTmuxVersion(ctx context.Context, bin string) error {
 		return err
 	}
 	if !v.atLeast(minTmuxMajor, minTmuxMinor) {
+		// Wrap ErrTmuxVersionUnsupported so the dispatcher can surface a
+		// stable JSON-RPC code; the human-readable message keeps the
+		// upgrade hint intact.
 		return fmt.Errorf(
-			"tmux %d.%d+ required (found %s); upgrade with "+
+			"%w: tmux %d.%d+ required (found %s); upgrade with "+
 				"apt-get install tmux / brew upgrade tmux",
+			errs.ErrTmuxVersionUnsupported,
 			minTmuxMajor, minTmuxMinor, v,
 		)
 	}

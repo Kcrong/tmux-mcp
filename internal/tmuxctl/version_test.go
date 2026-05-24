@@ -2,11 +2,14 @@ package tmuxctl
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 func TestParseTmuxVersion(t *testing.T) {
@@ -111,6 +114,11 @@ func TestCheckTmuxVersion_TooOld(t *testing.T) {
 	if !strings.Contains(msg, "apt-get install tmux") ||
 		!strings.Contains(msg, "brew upgrade tmux") {
 		t.Fatalf("missing upgrade hint: %q", msg)
+	}
+	// Must wrap the typed sentinel so the JSON-RPC layer can map it to
+	// CodeTmuxVersionUnsupported (-32001).
+	if !errors.Is(err, errs.ErrTmuxVersionUnsupported) {
+		t.Fatalf("error %v does not wrap errs.ErrTmuxVersionUnsupported", err)
 	}
 }
 
