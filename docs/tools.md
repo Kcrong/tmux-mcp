@@ -9,6 +9,71 @@ Right now the page documents only the per-tool details that don't fit
 into the at-a-glance table in [`README.md`](../README.md). Additional
 tool sections will be added here as their schemas become public.
 
+## `list_windows`
+
+Enumerate windows visible to this server. Useful for an agent that
+needs to discover the layout of a session before driving it (which
+window is focused, how many panes each window holds, what targets are
+available for `window_kill` / `send_keys`).
+
+### Input
+
+| Field     | Type   | Required | Notes                                                  |
+| --------- | ------ | -------- | ------------------------------------------------------ |
+| `session` | string | no       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to list every window on the server (`-a`). |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"sesion"` fails fast instead of silently
+behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `windows`:
+
+```jsonc
+{
+  "windows": [
+    { "index": 0, "name": "bash",  "active": true,  "panes": 1 },
+    { "index": 1, "name": "build", "active": false, "panes": 2 }
+  ]
+}
+```
+
+| Field    | Type    | Notes                                                                |
+| -------- | ------- | -------------------------------------------------------------------- |
+| `index`  | integer | Window index inside its session (0-based). Combine with the session name to form a `session:index` target string. |
+| `name`   | string  | Whatever tmux assigned (caller-supplied `-n`, or the auto label).    |
+| `active` | boolean | True when this window is the currently focused one of its session.   |
+| `panes`  | integer | Number of panes currently in the window.                             |
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `session` present but malformed, or an unknown field was sent.       |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// scope to a single session
+{ "session": "demo" }
+
+// list every window on the server
+{}
+```
+
+A typical chain looks like: discover the layout, jump to a specific
+window, drive it.
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "send_keys",    "arguments": { "session": "demo", "keys": ["C-b", "1"] } }
+{ "name": "capture",      "arguments": { "session": "demo" } }
+```
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
