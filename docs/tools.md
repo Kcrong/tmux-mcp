@@ -29,6 +29,7 @@ Tool calls fail with a JSON-RPC `error` object. Codes are stable:
 | `-32001` | `errs.ErrTmuxVersionUnsupported` | tmux on `$PATH` is older than the supported floor.                             |
 | `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
 | `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
+| `-32004` | `errs.ErrSessionExists`        | A session name collides with an existing one (e.g. `session_rename` to a name in use). |
 
 Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
 mapping is performed by `errs.CodeOf`.
@@ -214,6 +215,69 @@ would be empty).
 
 ```jsonc
 { "name": "demo" }
+```
+
+---
+
+## `session_rename`
+
+Rename an existing session via `tmux rename-session -t OLD NEW`. Useful
+when an agent's first label was a placeholder (e.g. `"scratch"`) and
+the work has settled into a recognisable identity (e.g.
+`"build-3128"`). After the call, every subsequent `session_describe` /
+`send_keys` / `capture` must be addressed by the new name; the old
+name is gone.
+
+The schema sets `additionalProperties: false`, so any field other than
+`name` / `new_name` is rejected with `-32602` (invalid params) before
+tmux is consulted — a typo like `"newname"` fails fast.
+
+### Input
+
+| Field      | Type   | Required | Notes                                                  |
+| ---------- | ------ | -------- | ------------------------------------------------------ |
+| `name`     | string | yes      | existing session name; len 1-64, regex `^[A-Za-z0-9_-]+$` |
+| `new_name` | string | yes      | new session name; same regex/length policy as `name`   |
+
+`name` and `new_name` must differ — passing the same value rejects with
+`-32602` ("nothing to rename") before tmux is invoked, so the dedicated
+`-32004` (`errs.ErrSessionExists`) stays reserved for genuine collisions
+with a *different* session.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "old_name": "scratch", "new_name": "build-3128" }
+```
+
+Snapshot history is not migrated to the new key — the next `capture`
+against the new name seeds a fresh entry. Callers that depend on a
+`snapshot_diff` chain across the rename should treat the first
+post-rename diff as a baseline.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name` / `new_name`, both names equal, or an unknown field was sent. |
+| `-32000` | `name` does not exist on this server (`errs.ErrSessionNotFound`).                  |
+| `-32004` | `new_name` already names another session on this server (`errs.ErrSessionExists`). |
+| `-32603` | tmux refused the rename for an unexpected reason.                                  |
+
+### Example
+
+```jsonc
+{ "name": "scratch", "new_name": "build-3128" }
+```
+
+Pair with `session_describe` to confirm the new identity surfaced
+correctly (and that tools/list reflects only the new name):
+
+```jsonc
+{ "name": "session_rename",   "arguments": { "name": "scratch", "new_name": "build-3128" } }
+{ "name": "session_describe", "arguments": { "name": "build-3128" } }
 ```
 
 ---
