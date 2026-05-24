@@ -46,6 +46,10 @@ Flags:
                           failure. Useful for k8s liveness, systemd
                           ExecStartPre, Docker HEALTHCHECK.
   -log-level LEVEL        log verbosity: error|warn|info|debug (default "info")
+  -log-format FMT         slog output format: text|json. When unset, the
+                          server emits text by default and switches to json
+                          automatically when -log-level=debug. Passing this
+                          flag explicitly overrides that auto-switch.
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
@@ -71,6 +75,13 @@ func main() {
 	if err == nil {
 		return
 	}
+	// Bad CLI usage (currently: invalid -log-format) exits with status
+	// 2, matching the convention used by stdlib `flag` and most Unix
+	// utilities. The validator already wrote a single-line diagnostic
+	// to stderr, so we don't need to log again here.
+	if errors.Is(err, errInvalidLogFormat) {
+		os.Exit(2)
+	}
 	// The -probe path has already written a "probe failed: …" line to
 	// stderr; logging the error again via slog would just duplicate it.
 	// Every other failure mode goes through slog so it shows up in the
@@ -93,6 +104,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	probe := fs.Bool("probe", false,
 		"run a startup health check (verify tmux + version) and exit")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
+	logFormatRaw := fs.String("log-format", "text", "slog output format: text|json (debug auto-promotes to json when this flag is not set)")
 	// Default to the env var so systemd / container deployments can
 	// pin a known socket path without rewriting argv. The flag, when
 	// passed, wins.
@@ -132,9 +144,28 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// fs.Visit only reports flags that the user actually passed, so this
+	// distinguishes "operator picked text" from "took the default" — we
+	// need that to keep the legacy debug→json auto-switch working only
+	// when the operator has not opted in to an explicit format.
+	formatExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "log-format" {
+			formatExplicit = true
+		}
+	})
+	format, err := resolveLogFormat(*logFormatRaw, lvl, formatExplicit)
+	if err != nil {
+		// stderr lands cleanly on a dedicated diagnostic line; stdout
+		// stays untouched so an MCP client parsing JSON-RPC from it
+		// won't see a stray non-frame. main() maps errInvalidLogFormat
+		// to exit code 2.
+		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", err)
+		return err
+	}
 	// All structured logs go to stderr — stdout is reserved for the
 	// line-delimited JSON-RPC frames the MCP client consumes.
-	slog.SetDefault(slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: lvl})))
+	slog.SetDefault(slog.New(newLogHandler(stderr, lvl, format)))
 
 	ctl, err := tmuxctl.NewWithSocket(*socket)
 	if err != nil {
@@ -179,6 +210,58 @@ func parseLogLevel(s string) (slog.Level, error) {
 		return slog.LevelDebug, nil
 	}
 	return 0, fmt.Errorf("invalid -log-level %q (want error|warn|info|debug)", s)
+}
+
+// errInvalidLogFormat is the sentinel returned by [resolveLogFormat]
+// when the user passes a value other than "text" or "json" to
+// -log-format. main() recognises it via [errors.Is] and maps it to
+// exit code 2 — the conventional "CLI usage error" status used by the
+// stdlib `flag` package and most Unix tools.
+var errInvalidLogFormat = errors.New("invalid -log-format")
+
+// logFormat is the small string enum carried by the -log-format flag.
+// Keeping it a typed string (rather than a bool) lets future additions
+// — say, "logfmt" — plug in without rippling through every call site.
+type logFormat string
+
+const (
+	logFormatText logFormat = "text"
+	logFormatJSON logFormat = "json"
+)
+
+// resolveLogFormat decides which slog handler the server should install
+// based on the parsed -log-format flag value, the resolved log level,
+// and whether the operator passed -log-format explicitly.
+//
+// Rules:
+//   - explicit "text" / "json"  → that format wins, regardless of level.
+//   - implicit (default "text") → "json" iff lvl == debug, else "text".
+//     This preserves the legacy "debug logs are JSON" affordance for
+//     people who never touch the flag.
+//   - any other value → returns a wrapped errInvalidLogFormat so main()
+//     can report it cleanly and exit 2.
+func resolveLogFormat(raw string, lvl slog.Level, explicit bool) (logFormat, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "text":
+		if !explicit && lvl == slog.LevelDebug {
+			return logFormatJSON, nil
+		}
+		return logFormatText, nil
+	case "json":
+		return logFormatJSON, nil
+	}
+	return "", fmt.Errorf("%w %q (want text|json)", errInvalidLogFormat, raw)
+}
+
+// newLogHandler returns the slog handler matching the resolved format.
+// It always writes to the supplied writer (stderr in production) so
+// stdout stays reserved for JSON-RPC frames.
+func newLogHandler(w io.Writer, lvl slog.Level, format logFormat) slog.Handler {
+	opts := &slog.HandlerOptions{Level: lvl}
+	if format == logFormatJSON {
+		return slog.NewJSONHandler(w, opts)
+	}
+	return slog.NewTextHandler(w, opts)
 }
 
 // versionString returns a human-readable version string. Prefers the
