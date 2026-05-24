@@ -48,6 +48,16 @@ const (
 	// succeeded but the answer was too big" instead of conflating it
 	// with an unspecified server failure.
 	CodeOversizedResponse = -32010
+	// CodeReadOnly is returned when a tools/call names a tool that
+	// mutates tmux state and the server was started with the -read-only
+	// flag. The dispatcher rejects the call before any handler runs and
+	// replies with this code so an LLM agent constrained to inspection
+	// can branch on a stable signal instead of substring-matching the
+	// rejection message. Distinct from CodeMethodNotFound (the
+	// -allowlist guard's code) so operators can tell "the tool was
+	// filtered out by policy" from "the tool exists but the server
+	// refuses to mutate state right now".
+	CodeReadOnly = -32011
 )
 
 // Sentinel errors. Wrap them with fmt.Errorf("%w: ...", err) at the call
@@ -71,6 +81,13 @@ var (
 	// recognise the oversize case via [errors.Is] instead of substring-
 	// matching the message.
 	ErrOversizedResponse = errors.New("response body exceeds max-response-bytes")
+	// ErrReadOnly signals that a tools/call was rejected because the
+	// server is running with -read-only and the named tool mutates tmux
+	// state. The dispatcher synthesises it before any handler runs;
+	// handlers themselves never return it. Audit and metrics consumers
+	// can recognise the rejection via [errors.Is] instead of substring-
+	// matching the message.
+	ErrReadOnly = errors.New("server in read-only mode")
 )
 
 // CodeOf returns the JSON-RPC error code that best describes err. It
@@ -91,6 +108,8 @@ func CodeOf(err error) int {
 		return CodeTimeout
 	case errors.Is(err, ErrOversizedResponse):
 		return CodeOversizedResponse
+	case errors.Is(err, ErrReadOnly):
+		return CodeReadOnly
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return CodeContextCancelled
 	}

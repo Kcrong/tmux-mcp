@@ -211,6 +211,31 @@ Flags:
                           original single-tenant behaviour). Useful
                           when several agents share one tmux-mcp
                           server and need disjoint session namespaces.
+  -read-only              reject every tools/call whose tool would
+                          mutate tmux state. Only inspection tools
+                          (capture, wait_for_text, session_list,
+                          list_panes, list_windows, list_clients,
+                          display_message, session_describe,
+                          session_inspect, plus the spec-named aliases
+                          capture_pane / list_sessions / list_buffers /
+                          show_buffer / show_options / show_message)
+                          are dispatched; everything else (send_keys,
+                          session_create, session_kill, kill_all_sessions,
+                          pane_*, window_*, clear_history, send_signal,
+                          session_rename, …) is rejected with a typed
+                          JSON-RPC error (code -32011, message
+                          "tool 'X' is rejected: server in read-only
+                          mode"). tools/list still returns every
+                          registered tool so a constrained agent can
+                          enumerate the full surface; only tools/call
+                          is gated. The audit + metrics records still
+                          fire on rejected calls so operators see the
+                          blocked attempts in their dashboards. Useful
+                          as a safer default for novice agents or
+                          production diagnostics where the LLM should
+                          only DIAGNOSE a session and never modify it.
+                          Default: false (the dispatcher dispatches
+                          every registered tool, the original behaviour).
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -435,6 +460,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// isolated.
 	sessionPrefix := fs.String("session-prefix", "",
 		"when set, prepend this string to every session name created on tmux (regex [A-Za-z0-9_-]+, no trailing '-')")
+	// Default false keeps the dispatcher byte-identical to the
+	// pre-flag wire response: every registered tool dispatches normally
+	// and clients see exactly the surface they have today. When set,
+	// the dispatcher rejects any tools/call whose tool name is not in
+	// the inspection allowlist (see internal/server.IsReadOnlyTool)
+	// with a typed -32011 error, while leaving tools/list unchanged so
+	// a constrained agent can still enumerate the full surface and
+	// pick which inspection tools to invoke.
+	readOnly := fs.Bool("read-only", false,
+		"reject every tools/call that would mutate tmux state (only inspection tools allowed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -725,6 +760,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		// kills against. *Tools.SessionPrefix already takes care of the
 		// handler side; this option is the dispatcher-side counterpart.
 		server.WithSessionPrefix(*sessionPrefix),
+		// Arm the read-only gate when -read-only was passed. WithReadOnly(false)
+		// is a no-op so the option is safe to wire unconditionally.
+		server.WithReadOnly(*readOnly),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can

@@ -80,6 +80,16 @@ func TestCodeOf(t *testing.T) {
 			want: CodeOversizedResponse,
 		},
 		{
+			name: "ErrReadOnly direct",
+			err:  ErrReadOnly,
+			want: CodeReadOnly,
+		},
+		{
+			name: "ErrReadOnly wrapped",
+			err:  fmt.Errorf("tools/call %q: %w", "send_keys", ErrReadOnly),
+			want: CodeReadOnly,
+		},
+		{
 			name: "context.Canceled",
 			err:  context.Canceled,
 			want: CodeContextCancelled,
@@ -122,6 +132,7 @@ func TestCodes_Stable(t *testing.T) {
 		{"CodeContextCancelled", CodeContextCancelled, -32003},
 		{"CodeSessionExists", CodeSessionExists, -32004},
 		{"CodeOversizedResponse", CodeOversizedResponse, -32010},
+		{"CodeReadOnly", CodeReadOnly, -32011},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,12 +153,17 @@ func TestSentinels_Distinct(t *testing.T) {
 		errors.Is(ErrSessionNotFound, ErrTimeout) ||
 		errors.Is(ErrSessionNotFound, ErrSessionExists) ||
 		errors.Is(ErrSessionNotFound, ErrOversizedResponse) ||
+		errors.Is(ErrSessionNotFound, ErrReadOnly) ||
 		errors.Is(ErrSessionExists, ErrTmuxVersionUnsupported) ||
 		errors.Is(ErrSessionExists, ErrTimeout) ||
 		errors.Is(ErrSessionExists, ErrOversizedResponse) ||
+		errors.Is(ErrSessionExists, ErrReadOnly) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrTimeout) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrOversizedResponse) ||
-		errors.Is(ErrTimeout, ErrOversizedResponse) {
+		errors.Is(ErrTmuxVersionUnsupported, ErrReadOnly) ||
+		errors.Is(ErrTimeout, ErrOversizedResponse) ||
+		errors.Is(ErrTimeout, ErrReadOnly) ||
+		errors.Is(ErrOversizedResponse, ErrReadOnly) {
 		t.Fatal("sentinel errors must be distinct")
 	}
 }
