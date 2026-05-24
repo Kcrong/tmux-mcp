@@ -71,9 +71,9 @@ func NewWithSocket(socket string) (*Controller, error) {
 			)
 		}
 		parent := filepath.Dir(socket)
-		info, err := os.Stat(parent)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+		info, statErr := os.Stat(parent)
+		if statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
 				return nil, fmt.Errorf(
 					"socket parent directory %q does not exist — "+
 						"create it before starting tmux-mcp "+
@@ -81,7 +81,7 @@ func NewWithSocket(socket string) (*Controller, error) {
 					parent, parent,
 				)
 			}
-			return nil, fmt.Errorf("stat socket parent %q: %w", parent, err)
+			return nil, fmt.Errorf("stat socket parent %q: %w", parent, statErr)
 		}
 		if !info.IsDir() {
 			return nil, fmt.Errorf("socket parent %q is not a directory", parent)
