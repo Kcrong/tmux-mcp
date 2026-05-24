@@ -86,6 +86,7 @@ back to the exact `slog.Info` call that produced it.
 - [FAQ](#faq)
 - [Troubleshooting](#troubleshooting)
 - [Performance & tuning](#performance--tuning)
+- [Metrics (Prometheus)](#metrics-prometheus)
 - [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
 
@@ -535,6 +536,8 @@ embedded secrets stay out of the audit trail.
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
+| `window_select` | Make a window the active one of its session via `tmux select-window`. |
+| `window_rename` | Rename a window via `tmux rename-window` (same regex/length policy as window_create). |
 | `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 
 Per-tool reference (inputs, outputs, error codes, examples) lives in
@@ -867,6 +870,58 @@ conservative so that "do nothing" is the safe choice.
   [PR #51](https://github.com/Kcrong/tmux-mcp/pull/51) — once that
   lands, set it explicitly on shared deployments so a runaway client
   cannot exhaust goroutines or the tmux server.
+
+## Metrics (Prometheus)
+
+`tmux-mcp` ships an optional Prometheus exporter behind the
+`-metrics-addr` flag. The default is **disabled** — when the flag is
+empty no extra HTTP listener is opened and the dispatcher's metrics
+hooks are no-ops, so existing deployments see zero overhead. Pass an
+address to turn it on:
+
+```bash
+tmux-mcp -metrics-addr=127.0.0.1:9090
+```
+
+The flag value is passed to `net.Listen` verbatim, so the bind scope is
+explicit: `127.0.0.1:9090` exposes /metrics only to local scrapers,
+`:9090` binds to every interface. Pick whichever your deployment needs;
+the server does **not** silently expand to all interfaces.
+
+Three series are published, alongside the standard Go runtime / process
+collectors:
+
+| Metric                                  | Type      | Labels         | Meaning                                                              |
+|-----------------------------------------|-----------|----------------|----------------------------------------------------------------------|
+| `tmuxmcp_tools_call_total`              | counter   | `tool`, `result` (`ok`/`error`) | One increment per `tools/call` dispatch. Other JSON-RPC methods (`initialize`, `tools/list`, notifications) are intentionally not metered. |
+| `tmuxmcp_tools_call_duration_seconds`   | histogram | `tool`         | Wall-clock duration of each `tools/call`. Buckets cover 1 ms – 10 s. |
+| `tmuxmcp_sessions_active`               | gauge     | none           | Number of tmux sessions on this server's private socket. Refreshed by a 5 s background poller. |
+
+Curl example:
+
+```bash
+$ curl -s http://127.0.0.1:9090/metrics | grep -E '^tmuxmcp'
+tmuxmcp_sessions_active 2
+tmuxmcp_tools_call_duration_seconds_bucket{tool="capture",le="0.005"} 4
+…
+tmuxmcp_tools_call_total{result="ok",tool="capture"} 4
+tmuxmcp_tools_call_total{result="error",tool="capture"} 0
+```
+
+Operational notes:
+
+- The exporter binds **eagerly** at startup. A misconfigured address
+  (port already in use, malformed host:port) surfaces as a clean
+  startup failure instead of a half-running goroutine.
+- Metrics are best-effort: a transient `ListSessions` failure logs a
+  single `metrics: ListSessions failed` warning and the gauge keeps its
+  prior value. The exporter never crashes the server on its own.
+- The `tool` label is bounded by the static MCP tool surface — there is
+  no client-controlled cardinality vector. Add new tools sparingly to
+  keep the histogram series count predictable.
+- The `result` label is normalised to exactly `"ok"` or `"error"`; no
+  handler-specific strings ever leak into label values.
+
 
 ## Releases
 
