@@ -68,6 +68,55 @@ program actually exited:
 { "name": "wait_for_stable",  "arguments": { "session": "demo", "quiet_ms": 200, "timeout_ms": 3000 } }
 ```
 
+## `pane_split`
+
+Split a pane in two via `tmux split-window`. Useful when an agent
+wants a side car (build/test/log tail) running next to the main pane
+without spawning a new session or window. Pairs with `list_panes` (to
+discover the just-created pane) and `pane_select` / `send_keys` (to
+drive it).
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                              |
+| ------------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session`     | string  | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `target_pane` | string  | no       | tmux target form (`session`, `session:window`, or `session:window.pane`); defaults to the active pane of `session` |
+| `direction`   | string  | yes      | `"horizontal"` (-h, side-by-side) or `"vertical"` (-v, stacked)                    |
+| `command`     | string  | no       | optional initial command, max 4096 chars; defaults to the user's shell              |
+| `detach`      | boolean | no       | when `true`, focus stays on the original pane (-d); default `false`                |
+
+### Output
+
+JSON block: `{"id": "%5", "index": 1}`. `id` is the tmux `#{pane_id}`
+(stable for the pane's lifetime); `index` is the 0-based
+`#{pane_index}` within the window. Combine with the surrounding
+session/window pair to build a `session:window.pane` target for
+follow-up tools.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, missing/invalid `direction`, malformed `target_pane`, or `command` longer than 4096 chars. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the split (e.g. window already at maximum pane count, command not found in PATH). |
+
+### Example
+
+```jsonc
+{ "session": "demo", "direction": "vertical", "command": "tail -f app.log", "detach": true }
+```
+
+Pair the call with `list_panes` to confirm the new pane shape, then
+target it via `pane_select`:
+
+```jsonc
+{ "name": "pane_split",  "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
+{ "name": "list_panes",  "arguments": { "session": "demo" } }
+{ "name": "pane_select", "arguments": { "target": "demo:0.1" } }
+```
+
 ## `window_create`
 
 Add a new window to an existing session via `tmux new-window`.
