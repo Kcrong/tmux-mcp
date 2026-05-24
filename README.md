@@ -134,6 +134,11 @@ make build              # produces ./tmux-mcp
 ./tmux-mcp -version     # smoke test — prints version and exits
 ```
 
+For CI scripts, deployment dashboards, and supply-chain probes that
+want machine-readable metadata, `-version-json` emits a single JSON
+object (`version`, `go`, `commit`, `date`) on stdout and exits 0:
+`./tmux-mcp -version-json | jq`.
+
 Pass `-log-level=debug` for verbose JSON logs to stderr (stdout stays JSON-RPC).
 
 `make help` lists every available target.
