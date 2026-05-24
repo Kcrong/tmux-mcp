@@ -614,6 +614,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sendSignal(ctx, call.Arguments)
 	case "window_create":
 		return t.windowCreate(ctx, call.Arguments)
+	case "new_window":
+		return t.newWindow(ctx, call.Arguments)
 	case "window_kill":
 		return t.windowKill(ctx, call.Arguments)
 	case "window_select":
