@@ -140,6 +140,16 @@ var toolDefs = []map[string]any{
 			"required": []string{"session", "width", "height"},
 		},
 	},
+	{
+		"name": "kill_all_sessions",
+		"description": "Kill every session this server manages and forget all snapshot " +
+			"history. Useful for agent error-recovery loops that want a clean slate " +
+			"without restarting the server process. The tmux server itself stays running.",
+		"inputSchema": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
 }
 
 // Tools holds the dispatch state shared across calls.
@@ -215,6 +225,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.snapshotDiff(ctx, call.Arguments)
 	case "resize":
 		return t.resize(ctx, call.Arguments)
+	case "kill_all_sessions":
+		return t.handleKillAll(ctx, call.Arguments)
 	}
 	return nil, methodNotFound("tools/call:" + call.Name)
 }

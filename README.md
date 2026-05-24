@@ -381,6 +381,7 @@ ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 | `session_create` | Start a new detached `tmux` session running a command, with chosen size. |
 | `session_list` | List sessions managed by this server. |
 | `session_kill` | Kill a session by name. |
+| `kill_all_sessions` | Kill every session this server manages and clear all snapshot history. |
 | `send_keys` | Type into a session. Accepts literal text or named keys (`C-c`, `Up`, `Enter`, …). |
 | `capture` | Read the visible pane (or scrollback) as text, optionally with ANSI escapes. |
 | `wait_for_stable` | Block until the screen has not changed for `quiet_ms`, then return the snapshot. |
@@ -428,6 +429,18 @@ Returns `{"sessions": ["demo", …]}`.
 ```jsonc
 { "name": "demo" }   // len 1-64, [A-Za-z0-9_-]
 ```
+
+### `kill_all_sessions`
+
+```jsonc
+{}
+```
+
+Kills every session this server manages, forgets all snapshot history,
+and returns `{"killed": ["demo", …], "count": 2}`. The tmux server
+itself stays running so the next `session_create` does not pay the
+re-spawn cost. Best-effort: a single broken session does not strand
+the rest.
 
 ### `send_keys`
 
