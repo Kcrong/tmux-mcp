@@ -83,6 +83,17 @@ jobs:
           path: coverage.out
           retention-days: 14
 
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+          # Public repo: tokenless upload works for in-repo pushes; PRs
+          # from forks may be unauthenticated and silently skipped. Set
+          # the CODECOV_TOKEN repo secret to lift that.
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
