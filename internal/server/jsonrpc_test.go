@@ -59,6 +59,7 @@ func (b *threadSafeBuffer) Close() {
 }
 
 func TestServe_DispatchesAndReplies(t *testing.T) {
+	t.Parallel()
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
 	outMu := &sync.Mutex{}
@@ -117,6 +118,7 @@ func TestServe_DispatchesAndReplies(t *testing.T) {
 }
 
 func TestServe_RejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
 	mu := &sync.Mutex{}
@@ -339,6 +341,7 @@ func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
 // counter, closes stdin immediately after, and asserts Serve only
 // returns *after* the counter has been incremented.
 func TestServe_WaitsForInFlightHandlers(t *testing.T) {
+	t.Parallel()
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
 	outMu := &sync.Mutex{}
