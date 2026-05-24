@@ -544,6 +544,18 @@ GoReleaser inside the release workflow — the
 [release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
 in GitHub Actions is the authoritative provenance.
 
+### Reproducible builds
+
+Releases are built reproducibly: the GoReleaser config pins build
+timestamps to the commit's authored time (`mod_timestamp` /
+`builds_info.mtime`) and uses `-trimpath` plus `-buildvcs=false`, so
+running `goreleaser release --snapshot --clean` (or `make
+release-snapshot`) from the same commit produces byte-identical
+binaries and tarballs as the official release. You can rebuild from
+source and check the resulting archive's SHA-256 against
+`checksums.txt` to confirm nothing in the supply chain changed your
+binary.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
