@@ -15,19 +15,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: govulncheck-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: govulncheck-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   govulncheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: govulncheck
         run: |

@@ -8,9 +8,16 @@ permissions:
   contents: write
   pull-requests: write
 
+# Workflow only fires on `push` to main; never cancel in-flight runs so a
+# fast-following push cannot abort a release-please commit/PR sync.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: googleapis/release-please-action@v4
         with:
