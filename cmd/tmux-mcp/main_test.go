@@ -1018,3 +1018,105 @@ func TestTmuxBinFlag_WinsOverEnv(t *testing.T) {
 		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
 	}
 }
+
+// TestSessionPrefixFlag_RejectsInvalid pins the operator-facing contract
+// for -session-prefix: the validator must run before any tmux state is
+// created, and any value the [server.ValidateSessionPrefix] function
+// rejects (bad regex, trailing dash, no room for a session name) must
+// surface as a clean startup error wrapping [errInvalidSessionPrefix].
+// Stdout must stay clean on the failure path so a shell wrapper relying
+// on stdout being either empty or a clean line never sees diagnostic
+// noise. The table covers the documented rules so a future regression
+// in either the validator or its wiring trips a single test.
+func TestSessionPrefixFlag_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		flag string
+	}{
+		{"trailing-dash", "-session-prefix=agent-"},
+		{"whitespace", "-session-prefix=agent name_"},
+		{"shell-meta", "-session-prefix=agent$_"},
+		{"colon", "-session-prefix=agent:_"},
+		{"slash", "-session-prefix=agent/_"},
+		{"too-long", "-session-prefix=" + strings.Repeat("a", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			err := run([]string{tc.flag}, strings.NewReader(""), &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.flag)
+			}
+			if !errors.Is(err, errInvalidSessionPrefix) {
+				t.Fatalf("expected errInvalidSessionPrefix for %s, got %v", tc.flag, err)
+			}
+			if !strings.Contains(stderr.String(), "tmux-mcp: ") {
+				t.Fatalf("expected stderr to carry diagnostic for %s, got %q", tc.flag, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected stdout untouched for %s, got %q", tc.flag, stdout.String())
+			}
+		})
+	}
+}
+
+// TestSessionPrefixFlag_AcceptedAndDocumented confirms -session-prefix
+// is wired through to the parser (i.e. registered with FlagSet) and
+// that its help line ships in the -help usage block. Behavioural
+// coverage for the runtime path lives in
+// internal/server/tools_session_prefix_test.go; here we just guard the
+// CLI surface so a future rename trips a test.
+func TestSessionPrefixFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-session-prefix") {
+		t.Fatalf("expected -session-prefix in usage block, got %q", stderr.String())
+	}
+}
+
+// TestSessionPrefixFlag_EmptyAcceptedAtDryRun pins the back-compat
+// contract: the empty default must NOT trip the validator, and a
+// -dry-run with no -session-prefix must succeed end-to-end so existing
+// deployments see no behaviour change.
+func TestSessionPrefixFlag_EmptyAcceptedAtDryRun(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestSessionPrefixFlag_ValidAcceptedAtDryRun confirms a valid
+// -session-prefix value walks the entire bootstrap successfully, so
+// the validator does not over-reject conventional separators
+// ("agent_alice_", "agent_alice"). The dry-run path covers every
+// startup hook the prefix depends on (tmux init, audit open, tool
+// surface build) without committing to the JSON-RPC loop.
+func TestSessionPrefixFlag_ValidAcceptedAtDryRun(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	for _, p := range []string{"agent_alice_", "agent_alice", "Agent42_", "a"} {
+		t.Run(p, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"-dry-run", "-session-prefix=" + p}, strings.NewReader(""), &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("run(-dry-run -session-prefix=%q): %v (stderr=%q)", p, err, stderr.String())
+			}
+			if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+				t.Fatalf("expected dry-run ok line for prefix %q, got %q", p, stdout.String())
+			}
+		})
+	}
+}

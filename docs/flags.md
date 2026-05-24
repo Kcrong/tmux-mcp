@@ -26,6 +26,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-shutdown-timeout`        | `5s`                            | —                   | On `SIGTERM`/`SIGINT`, wait up to this duration for in-flight `tools/call` handlers to finish writing their JSON-RPC responses before exiting. `0` disables the drain (immediate exit). On timeout the binary exits non-zero so supervisors can flag a forced shutdown. |
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
+| `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
 
 ## `-version-json` output
 
@@ -273,6 +274,62 @@ a Claude Desktop config to a new socket path / audit log location.
     pass an explicit allowlist of the tools you do want — there is
     no `-denylist` flag.
 
+## `-session-prefix`
+
+- Empty default keeps the prefix feature opt-in: the original
+  single-tenant behaviour is preserved, and existing deployments see
+  no behaviour change.
+- A non-empty value namespaces every session this server creates so
+  multiple tmux-mcp instances can safely share one tmux server (e.g. a
+  shared dev container with one agent per developer). `session_create`
+  with `name=demo` and `-session-prefix=agent_alice_` lands on tmux as
+  `agent_alice_demo`. The reverse direction is transparent: `capture`,
+  `send_keys`, `session_kill`, `session_describe`, `session_inspect`,
+  `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
+  `send_signal`, `pane_*`, `window_*`, and `clear_history` all accept
+  the bare logical name and forward to the prefixed identity.
+- `session_list` returns only sessions inside this prefix (with the
+  prefix stripped), and `kill_all_sessions` kills only those — a
+  co-tenant agent's sessions (different prefix or none) are left
+  running.
+- **Validation rules** (enforced at startup; failure exits 2):
+  - Must match the regex `[A-Za-z0-9_-]+` — no whitespace, colons,
+    dots, slashes, or shell metacharacters that would let a hostile
+    name break out of the prefix into a sibling session.
+  - May **not** end with `-` (regex-legal but creates surprising
+    names like `agent--build` when the user-supplied name itself
+    starts with a dash); the idiomatic separator is `_`.
+  - Must leave room for at least one byte of session name within the
+    64-byte tmux session-name budget — i.e. the prefix length must be
+    ≤ 63.
+  - At runtime, `session_create` rejects a `prefix + name`
+    combination that would overflow 64 bytes with `-32602`
+    (invalid params) so the JSON-RPC client gets a clean error rather
+    than a tmux session that no other tool can reference.
+- The pane-target shapes (`session`, `session:window`,
+  `session:window.pane`) are rewritten so only the session half picks
+  up the prefix; tmux pane-id strings (`%5`) carry no session
+  reference and pass through unchanged.
+- The `window_move` `src`/`dst` arguments (always
+  `<session>:<window>` or `<session>:`) get the prefix on the session
+  half too.
+- The `[IdleReaper]` activity table is keyed on the tmux-real
+  (prefixed) name, so a session reaped after the configured
+  `-session-idle-timeout` reaches the same session the controller
+  drives; a deployment with `-session-prefix=` and
+  `-session-idle-timeout=…` works correctly out of the box.
+
+Examples:
+
+```sh
+# alice and bob share one tmux server, each with their own namespace
+tmux-mcp -session-prefix=agent_alice_   # agent A
+tmux-mcp -session-prefix=agent_bob_     # agent B (separate process)
+
+# combine with -allowlist for a least-privilege namespaced deployment
+tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
+```
+
 ## Environment variables
 
 | Variable             | Used by      | Notes                                                         |
@@ -321,4 +378,7 @@ tmux-mcp -shutdown-timeout=10s
 
 # least-privilege: only expose read-only inspection tools
 tmux-mcp -allowlist=capture,wait_for_text,snapshot_diff,session_list
+
+# multi-agent isolation: each agent gets its own session namespace
+tmux-mcp -session-prefix=agent_alice_
 ```
