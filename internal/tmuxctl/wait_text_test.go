@@ -21,7 +21,7 @@ func TestWaitForText_InvalidRegexReturnsImmediately(t *testing.T) {
 	// were ever reached. The regex check must short-circuit first.
 	c := &Controller{bin: "/nonexistent/tmux/binary", socket: "/tmp/does-not-matter"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	start := time.Now()
 	_, err := c.WaitForText(ctx, "ignored", `[unterminated`, 50*time.Millisecond, 5*time.Second)
@@ -50,7 +50,7 @@ func TestWaitForText_EmptyPatternReturnsImmediately(t *testing.T) {
 	t.Parallel()
 	c := &Controller{bin: "/nonexistent/tmux/binary", socket: "/tmp/does-not-matter"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	_, err := c.WaitForText(ctx, "ignored", "", 50*time.Millisecond, 5*time.Second)
 	if err == nil {
