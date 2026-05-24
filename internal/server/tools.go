@@ -192,6 +192,15 @@ type Tools struct {
 	// has no match, so adding a new built-in does not require touching
 	// the dynamic path.
 	dyn map[string]ToolHandler
+	// allowlist gates which tool names are exposed via tools/list and
+	// dispatchable via tools/call. nil = no filter (every registered
+	// tool is exposed, the back-compat default). A non-nil empty map
+	// means "no tools exposed" — operators who pass -allowlist with an
+	// empty value get a degenerate but valid configuration. Non-nil and
+	// populated means "expose only these names". Names not in the map
+	// are filtered out of the tools/list response and rejected at
+	// tools/call dispatch with a -32601 methodNotFound error.
+	allowlist map[string]bool
 	// notify is the writeMu-locked emitter Serve hands to *Tools via
 	// SetNotifier. nil before Serve binds it (e.g. when RegisterTool
 	// is called from a unit test that never starts the dispatcher),
@@ -228,12 +237,128 @@ func (t *Tools) SetNotifier(notify func()) {
 	t.notify = notify
 }
 
+// SetAllowlist restricts which tools the dispatcher exposes via
+// tools/list and accepts via tools/call. names is the operator-supplied
+// list (typically the parsed value of -allowlist NAMES); each name is
+// validated against the live tool registry — i.e. the same set
+// snapshotDefs would have returned without the filter — so a typo
+// surfaces as a clean startup error instead of a silently-empty surface.
+//
+// Behaviour:
+//   - len(names) == 0: clears any previous allowlist. The dispatcher
+//     reverts to the unfiltered default (every registered tool is
+//     exposed and dispatchable). This is what main.go does when the
+//     operator leaves -allowlist at its empty-string default.
+//   - non-empty names: every entry must match a tool name currently in
+//     the registry. Unknown names abort with a single error listing
+//     them (in input order, deduplicated) — the validator runs in one
+//     pass so all typos are reported together rather than one-by-one.
+//   - whitespace around individual names is trimmed; empty entries
+//     (e.g. from a stray comma) are skipped silently. This keeps the
+//     CSV parser in main.go simple — it just splits on "," — without
+//     pushing a "remove blanks" detail into every caller.
+//
+// On a validation error the existing allowlist (if any) is left
+// untouched so a hot-swap path that passes a bad list does not flip
+// the surface to an inconsistent state.
+func (t *Tools) SetAllowlist(names []string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(names) == 0 {
+		t.allowlist = nil
+		return nil
+	}
+
+	// Build the set of currently-registered names so the validator
+	// reflects the live registry, not a hardcoded list. Seed t.defs
+	// the same way snapshotDefs would so the comparison covers every
+	// init()-registered tool regardless of whether tools/list has
+	// been called yet.
+	if t.defs == nil {
+		t.defs = make([]map[string]any, len(toolDefs))
+		copy(t.defs, toolDefs)
+	}
+	registered := make(map[string]bool, len(t.defs))
+	for _, def := range t.defs {
+		if name, _ := def["name"].(string); name != "" {
+			registered[name] = true
+		}
+	}
+	if t.dyn != nil {
+		for name := range t.dyn {
+			registered[name] = true
+		}
+	}
+
+	// allow accumulates the validated set in two passes so we can
+	// report every typo at once rather than failing on the first one.
+	// seenInput dedups entries the operator listed twice (e.g.
+	// "capture,capture") without inflating the unknown-list error.
+	allow := make(map[string]bool, len(names))
+	seenInput := make(map[string]bool, len(names))
+	var unknown []string
+	for _, raw := range names {
+		n := strings.TrimSpace(raw)
+		if n == "" {
+			continue
+		}
+		if seenInput[n] {
+			continue
+		}
+		seenInput[n] = true
+		if !registered[n] {
+			unknown = append(unknown, n)
+			continue
+		}
+		allow[n] = true
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("unknown tools in -allowlist: %s", strings.Join(unknown, ", "))
+	}
+	t.allowlist = allow
+	return nil
+}
+
+// allowedLocked reports whether name is dispatchable under the current
+// allowlist. The caller must hold t.mu. A nil allowlist returns true
+// for every name (the back-compat "no filter" mode); otherwise the
+// answer is the map's truth value for name. Empty-string is rejected
+// regardless so a malformed tools/call (no name field) cannot bypass
+// the filter — the static switch in callTool already rejects an empty
+// name via its fallthrough branch, but the centralised check here keeps
+// the contract uniform.
+func (t *Tools) allowedLocked(name string) bool {
+	if t.allowlist == nil {
+		return true
+	}
+	if name == "" {
+		return false
+	}
+	return t.allowlist[name]
+}
+
+// allowed is the lock-acquiring counterpart of allowedLocked, used by
+// the dispatcher (callTool) which does not otherwise hold t.mu.
+func (t *Tools) allowed(name string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.allowedLocked(name)
+}
+
 // snapshotDefs returns a copy of the current tool-definition slice for
 // tools/list. The copy is needed so the response we hand to the
 // dispatcher cannot be mutated by a concurrent RegisterTool /
 // UnregisterTool while the JSON encoder is walking it. Map values are
 // not deep-copied because the schemas are treated as immutable once
 // registered.
+//
+// When SetAllowlist has installed a filter, definitions whose name is
+// not on the allowlist are omitted from the returned slice. The
+// original ordering of the surviving entries is preserved so a tools/list
+// response with -allowlist=capture,wait_for_text returns those tools in
+// the order they were registered, not the order they appeared on the
+// CLI.
 func (t *Tools) snapshotDefs() []map[string]any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -246,8 +371,18 @@ func (t *Tools) snapshotDefs() []map[string]any {
 		t.defs = make([]map[string]any, len(toolDefs))
 		copy(t.defs, toolDefs)
 	}
-	out := make([]map[string]any, len(t.defs))
-	copy(out, t.defs)
+	if t.allowlist == nil {
+		out := make([]map[string]any, len(t.defs))
+		copy(out, t.defs)
+		return out
+	}
+	out := make([]map[string]any, 0, len(t.defs))
+	for _, def := range t.defs {
+		name, _ := def["name"].(string)
+		if t.allowedLocked(name) {
+			out = append(out, def)
+		}
+	}
 	return out
 }
 
@@ -420,6 +555,18 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if err := json.Unmarshal(raw, &call); err != nil {
 		return nil, invalidParams("tools/call params: %v", err)
 	}
+	// Enforce the allowlist before dispatch so a filtered tool gets a
+	// typed -32601 reply instead of executing. The check sits ahead of
+	// the static switch (and the dyn fallback below) so adding a new
+	// built-in does not require touching this guard, and so a client
+	// that calls tools/call without first enumerating tools/list still
+	// sees a uniform "tool not exposed" error.
+	if !t.allowed(call.Name) {
+		return nil, &rpcError{
+			Code:    codeMethodNotFound,
+			Message: fmt.Sprintf("tool %q is not in -allowlist", call.Name),
+		}
+	}
 	switch call.Name {
 	case "session_create":
 		return t.sessionCreate(ctx, call.Arguments)
@@ -451,6 +598,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneKill(ctx, call.Arguments)
 	case "pane_swap":
 		return t.paneSwap(ctx, call.Arguments)
+	case "pane_resize":
+		return t.paneResize(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
 	case "session_rename":

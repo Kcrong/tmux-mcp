@@ -141,6 +141,21 @@ Flags:
                           died. Default: "" (no pid file written).
                           Useful for systemd PIDFile=, supervisord,
                           runit, or k8s preStop hooks.
+  -allowlist NAMES        comma-separated list of tool names; when set,
+                          tools/list omits every other tool and
+                          tools/call rejects them with -32601
+                          (methodNotFound). Unknown names abort
+                          startup with "unknown tools in -allowlist:
+                          …" so a typo is caught before the JSON-RPC
+                          loop opens. Default: "" (no filter — every
+                          registered tool is exposed, the original
+                          behaviour). Useful for least-privilege
+                          deployments: pass e.g.
+                          -allowlist=capture,wait_for_text for a
+                          read-only inspector, or omit destructive
+                          tools (kill_all_sessions, pane_kill,
+                          session_kill, send_signal) for untrusted
+                          contexts.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -291,6 +306,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// supervisor's view of the world.
 	pidFile := fs.String("pid-file", "",
 		"path to write the server PID to; removed on graceful shutdown (default: disabled)")
+	// Empty default keeps every tool exposed (the original behaviour).
+	// A non-empty value is a comma-separated set of tool names; only
+	// those names appear in tools/list and are dispatchable through
+	// tools/call. Unknown names abort startup so a typo never silently
+	// disables a tool. Validation happens against the live tool
+	// registry (after the package init() hooks have run) so a future
+	// tool addition is automatically pickable up by name without
+	// touching this flag.
+	allowlist := fs.String("allowlist", "",
+		"comma-separated list of tool names to expose; empty = no filter (default)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -500,6 +525,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
+	// Install the operator-supplied allowlist (if any) before any
+	// tools/list / tools/call frame can reach the dispatcher. Validation
+	// runs against the live registry now that every init()-time
+	// registration has fired, so a typo in -allowlist surfaces as a
+	// clean startup error ("unknown tools in -allowlist: …") instead of
+	// a silently-empty surface. The empty-string default skips the
+	// SetAllowlist call entirely so unrelated deployments see no
+	// behaviour change.
+	if *allowlist != "" {
+		if err := tools.SetAllowlist(strings.Split(*allowlist, ",")); err != nil {
+			return err
+		}
+	}
 	// -dry-run wants every bootstrap side-effect (tmux init, audit
 	// open, tool registry build) to happen so we surface real config
 	// problems, but stop short of opening stdin. Reporting tmux's

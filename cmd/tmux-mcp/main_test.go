@@ -846,3 +846,45 @@ func TestDryRunFlag_AcceptedAndDocumented(t *testing.T) {
 		t.Fatalf("expected -dry-run in usage block, got %q", stderr.String())
 	}
 }
+
+// TestAllowlistFlag_UnknownAborts pins the operator-facing contract:
+// when -allowlist contains a name no registered tool matches, run()
+// must surface the "unknown tools in -allowlist" error before any
+// stdin is consumed. This is the typo guard — silently disabling a
+// tool because of a mistyped name would betray operator intent.
+func TestAllowlistFlag_UnknownAborts(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-allowlist=does_not_exist"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for unknown tool in -allowlist, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown tools") {
+		t.Fatalf("expected error to mention unknown tools, got %v", err)
+	}
+	// stdout must stay clean — the JSON-RPC loop never opened, and a
+	// shell wrapper relying on stdout being either empty or a clean
+	// success line should not see diagnostic noise.
+	if stdout.Len() != 0 {
+		t.Fatalf("expected stdout untouched on validation failure, got %q", stdout.String())
+	}
+}
+
+// TestAllowlistFlag_AcceptedAndDocumented confirms -allowlist is wired
+// through to the parser (i.e. registered with FlagSet) and that its
+// help line ships in the -help usage block. Behavioural coverage for
+// the underlying filter lives in internal/server/tools_allowlist_test.go;
+// here we just guard the CLI surface so a future rename trips a test.
+func TestAllowlistFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-allowlist") {
+		t.Fatalf("expected -allowlist in usage block, got %q", stderr.String())
+	}
+}

@@ -875,6 +875,59 @@ layout actually flipped:
 
 ---
 
+## `pane_resize`
+
+Resize a pane via `tmux resize-pane -t <target> -{U|D|L|R} <amount>`.
+`direction` selects the side the boundary moves toward — `"up"` /
+`"down"` shift the horizontal divider (taller / shorter), `"left"` /
+`"right"` shift the vertical divider (wider / narrower). Useful for
+tweaking a multi-pane TUI layout (e.g. giving the build log more rows
+without dropping the editor) without recreating panes.
+
+### Input
+
+| Field       | Type    | Required | Notes                                                                              |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `target`    | string  | yes      | tmux target form (`session`, `session:window`, or `session:window.pane`)            |
+| `direction` | string  | yes      | one of `"up"` (-U), `"down"` (-D), `"left"` (-L), `"right"` (-R)                   |
+| `amount`    | integer | yes      | number of cells to resize; 1-200                                                    |
+
+`target` must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept. tmux silently clamps a request that would shrink a pane below
+its minimum size, so callers get the largest move tmux will allow
+without erroring; `amount > 200` is rejected up front because it is
+almost always a typo (pixels mistaken for cells).
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, malformed `target`, `direction` outside the whitelist, or `amount` outside [1..200]. |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`).                          |
+| `-32603` | tmux refused the resize for an unexpected reason.                                              |
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1", "direction": "up", "amount": 5 }
+```
+
+Pair with `list_panes` (before and after) when you need to confirm the
+new size:
+
+```jsonc
+{ "name": "list_panes",  "arguments": { "session": "demo" } }
+{ "name": "pane_resize", "arguments": { "target": "demo:0.1", "direction": "up", "amount": 5 } }
+{ "name": "list_panes",  "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active

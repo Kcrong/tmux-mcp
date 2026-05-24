@@ -16,6 +16,15 @@ import (
 // here keeps the JSON-RPC frame size predictable.
 const maxPaneCommandLen = 4096
 
+// maxPaneResizeAmount is the upper bound (cells) the pane_resize tool
+// accepts in a single call. tmux happily clamps oversized requests
+// against the surrounding window, but a realistic resize rarely moves
+// the boundary by more than a handful of cells — anything past 200 is
+// almost certainly a typo (e.g. pixels mistaken for cells) and capping
+// here keeps the boundary predictable for callers that script chains
+// of resizes.
+const maxPaneResizeAmount = 200
+
 // paneTargetRE accepts the tmux pane-target forms the boundary
 // understands: bare "session", "session:window",
 // "session:window.pane", or the tmux internal pane id "%N" (e.g.
@@ -143,6 +152,37 @@ var panesToolDefs = []map[string]any{
 				},
 			},
 			"required":             []string{"src", "dst"},
+			"additionalProperties": false,
+		},
+	},
+	{
+		"name": "pane_resize",
+		"description": "Resize a pane via `tmux resize-pane -t <target> -{U|D|L|R} <amount>`. " +
+			"`direction` selects the side the boundary moves toward — \"up\"/\"down\" shift " +
+			"the horizontal divider (taller/shorter), \"left\"/\"right\" shift the vertical " +
+			"divider (wider/narrower). `amount` is the number of cells to move and must be " +
+			"between 1 and 200; tmux clamps requests that would shrink a pane below its " +
+			"minimum. Useful for tweaking a multi-pane TUI layout without recreating panes.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Pane target (\"session\", \"session:window\", or \"session:window.pane\").",
+				},
+				"direction": map[string]any{
+					"type":        "string",
+					"enum":        []string{"up", "down", "left", "right"},
+					"description": "Side the boundary moves toward: up (-U), down (-D), left (-L), right (-R).",
+				},
+				"amount": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     maxPaneResizeAmount,
+					"description": "Number of cells to resize (1-200).",
+				},
+			},
+			"required":             []string{"target", "direction", "amount"},
 			"additionalProperties": false,
 		},
 	},
@@ -352,6 +392,46 @@ func (t *Tools) paneSwap(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	}
 	if err := t.Ctl.SwapPane(ctx, args.Src, args.Dst); err != nil {
 		return nil, internalError(fmt.Errorf("pane_swap: %w", err))
+	}
+	return textBlock("ok"), nil
+}
+
+// paneResize drives tmuxctl.Controller.ResizePane. The handler does the
+// usual up-front validation: target must be non-empty and pass the
+// pane-target regex, direction must be one of the four whitelisted
+// values, and amount must lie within [1..maxPaneResizeAmount] so a
+// caller that mistook pixels for cells (or smuggled a negative through
+// JSON) trips CodeInvalidParams before any tmux command runs. A
+// missing pane surfaces as CodeSessionNotFound (-32000) via
+// internalError → errs.CodeOf, mirroring pane_swap / pane_kill.
+func (t *Tools) paneResize(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Target    string `json:"target"`
+		Direction string `json:"direction"`
+		Amount    int    `json:"amount"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("pane_resize: %v", err)
+	}
+	if args.Target == "" {
+		return nil, invalidParams("pane_resize: target required")
+	}
+	if rerr := validatePaneTarget(args.Target); rerr != nil {
+		return nil, invalidParams("pane_resize: target: %s", rerr.Message)
+	}
+	switch args.Direction {
+	case "up", "down", "left", "right":
+		// ok
+	case "":
+		return nil, invalidParams("pane_resize: direction required (one of \"up\", \"down\", \"left\", \"right\")")
+	default:
+		return nil, invalidParams("pane_resize: direction %q must be one of \"up\", \"down\", \"left\", \"right\"", args.Direction)
+	}
+	if args.Amount < 1 || args.Amount > maxPaneResizeAmount {
+		return nil, invalidParams("pane_resize: amount %d out of range [1..%d]", args.Amount, maxPaneResizeAmount)
+	}
+	if err := t.Ctl.ResizePane(ctx, args.Target, args.Direction, args.Amount); err != nil {
+		return nil, internalError(fmt.Errorf("pane_resize: %w", err))
 	}
 	return textBlock("ok"), nil
 }

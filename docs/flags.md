@@ -23,6 +23,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-snapshot-ttl`            | `1h`                            | —                   | Maximum idle time a session's snapshot history may sit in memory before it is pruned. `0` disables cleanup (history released only when the session is killed). Accepts any Go duration: `30s`, `5m`, `2h`. |
 | `-shutdown-timeout`        | `5s`                            | —                   | On `SIGTERM`/`SIGINT`, wait up to this duration for in-flight `tools/call` handlers to finish writing their JSON-RPC responses before exiting. `0` disables the drain (immediate exit). On timeout the binary exits non-zero so supervisors can flag a forced shutdown. |
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
+| `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
 
 ## `-version-json` output
 
@@ -67,7 +68,9 @@ Steps the dry run executes (in order):
    `-socket` parent directory is wrong.
 4. Open the audit sink (`-audit-log`) — fails if the path is not
    writable at mode `0600`.
-5. Build the in-memory tool surface (`server.NewTools` + options).
+5. Build the in-memory tool surface (`server.NewTools` + options) and
+   apply `-allowlist` if set — fails if any name in the list is not a
+   registered tool.
 6. Print `dry-run ok\ttmux=<tmux-ver>\ttmux-mcp=<binary-ver>` to stdout
    and exit 0.
 
@@ -189,6 +192,33 @@ a Claude Desktop config to a new socket path / audit log location.
 - Strictly negative durations are rejected at startup with exit code
   2; `0` is the documented "disabled" value.
 
+## `-allowlist`
+
+- Empty default keeps every registered tool exposed (the original
+  behaviour). Unrelated deployments see no behaviour change.
+- A non-empty value is a comma-separated list of tool names; only
+  those tools appear in `tools/list` and are accepted by
+  `tools/call`. Calls for filtered tools return JSON-RPC error
+  `-32601` (methodNotFound) with message
+  `tool "<name>" is not in -allowlist`. Whitespace around individual
+  names is trimmed, blank entries (e.g. from a trailing comma) are
+  skipped, and duplicates collapse to one entry.
+- Unknown names are validated against the **live** tool registry at
+  startup, so future tools added to the binary are pickable up by
+  name without changing this validator. A typo aborts the binary
+  with `unknown tools in -allowlist: <names>` before stdin is
+  consumed, so a misconfigured unit file cannot silently disable
+  tools the operator expected to expose.
+- Enforcement runs ahead of dispatch — a client that calls
+  `tools/call` without first enumerating `tools/list` cannot bypass
+  the filter.
+- Examples:
+  - Read-only inspector: `-allowlist=capture,wait_for_text,wait_for_stable,snapshot_diff,session_list,session_describe,session_inspect,list_panes,list_windows`
+  - Block destructive tools (everything except
+    `kill_all_sessions`, `pane_kill`, `session_kill`, `send_signal`):
+    pass an explicit allowlist of the tools you do want — there is
+    no `-denylist` flag.
+
 ## Environment variables
 
 | Variable          | Used by    | Notes                                                         |
@@ -228,4 +258,7 @@ tmux-mcp -max-concurrent-calls=32 -session-idle-timeout=30m
 
 # graceful shutdown for systemd
 tmux-mcp -shutdown-timeout=10s
+
+# least-privilege: only expose read-only inspection tools
+tmux-mcp -allowlist=capture,wait_for_text,snapshot_diff,session_list
 ```
