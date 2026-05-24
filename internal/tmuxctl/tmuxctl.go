@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +22,29 @@ import (
 type Controller struct {
 	socket string
 	bin    string
+	// ownsDir is true when the controller created its own scratch
+	// directory under MkdirTemp and is therefore responsible for
+	// removing it on Shutdown. When the caller supplied an explicit
+	// socket path we leave the surrounding directory alone.
+	ownsDir bool
 }
 
-// New creates a Controller bound to a freshly named socket. The tmux
-// server itself is started lazily by the first command.
+// New creates a Controller with a private tmux socket under a fresh
+// MkdirTemp directory. The tmux server itself is started lazily by the
+// first command.
 func New() (*Controller, error) {
+	return NewWithSocket("")
+}
+
+// NewWithSocket creates a Controller. When socket is empty the
+// behaviour matches [New] (a private temp directory is created and the
+// socket lives inside it). When socket is non-empty it is used verbatim
+// as the absolute path passed to `tmux -S`; the caller is responsible
+// for ensuring the parent directory exists and is writable. The path
+// must be absolute and its parent directory must already exist — this
+// keeps systemd / container deployments explicit and refuses to
+// silently create directories on behalf of the operator.
+func NewWithSocket(socket string) (*Controller, error) {
 	bin, err := exec.LookPath("tmux")
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -41,20 +60,59 @@ func New() (*Controller, error) {
 	if err := checkTmuxVersion(ctx, bin); err != nil {
 		return nil, err
 	}
+	if socket != "" {
+		if !filepath.IsAbs(socket) {
+			return nil, fmt.Errorf(
+				"socket path %q must be absolute "+
+					"(e.g. /run/tmux-mcp/sock)",
+				socket,
+			)
+		}
+		parent := filepath.Dir(socket)
+		info, err := os.Stat(parent)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf(
+					"socket parent directory %q does not exist — "+
+						"create it before starting tmux-mcp "+
+						"(e.g. `mkdir -p %s`)",
+					parent, parent,
+				)
+			}
+			return nil, fmt.Errorf("stat socket parent %q: %w", parent, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("socket parent %q is not a directory", parent)
+		}
+		return &Controller{bin: bin, socket: socket, ownsDir: false}, nil
+	}
 	dir, err := os.MkdirTemp("", "tmux-mcp-*")
 	if err != nil {
 		return nil, err
 	}
 	return &Controller{
-		bin:    bin,
-		socket: filepath.Join(dir, "sock"),
+		bin:     bin,
+		socket:  filepath.Join(dir, "sock"),
+		ownsDir: true,
 	}, nil
 }
 
-// Shutdown kills the entire private tmux server.
+// Socket returns the absolute path tmux is talking to via `-S`. Useful
+// for diagnostics and tests that want to assert the controller honoured
+// an explicit socket path.
+func (c *Controller) Socket() string { return c.socket }
+
+// Shutdown kills the entire private tmux server. When the controller
+// owns its scratch directory (the [New] case) it is also removed.
 func (c *Controller) Shutdown(ctx context.Context) {
 	_, _ = c.run(ctx, "kill-server")
-	_ = os.RemoveAll(filepath.Dir(c.socket))
+	if c.ownsDir {
+		_ = os.RemoveAll(filepath.Dir(c.socket))
+		return
+	}
+	// Caller-supplied paths: only clean up the socket file we created.
+	// Leave the parent directory (which they manage) alone.
+	_ = os.Remove(c.socket)
 }
 
 func (c *Controller) run(ctx context.Context, args ...string) (string, error) {

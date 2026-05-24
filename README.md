@@ -256,6 +256,47 @@ printf '%s\n' \
 Each line is one JSON-RPC frame. The server responds line-by-line with
 the same framing.
 
+### Process management (systemd, containers, supervisors)
+
+By default `tmux-mcp` puts its private socket inside a freshly created
+directory under `$TMPDIR`. That is fine for desktop MCP clients that
+spawn the binary on demand, but it makes the socket path unpredictable —
+which breaks systemd unit health checks, log forwarders, and any
+supervisor that wants to peek at the underlying tmux server.
+
+Pin the socket location with `-socket=/path` (or `TMUX_MCP_SOCKET=/path`)
+so it lives at a known, well-known address:
+
+```sh
+# flag form — wins over the env var
+tmux-mcp -socket=/run/tmux-mcp/sock
+
+# env form — handy in unit files / Dockerfiles
+TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
+```
+
+Rules of the road:
+
+- The path must be **absolute**. Relative paths are rejected up front
+  with a clear error.
+- The **parent directory must already exist**. `tmux-mcp` will not
+  create `/run/tmux-mcp` for you — that is the operator's job (e.g. a
+  systemd `RuntimeDirectory=` or a `RUN mkdir` step in a Dockerfile).
+  Refusing to auto-create avoids accidentally writing to the wrong
+  place when a typo sneaks in.
+- On shutdown the socket file is removed but the parent directory is
+  left intact, so unit restarts stay idempotent.
+- If neither the flag nor the env var is set the old behaviour applies,
+  so existing setups keep working unchanged.
+
+Minimal systemd snippet:
+
+```ini
+[Service]
+RuntimeDirectory=tmux-mcp
+ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
+```
+
 ## Tool surface
 
 | Tool | Purpose |

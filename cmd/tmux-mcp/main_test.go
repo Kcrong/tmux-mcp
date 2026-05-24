@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,42 @@ func TestInvalidLogLevelRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid -log-level") {
 		t.Fatalf("expected invalid -log-level error, got %v", err)
+	}
+}
+
+// TestRelativeSocketRejected makes sure the surface validation in
+// tmuxctl.NewWithSocket bubbles up through main.run, so users see the
+// error message instead of a confused "no server running" later.
+func TestRelativeSocketRejected(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-socket=relative/sock"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative socket path")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestSocketEnvFallback covers the env-var path: when -socket is not
+// passed but TMUX_MCP_SOCKET is set to a bogus relative value, run()
+// must still surface the validation error rather than silently fall
+// through to MkdirTemp.
+func TestSocketEnvFallback(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	t.Setenv("TMUX_MCP_SOCKET", "relative/sock-from-env")
+	var stdout, stderr bytes.Buffer
+	err := run(nil, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative socket path from env")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
