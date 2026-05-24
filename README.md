@@ -155,6 +155,77 @@ Restart your client after editing the config. On launch the server's
 tools usually appear under a namespaced prefix (e.g. `tmux__send_keys`)
 so they don't collide with tools from other servers.
 
+### Client examples
+
+Concrete, copy-paste configs for the clients people ask about most.
+Always use an **absolute** path to the binary — `which tmux-mcp` after
+install gives you the right one.
+
+#### Claude Desktop
+
+Edit `claude_desktop_config.json`:
+
+| OS      | Path                                                       |
+| ------- | ---------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux   | `~/.config/Claude/claude_desktop_config.json`              |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json`              |
+
+```json
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "/usr/local/bin/tmux-mcp",
+      "args": ["-log-level=info"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The tools will show up as `tmux__session_create`,
+`tmux__send_keys`, etc.
+
+#### Claude Code (CLI / IDE extensions)
+
+`~/.claude/mcp.json` (user-wide) or `<repo>/.claude/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "/usr/local/bin/tmux-mcp"
+    }
+  }
+}
+```
+
+Or use the helper:
+
+```sh
+claude mcp add tmux /usr/local/bin/tmux-mcp
+```
+
+#### VS Code (MCP extension)
+
+In `settings.json` (User or Workspace):
+
+```jsonc
+"mcp.servers": {
+  "tmux": {
+    "command": "/usr/local/bin/tmux-mcp"
+  }
+}
+```
+
+Reload the window after saving.
+
+#### Cursor / Windsurf / other agent frameworks
+
+Most follow the same `{ "mcpServers": { "<name>": { "command": "..." } } }`
+shape. Some expect a flat `{ "<name>": { "command": "..." } }` map — drop
+the `mcpServers` wrapper if your client's docs say so. Always use an
+absolute path to the binary.
+
 ### Smoke test by hand
 
 You can drive the server from a shell to confirm it's alive:
