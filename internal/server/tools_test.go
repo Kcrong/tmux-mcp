@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
 )
 
@@ -476,5 +477,59 @@ func TestInitialize_VersionDefaultsToDev(t *testing.T) {
 	info := initializeServerInfo(t, tools)
 	if got := info["version"]; got != "dev" {
 		t.Fatalf("serverInfo.version = %v, want dev", got)
+	}
+}
+
+// TestHandle_SessionKillUnknownSessionMapsCode pins the wire contract for
+// "kill a session that does not exist": the JSON-RPC error code must be
+// errs.CodeSessionNotFound (-32000) so MCP clients can branch on a
+// stable code rather than the (version-specific) tmux stderr text.
+func TestHandle_SessionKillUnknownSessionMapsCode(t *testing.T) {
+	skipIfNoTmux(t)
+	tools := newTools(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Start the tmux server with a real session so the dispatcher hits
+	// the "server is up but the named session does not exist" branch
+	// (a fresh controller has no socket file yet, which produces a
+	// different "error connecting" message).
+	createParams := mustJSON(t, map[string]any{
+		"name": "session_create",
+		"arguments": map[string]any{
+			"name": "anchor", "command": "/bin/sh",
+		},
+	})
+	if _, rerr := tools.Handle(ctx, "tools/call", createParams); rerr != nil {
+		t.Fatalf("session_create anchor: %s", rerr.Message)
+	}
+
+	params := mustJSON(t, map[string]any{
+		"name":      "session_kill",
+		"arguments": map[string]any{"name": "definitely_does_not_exist_xyzzy"},
+	})
+	res, rerr := tools.Handle(ctx, "tools/call", params)
+	if rerr == nil {
+		t.Fatalf("expected error killing unknown session, got result %#v", res)
+	}
+	if rerr.Code != errs.CodeSessionNotFound {
+		t.Fatalf("expected code %d (CodeSessionNotFound), got %d (msg=%q)",
+			errs.CodeSessionNotFound, rerr.Code, rerr.Message)
+	}
+}
+
+// TestHandle_InvalidParamsCodeUnchanged guards that the JSON-RPC standard
+// invalid-params code (-32602) still flows through unchanged — typed
+// errors must not leak into the params-validation path.
+func TestHandle_InvalidParamsCodeUnchanged(t *testing.T) {
+	skipIfNoTmux(t)
+	tools := newTools(t)
+	// Send tools/call with non-JSON-object params so json.Unmarshal fails.
+	res, rerr := tools.Handle(context.Background(), "tools/call", json.RawMessage(`"not an object"`))
+	if rerr == nil {
+		t.Fatalf("expected invalid params error, got result %#v", res)
+	}
+	if rerr.Code != errs.CodeInvalidParams {
+		t.Fatalf("expected CodeInvalidParams (%d), got %d", errs.CodeInvalidParams, rerr.Code)
 	}
 }
