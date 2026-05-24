@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -226,6 +227,37 @@ func isSessionMissingMsg(msg string) bool {
 }
 
 func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
+	// Historical exec path: no stdin wired, inherits the default
+	// (Go closes stdin to /dev/null when cmd.Stdin is nil), so tmux
+	// commands that don't read stdin behave exactly as they always have.
+	return c.runWithStdinReader(ctx, nil, args...)
+}
+
+// runWithStdin pipes data into the child's stdin, then closes the writer
+// so the child sees EOF. Use this for tmux subcommands that read their
+// payload from stdin (notably `load-buffer -`) — it side-steps the
+// argv length limit (ARG_MAX, ~128 KiB on Linux, ~256 KiB on macOS)
+// that would otherwise cap how large a `set-buffer DATA` argument can
+// grow before the kernel truncates the exec or fails it outright.
+//
+// data is sent verbatim — no escaping, no transcoding — so the caller
+// is responsible for the bytes that land in tmux. Even an empty string
+// is forwarded explicitly (as an EOF-on-read pipe) because tmux's
+// `load-buffer -` treats "no bytes" as "create an empty buffer" and we
+// want to preserve that contract end-to-end.
+func (c *Controller) runWithStdin(ctx context.Context, data string, args ...string) (string, error) {
+	return c.runWithStdinReader(ctx, strings.NewReader(data), args...)
+}
+
+// runWithStdinReader is the underlying exec helper that both run() and
+// runWithStdin() share. Pulling the reader out of the variadic API
+// keeps the dispatch path single-source: the child is configured the
+// same way (stdout/stderr buffers, error-message normalisation, typed
+// sentinel for "session not found") regardless of whether stdin was
+// requested. nil reader leaves cmd.Stdin alone — Go interprets that as
+// /dev/null for the child, matching the historical run() behaviour
+// every existing caller expects.
+func (c *Controller) runWithStdinReader(ctx context.Context, stdin io.Reader, args ...string) (string, error) {
 	// -S takes an absolute socket path (whereas -L names a socket inside
 	// /tmp/tmux-<uid>/). We control the path explicitly so multiple
 	// servers can coexist on the same host.
@@ -234,6 +266,9 @@ func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {

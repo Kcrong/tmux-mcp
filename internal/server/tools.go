@@ -772,6 +772,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.showOptions(ctx, call.Arguments)
 	case "set_buffer":
 		return t.setBuffer(ctx, call.Arguments)
+	case "load_buffer":
+		return t.loadBuffer(ctx, call.Arguments)
 	case "list_buffers":
 		return t.listBuffers(ctx, call.Arguments)
 	case "show_buffer":
