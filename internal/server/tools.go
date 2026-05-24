@@ -453,6 +453,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneSwap(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
+	case "session_rename":
+		return t.sessionRename(ctx, call.Arguments)
 	case "session_inspect":
 		return t.sessionInspect(ctx, call.Arguments)
 	case "send_signal":
