@@ -694,6 +694,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.resize(ctx, call.Arguments)
 	case "kill_all_sessions":
 		return t.handleKillAll(ctx, call.Arguments)
+	case "kill_window":
+		return t.killWindow(ctx, call.Arguments)
 	case "list_panes":
 		return t.listPanes(ctx, call.Arguments)
 	case "pane_select":
