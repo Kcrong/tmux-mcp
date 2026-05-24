@@ -1,0 +1,208 @@
+# CLI flags & environment variables
+
+Every flag the `tmux-mcp` binary accepts, together with its environment
+variable equivalent (when one exists). Flags take precedence over env
+vars; pass `tmux-mcp -help` to print the canonical usage block.
+
+## Flags
+
+| Flag                       | Default                         | Env var equivalent  | Description                                                                                                       |
+| -------------------------- | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `-help`                    | —                               | —                   | Print the usage block (the `Flags:` table from `cmd/tmux-mcp/main.go`) and exit 0.                                |
+| `-version`                 | —                               | —                   | Print `tmux-mcp <version>` and exit 0. Version is set via `-ldflags="-X main.version=…"` and falls back to `dev`. |
+| `-version-json`            | —                               | —                   | Print machine-readable build metadata (`{version, go, commit, date}`) on stdout and exit 0.                       |
+| `-probe`                   | —                               | —                   | Run a startup health check (verifies tmux on `$PATH` and version floor) and exit. See **Probe** below.            |
+| `-dry-run`                 | —                               | —                   | Perform the full startup (flag parsing, tmux controller init, audit sink open, tool-surface build) then exit before reading stdin. Prints `dry-run ok\ttmux=<v>\ttmux-mcp=<v>` on success. See **Dry run** below.    |
+| `-log-level`               | `info`                          | —                   | Log verbosity. One of `error`, `warn`, `info`, `debug`. Logs go to stderr; stdout stays JSON-RPC.                 |
+| `-log-format`              | `text` (auto `json` at `debug`) | —                   | slog output format: `text` or `json`. Unset + `-log-level=debug` auto-promotes to `json`; passing the flag pins the chosen value. |
+| `-log-source`              | `false`                         | —                   | Include file/line of the call site in each log record (slight perf cost). JSON records gain a `source` object, text records a `source=…` key. |
+| `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
+| `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
+| `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
+| `-snapshot-ttl`            | `1h`                            | —                   | Maximum idle time a session's snapshot history may sit in memory before it is pruned. `0` disables cleanup (history released only when the session is killed). Accepts any Go duration: `30s`, `5m`, `2h`. |
+| `-shutdown-timeout`        | `5s`                            | —                   | On `SIGTERM`/`SIGINT`, wait up to this duration for in-flight `tools/call` handlers to finish writing their JSON-RPC responses before exiting. `0` disables the drain (immediate exit). On timeout the binary exits non-zero so supervisors can flag a forced shutdown. |
+| `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
+
+## `-version-json` output
+
+Stable, lowercase JSON — safe to consume from CI / dashboards:
+
+```json
+{ "version": "v0.4.0", "go": "go1.24.1", "commit": "abc1234", "date": "2026-01-15T12:34:56Z" }
+```
+
+`commit` and `date` come from `runtime/debug.ReadBuildInfo` (populated
+when the binary is built with `-buildvcs=true`, which is the default).
+They are empty strings on builds where VCS info was stripped.
+
+## `-probe` semantics
+
+`tmux-mcp -probe` exists for orchestrators that just want to confirm
+the binary is functional (k8s liveness, systemd `ExecStartPre=`,
+Docker `HEALTHCHECK`):
+
+- Looks up `tmux` on `$PATH`, runs `tmux -V`, checks the version floor.
+- On success: writes one line to stdout — `ok\ttmux=<v>\ttmux-mcp=<v>` — and exits 0.
+- On failure: writes a `probe failed: …` diagnostic to stderr, leaves
+  stdout untouched, and exits non-zero. Parsers can therefore rely on
+  stdout being either empty or a valid `ok\t…` line.
+- Bounded by an internal 5s timeout so a wedged binary on a misconfigured
+  PATH cannot hang the liveness check forever.
+
+## `-dry-run` semantics
+
+`tmux-mcp -dry-run` is a strictly stronger probe than `-probe`: it
+runs every bootstrap side-effect short of reading stdin so you can
+catch flag/path/tmux-version errors before swapping a binary into a
+live agent.
+
+Steps the dry run executes (in order):
+
+1. Parse flags, validate `-log-format` / `-session-idle-timeout`.
+2. Initialise the tmux controller (`tmuxctl.NewWithSocket`) — fails if
+   `tmux` is missing on `$PATH`, the version is below the floor, or the
+   `-socket` parent directory is wrong.
+3. Open the audit sink (`-audit-log`) — fails if the path is not
+   writable at mode `0600`.
+4. Build the in-memory tool surface (`server.NewTools` + options).
+5. Print `dry-run ok\ttmux=<tmux-ver>\ttmux-mcp=<binary-ver>` to stdout
+   and exit 0.
+
+On any failure the diagnostic goes to stderr (no stdout output) and
+the process exits non-zero. The signature distinguishes a dry run
+from a normal probe so an orchestrator can tell whether the heavier
+checks ran.
+
+Use it in CI smoke tests, systemd `ExecStartPre=`, or before swapping
+a Claude Desktop config to a new socket path / audit log location.
+
+## `-socket` rules
+
+- The path **must be absolute**. Relative paths are rejected up front
+  with a clear error.
+- The **parent directory must already exist** — `tmux-mcp` will not
+  create `/run/tmux-mcp` for you. That keeps a typo from silently
+  writing to the wrong place. Use `RuntimeDirectory=` (systemd) or
+  `RUN mkdir` (Dockerfile) to provision it.
+- On shutdown the socket file is removed but the parent directory is
+  left intact, so unit restarts stay idempotent.
+- When neither the flag nor the env var is set, the legacy behaviour
+  applies: a fresh tempdir under `$TMPDIR` holds the socket.
+
+## `-log-format` & `-log-source`
+
+- Default is `text`; passing `-log-format=json` switches to a
+  newline-delimited JSON handler suitable for log aggregators.
+- When `-log-format` is **not** passed and `-log-level=debug`, the
+  server auto-promotes to `json` so structured fields stay
+  machine-readable during deep debugging. Pass `-log-format=text`
+  explicitly to override that auto-switch.
+- `-log-source` is off by default — `slog`'s `AddSource` walks
+  `runtime.Callers` on every record, so leaving it off keeps the
+  zero-cost path. Enable it ad-hoc when you need to grep a log line
+  back to the exact `slog.*` call that produced it.
+
+## `-max-concurrent-calls`
+
+- 64 is a generous default for an interactive single-agent client
+  (Claude Desktop typically runs 1–4 tools in parallel) while still
+  putting a ceiling on goroutines a misbehaving / flooding client can
+  spawn.
+- Excess callers **wait** rather than fail — the limiter is a
+  back-pressure semaphore, not an admission gate, so latency degrades
+  gracefully under bursts instead of returning errors.
+- Pass `0` to disable the cap entirely (the original unbounded
+  behaviour).
+
+## `-audit-log`
+
+- Empty default keeps audit logging opt-in: existing deployments see
+  no behaviour change.
+- `stderr` is a magic value that shares the slog stream — handy for
+  desktop debugging where you want everything on one fd.
+- Any other value is treated as a filesystem path and opened
+  append-only with mode `0600` so audit records do not leak through
+  group-readable files.
+- **Privacy:** every record carries `args_size_bytes` (the byte length
+  of the raw arguments JSON) but **not** argument content. Commands
+  and any embedded secrets stay out of the audit trail.
+
+## `-snapshot-ttl`
+
+- The snapshot store keeps the two most-recent captures per session so
+  `snapshot_diff` can return only what changed. Long-lived sessions
+  that go quiet would otherwise pin those captures in memory forever.
+- The reaper runs at roughly the TTL cadence and drops history for any
+  session that has not been captured against within the window.
+- `0` disables the reaper — history is released only when the session
+  is killed (the historical behaviour). Useful for tests that want
+  deterministic memory.
+
+## `-shutdown-timeout`
+
+- 5s is long enough that an in-flight `tools/call` returning a
+  capture-pane snapshot or a `wait_for_text` result has time to
+  serialise its response, but short enough to never trip systemd's
+  default `TimeoutStopSec=90s`.
+- The drain begins on `SIGTERM`/`SIGINT`. New `tools/call` frames
+  arriving during the drain are still served until the deadline; once
+  the deadline expires, in-flight handlers are abandoned and the
+  binary exits non-zero so supervisors can flag the forced shutdown.
+- Set to `0` to disable the drain entirely (legacy behaviour for tests
+  / scripts that don't care about losing the last response).
+
+## `-session-idle-timeout`
+
+- The reaper goroutine is only launched when the value is positive, so
+  leaving the flag unset (or passing `0` explicitly) preserves the
+  historical "tmux-mcp never kills a session for you" behaviour for
+  desktop deployments.
+- "Activity" is defined as any `tools/call` that references the
+  session by name. Session-spanning calls (`session_list`,
+  `kill_all_sessions`) are explicitly excluded so they cannot extend
+  an idle session's lifetime.
+- Reaped sessions go through the same kill path as `session_kill`, so
+  snapshot history is dropped and any subscribed audit log records the
+  reason.
+- Strictly negative durations are rejected at startup with exit code
+  2; `0` is the documented "disabled" value.
+
+## Environment variables
+
+| Variable          | Used by    | Notes                                                         |
+| ----------------- | ---------- | ------------------------------------------------------------- |
+| `TMUX_MCP_SOCKET` | `-socket`  | Absolute path. Loses to `-socket` when both are set.          |
+| `TMPDIR`          | (default)  | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
+
+## Examples
+
+```sh
+# print versions, machine-readable
+tmux-mcp -version
+tmux-mcp -version-json | jq
+
+# debug logging while the agent talks to the server
+tmux-mcp -log-level=debug
+tmux-mcp -log-level=debug -log-format=text   # pin text even at debug
+tmux-mcp -log-source                         # add file:line to every record
+
+# pin the socket for a systemd unit / container
+tmux-mcp -socket=/run/tmux-mcp/sock
+TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
+
+# liveness probe
+tmux-mcp -probe || echo "tmux missing or too old"
+
+# dry run: parses flags, opens the audit log, builds the tool surface,
+# prints "dry-run ok\t…" and exits without serving stdio
+tmux-mcp -dry-run -socket=/run/tmux-mcp/sock -audit-log=/var/log/tmux-mcp/audit.jsonl
+
+# audit log to a file (privacy: argument content is never logged)
+tmux-mcp -audit-log=/var/log/tmux-mcp/audit.jsonl
+
+# bound burst goroutines and reap idle sessions
+tmux-mcp -max-concurrent-calls=32 -session-idle-timeout=30m
+
+# graceful shutdown for systemd
+tmux-mcp -shutdown-timeout=10s
+```
