@@ -54,6 +54,7 @@ see [Install](#install). For the full tool reference, jump to
 - [Requirements](#requirements)
 - [Install](#install)
 - [Wire it up](#wire-it-up)
+- [Deploy](#deploy)
 - [Tool surface](#tool-surface)
 - [Tool reference](#tool-reference)
 - [End-to-end example](#end-to-end-example)
@@ -356,6 +357,36 @@ Minimal systemd snippet:
 RuntimeDirectory=tmux-mcp
 ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 ```
+
+## Deploy
+
+### Run as a systemd service
+
+`tmux-mcp` is a stdio MCP server, so the usual deployment is to let
+your MCP client spawn it on demand. For ops who instead want a single
+long-running `tmux-mcp` process pinned to a known socket (e.g. so a
+thin wrapper like `socat` can hand stdin/stdout off to it), the repo
+ships a reference unit at
+[`scripts/tmux-mcp.service`](scripts/tmux-mcp.service). It assumes the
+`-socket` flag (released in v0.2) and uses `-probe` as
+`ExecStartPre=` so the unit fails fast on hosts missing `tmux`.
+
+```sh
+# 1. Create the unprivileged system user the unit runs as.
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin tmux-mcp
+
+# 2. Drop the unit in place and start it.
+sudo cp scripts/tmux-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tmux-mcp
+sudo systemctl status tmux-mcp
+```
+
+The unit pins the socket at `/run/tmux-mcp/sock` (managed by
+`RuntimeDirectory=tmux-mcp`, mode `0700`) and applies stdlib hardening
+(`NoNewPrivileges`, `ProtectSystem=strict`, `RestrictAddressFamilies=AF_UNIX`,
+`MemoryMax=512M`, …). Tweak `User=`, the socket path, or the resource
+caps to taste before installing.
 
 ## Tool surface
 
