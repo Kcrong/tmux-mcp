@@ -33,6 +33,7 @@ func FuzzWaitForTextRegex(f *testing.F) {
 	f.Add([]byte(`.`), []byte("\x00\xff\xfe"))
 
 	f.Fuzz(func(t *testing.T, pattern, haystack []byte) {
+		t.Parallel()
 		// We never call MustCompile — bad patterns must surface as
 		// errors, not panics.
 		re, err := regexp.Compile(string(pattern))
@@ -81,6 +82,7 @@ func FuzzWaitForTextPattern(f *testing.F) {
 	f.Add([]byte(`(\w+)`))
 
 	f.Fuzz(func(t *testing.T, pattern []byte) {
+		t.Parallel()
 		p := string(pattern)
 		if p == "" {
 			// Production code rejects empty patterns before compile;
