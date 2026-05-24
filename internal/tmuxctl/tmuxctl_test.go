@@ -2,7 +2,9 @@ package tmuxctl
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -145,5 +147,102 @@ func TestListSessions_EmptyOnFreshController(t *testing.T) {
 	}
 	if len(names) != 0 {
 		t.Fatalf("expected no sessions, got %v", names)
+	}
+}
+
+// TestNewWithSocket_HonoursExplicitPath verifies the controller's socket
+// matches the caller-supplied path verbatim (no MkdirTemp shadow).
+func TestNewWithSocket_HonoursExplicitPath(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	want := filepath.Join(dir, "tmux.sock")
+	c, err := NewWithSocket(want)
+	if err != nil {
+		t.Fatalf("NewWithSocket(%q): %v", want, err)
+	}
+	t.Cleanup(func() { c.Shutdown(context.Background()) })
+	if got := c.Socket(); got != want {
+		t.Fatalf("socket = %q, want %q", got, want)
+	}
+	if c.ownsDir {
+		t.Fatal("ownsDir must be false for caller-supplied paths")
+	}
+}
+
+// TestNewWithSocket_ParentSurvivesShutdown asserts that Shutdown on a
+// caller-supplied socket leaves the parent directory in place — only
+// the socket file (if any) is removed. Operators of systemd / container
+// deployments rely on this so that a restart does not race against a
+// vanishing /run/tmux-mcp directory.
+func TestNewWithSocket_ParentSurvivesShutdown(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "tmux.sock")
+	c, err := NewWithSocket(socket)
+	if err != nil {
+		t.Fatalf("NewWithSocket: %v", err)
+	}
+	c.Shutdown(context.Background())
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("parent dir %q removed by Shutdown: %v", dir, err)
+	}
+}
+
+func TestNewWithSocket_RejectsRelativePath(t *testing.T) {
+	skipIfNoTmux(t)
+	_, err := NewWithSocket("relative/sock")
+	if err == nil {
+		t.Fatal("expected error for relative socket path")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewWithSocket_RejectsMissingParent(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist", "sock")
+	_, err := NewWithSocket(missing)
+	if err == nil {
+		t.Fatal("expected error for missing parent dir")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewWithSocket_RejectsParentNotDirectory(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	// A regular file in place of the parent directory.
+	notDir := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(notDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	_, err := NewWithSocket(filepath.Join(notDir, "sock"))
+	if err == nil {
+		t.Fatal("expected error when parent path is a file")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNew_OwnsScratchDir confirms the default New() path still uses an
+// MkdirTemp-backed directory and cleans it up on Shutdown.
+func TestNew_OwnsScratchDir(t *testing.T) {
+	skipIfNoTmux(t)
+	c, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !c.ownsDir {
+		t.Fatal("ownsDir must be true for the default constructor")
+	}
+	dir := filepath.Dir(c.socket)
+	c.Shutdown(context.Background())
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("scratch dir %q should be removed, stat err = %v", dir, err)
 	}
 }
