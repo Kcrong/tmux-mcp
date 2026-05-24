@@ -1,5 +1,11 @@
 # tmux-mcp
 
+[![CI](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/Kcrong/tmux-mcp?display_name=tag&sort=semver)](https://github.com/Kcrong/tmux-mcp/releases/latest)
+
 A Model Context Protocol (MCP) stdio server that exposes a real `tmux`
 session to an LLM agent so it can drive a terminal the way a human
 does — typing into a real PTY, waiting for the screen to settle, reading
@@ -23,6 +29,7 @@ waits the way you would wait.
 - [Patterns](#patterns)
 - [Design notes](#design-notes)
 - [Troubleshooting](#troubleshooting)
+- [Verifying a release](#verifying-a-release)
 
 ---
 
@@ -47,14 +54,21 @@ solves this with a stable CLI:
 
 ## Install
 
-### From source
+### Prebuilt binary
+
+Pick the asset for your OS / architecture from the
+[latest release](https://github.com/Kcrong/tmux-mcp/releases/latest)
+(Linux and macOS, `amd64` and `arm64`). Each archive contains a single
+`tmux-mcp` binary — drop it on `$PATH`:
 
 ```sh
-git clone https://github.com/Kcrong/tmux-mcp.git
-cd tmux-mcp
-make build              # produces ./tmux-mcp
-./tmux-mcp < /dev/null  # smoke test — exits cleanly on EOF
+curl -fsSL https://github.com/Kcrong/tmux-mcp/releases/latest/download/tmux-mcp_$(uname -s)_$(uname -m).tar.gz \
+  | tar -xz -C /usr/local/bin tmux-mcp
+tmux-mcp -version
 ```
+
+Releases are signed with checksums (`checksums.txt` next to the
+archives) — see [Verifying a release](#verifying-a-release).
 
 ### With `go install`
 
@@ -65,6 +79,17 @@ which tmux-mcp
 
 Make sure `$(go env GOBIN)` (or `$GOPATH/bin`) is on `$PATH`, otherwise
 your MCP client won't find the binary.
+
+### From source
+
+```sh
+git clone https://github.com/Kcrong/tmux-mcp.git
+cd tmux-mcp
+make build              # produces ./tmux-mcp
+./tmux-mcp -version     # smoke test — prints version and exits
+```
+
+`make help` lists every available target.
 
 ## Wire it up
 
@@ -341,7 +366,8 @@ wait_for_stable session=demo  quiet_ms=200
 
 - **`tmux not found on PATH`** — install `tmux` with your package
   manager (`apt-get install tmux`, `brew install tmux`, etc.). The
-  server probes `$PATH` at startup.
+  server probes `$PATH` at startup and the error message itself
+  includes the install hint.
 - **Capture looks empty even though the program is running** — you
   probably captured during a redraw. Call `wait_for_stable` first, or
   wait for a sentinel string with `wait_for_text`.
@@ -355,6 +381,19 @@ wait_for_stable session=demo  quiet_ms=200
 - **`wait_for_text` always times out** — remember the pattern is a Go
   regex, not a shell glob. Escape `.`, `+`, `?`, `*`, `(`, `)`, `[`,
   `]`, `{`, `}`, `^`, `$`, `|`, `\` if you mean them literally.
+
+## Verifying a release
+
+Each release publishes a `checksums.txt` next to the archive. Verify
+the file you downloaded:
+
+```sh
+sha256sum -c checksums.txt --ignore-missing
+```
+
+`checksums.txt` itself is built by GoReleaser inside the release
+workflow — the [release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
+in GitHub Actions is the authoritative provenance.
 
 ## License
 

@@ -28,7 +28,11 @@ type Controller struct {
 func New() (*Controller, error) {
 	bin, err := exec.LookPath("tmux")
 	if err != nil {
-		return nil, fmt.Errorf("tmux not found on PATH: %w", err)
+		return nil, fmt.Errorf(
+			"tmux not found on PATH — install it first "+
+				"(e.g. `apt-get install tmux`, `brew install tmux`): %w",
+			err,
+		)
 	}
 	dir, err := os.MkdirTemp("", "tmux-mcp-*")
 	if err != nil {
