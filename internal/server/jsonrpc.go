@@ -113,6 +113,14 @@ type serveConfig struct {
 	// multi-megabyte frame onto a client whose reader can't tolerate
 	// it.
 	maxResponseBytes int64
+	// sessionPrefix mirrors the operator-supplied -session-prefix CLI
+	// flag at the dispatcher layer. Handlers in *Tools already apply
+	// the prefix on the session-name path themselves; the dispatcher
+	// needs its own copy to namespace the [IdleReaper] Touch entries
+	// the same way, so a session created as "agent_alice_demo" on tmux
+	// is reaped under that name (not the bare "demo" the client
+	// supplied). Empty keeps the historical no-prefix behaviour.
+	sessionPrefix string
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -191,6 +199,22 @@ var ErrShutdownTimedOut = errors.New("shutdown drain timed out")
 // Notifications (no id) get nothing, same as today.
 func WithMaxResponseBytes(limit int64) ServeOption {
 	return func(c *serveConfig) { c.maxResponseBytes = limit }
+}
+
+// WithSessionPrefix tells the dispatcher to namespace [IdleReaper]
+// Touch entries with the operator-supplied prefix so the reaper kills
+// sessions under their actual tmux names. Handlers in *Tools apply the
+// same prefix to every controller call independently — this option is
+// only about the activity table that lives on the dispatch side. Empty
+// (the default) keeps the no-prefix behaviour and is the right value
+// for a deployment that does not pass -session-prefix.
+//
+// Pass the same value the operator gave to *Tools.SessionPrefix so the
+// two layers stay consistent. Validation happens once at startup
+// against [ValidateSessionPrefix] in the binary's main; this option
+// trusts the input.
+func WithSessionPrefix(prefix string) ServeOption {
+	return func(c *serveConfig) { c.sessionPrefix = prefix }
 }
 
 // WithToolsListChangedNotifier wires the spec-defined
@@ -621,6 +645,17 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			// not a session-bearing tools/call.
 			if reaper != nil && req.Method == "tools/call" {
 				if name := sessionFromArgs(toolNameFromParams(req.Params), toolArgsFromParams(req.Params)); name != "" {
+					// Glue the configured -session-prefix on so the
+					// reaper's activity table keys on the same name the
+					// controller sees. Without this, a "demo" Touch from
+					// a prefixed deployment would land under a key the
+					// reaper's own kill (which goes through ctl.KillSession
+					// against the prefixed name) never matches, so the
+					// session would either never be reaped or be reaped
+					// from a stale entry. Empty prefix is a no-op.
+					if cfg.sessionPrefix != "" {
+						name = cfg.sessionPrefix + name
+					}
 					reaper.Touch(name)
 				}
 			}
