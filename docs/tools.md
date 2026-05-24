@@ -1345,6 +1345,68 @@ you need to know when the spawned command settled.
 
 ---
 
+## `new_window`
+
+Create a new window inside an existing session via `tmux new-window`
+and return the structured identity tmux assigned. Use when an agent
+wants the freshly created window's stable id (`@N`) so a follow-up
+tool can address it without needing a separate `list_windows` call.
+For comparison, `window_create` covers the same flag mapping but
+returns a human-readable text block — pick whichever response shape
+your agent prefers.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                                       |
+| ------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `session`     | string  | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                                     |
+| `name`        | string  | no       | optional window label (`-n`); len 1-64, regex `^[A-Za-z0-9_-]+$`. Tmux auto-names when omitted.             |
+| `command`     | string  | no       | optional initial command. Defaults to the user's shell when blank. Newlines (`\n` / `\r`) are refused up front so tmux's command parser cannot silently split it. |
+| `after_index` | integer | no       | when set, insert the new window after this existing window index (`-t <session>:<after_index>`); omit to let tmux append at the next free slot. Must be `>= 0`. |
+| `select`      | boolean | no       | when `true` (default) tmux focuses the new window; `false` creates it in the background (`-d`).             |
+
+The schema sets `additionalProperties: false`, so unknown fields are
+rejected with `-32602` before any tmux call runs.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "session": "demo", "window_index": 2, "window_id": "@7", "window_name": "build" }
+```
+
+`window_id` is tmux's `#{window_id}` value (e.g. `@7`) — stable
+across renames and renumberings, so prefer it for long-lived
+references. `window_index` is the numeric `<session>:<index>` slot.
+`window_name` echoes the explicit `name` you supplied or the label
+tmux auto-assigned from the command's basename.
+
+### Errors
+
+| Code     | Cause                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, `name` outside the regex/length policy, `command` containing newlines, or negative `after_index`. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`).                             |
+| `-32603` | tmux refused to create the window (e.g. command not found in PATH, `after_index` slot conflicts).|
+
+### Example
+
+```jsonc
+{ "session": "demo", "name": "build", "command": "make watch", "after_index": 0, "select": false }
+```
+
+Chain the structured response into another tool call by reaching for
+the stable `window_id` rather than the numeric index — that way a
+later `window_move` or rename does not invalidate the reference:
+
+```jsonc
+{ "name": "new_window",   "arguments": { "session": "demo", "name": "build" } }
+{ "name": "send_keys",    "arguments": { "session": "demo", "keys": ["echo built", "Enter"] } }
+```
+
+---
+
 ## `window_kill`
 
 Destroy a single window via `tmux kill-window -t <session>:<window>`.
