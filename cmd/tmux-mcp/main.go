@@ -79,6 +79,16 @@ Flags:
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
+  -tmux-bin PATH          absolute path to the tmux executable to invoke
+                          (also TMUX_MCP_TMUX_BIN env var; flag wins).
+                          Empty default = resolve tmux from $PATH (the
+                          historical behaviour). When set the path must
+                          be absolute and point at an existing executable
+                          file, otherwise startup fails with "tmux binary
+                          PATH not executable: ...". Useful for pinning
+                          a specific tmux version on Nix / Homebrew /
+                          static builds, sandboxes, and containers where
+                          multiple tmux versions live side-by-side.
   -max-concurrent-calls N cap simultaneously-executing tools/call frames
                           (default 64). Excess callers wait — back-pressure
                           rather than failure. 0 disables the cap (unbounded
@@ -250,6 +260,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	socket := fs.String("socket", os.Getenv("TMUX_MCP_SOCKET"),
 		"absolute path for the private tmux socket "+
 			"(env TMUX_MCP_SOCKET; default: fresh tempdir)")
+	// Same env-var-falls-through pattern as -socket: operators on Nix /
+	// Homebrew / static builds want to pin a specific tmux binary
+	// instead of relying on PATH (e.g. testing against a known tmux
+	// version, sandboxing, or container deployments where multiple
+	// tmux versions live side-by-side). Empty default preserves the
+	// historical "resolve `tmux` from PATH" behaviour for everyone
+	// else. Validation lives inside tmuxctl.WithBinary so a bogus path
+	// surfaces a single, consistent diagnostic regardless of whether
+	// the value came from the flag or the env var.
+	tmuxBin := fs.String("tmux-bin", os.Getenv("TMUX_MCP_TMUX_BIN"),
+		"absolute path to the tmux executable "+
+			"(env TMUX_MCP_TMUX_BIN; default: resolve `tmux` from PATH)")
 	// 64 is a generous default for an interactive single-agent client
 	// (Claude Desktop typically runs 1–4 tools in parallel) while still
 	// putting a ceiling on goroutines a misbehaving / flooding client
@@ -349,7 +371,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return emitVersionJSON(stdout, version, runtime.Version())
 	}
 	if *probe {
-		return runProbe(stdout, stderr)
+		return runProbe(stdout, stderr, *tmuxBin)
 	}
 
 	lvl, err := parseLogLevel(*logLevel)
@@ -417,7 +439,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}()
 	}
 
-	ctl, err := tmuxctl.NewWithSocket(*socket)
+	ctl, err := tmuxctl.NewWithSocket(*socket, tmuxctl.WithBinary(*tmuxBin))
 	if err != nil {
 		return err
 	}
@@ -502,7 +524,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		go func() {
 			probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
 			defer probeCancel()
-			if _, perr := tmuxctl.ProbeVersion(probeCtx); perr != nil {
+			// Probe through the same binary the controller is driving so
+			// /healthz reflects the runtime path, not whatever happens to
+			// be on PATH. tmuxctl.ProbeVersionWithBinary("") is identical
+			// to the legacy ProbeVersion(ctx) so the unset case is
+			// byte-compatible with pre-flag deployments.
+			if _, perr := tmuxctl.ProbeVersionWithBinary(probeCtx, *tmuxBin); perr != nil {
 				slog.Warn("startup probe failed; /healthz stays 503",
 					"err", perr)
 				return
@@ -548,7 +575,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// ctl.Shutdown + audit.Close, so resources acquired by the
 	// bootstrap are released before exit.
 	if *dryRun {
-		tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+		// Probe through the same binary the controller is driving so the
+		// "dry-run ok" line names the binary the runtime would actually
+		// invoke — not whatever else happens to be on PATH.
+		tmuxVer, err := tmuxctl.ProbeVersionWithBinary(ctx, *tmuxBin)
 		if err != nil {
 			return err
 		}
@@ -741,9 +771,11 @@ func writePIDFile(path string) error {
 // surface the same failure twice.
 var errProbeFailed = errors.New("probe failed")
 
-// runProbe is the body of the -probe flag. It probes tmux on PATH (looks
-// it up, runs `tmux -V`, checks the minimum version) and writes a single
-// tab-delimited "ok" line to stdout when everything is healthy:
+// runProbe is the body of the -probe flag. It probes the configured
+// tmux binary (an explicit path passed via -tmux-bin / TMUX_MCP_TMUX_BIN
+// when non-empty, otherwise tmux looked up on PATH), runs `tmux -V`,
+// checks the minimum version, and writes a single tab-delimited "ok"
+// line to stdout when everything is healthy:
 //
 //	ok\ttmux=<tmux-version>\ttmux-mcp=<binary-version>\n
 //
@@ -751,13 +783,17 @@ var errProbeFailed = errors.New("probe failed")
 // returns an error wrapping [errProbeFailed] so the caller can map it
 // to a non-zero exit code. Stdout is left untouched on the failure path
 // so orchestrators can rely on stdout being empty when probing failed.
-func runProbe(stdout, stderr io.Writer) error {
+//
+// tmuxBin is the operator-supplied override (empty = legacy PATH
+// resolution). Threading it through here keeps the -probe path
+// honouring the same binary the runtime would actually drive.
+func runProbe(stdout, stderr io.Writer, tmuxBin string) error {
 	// 5s is generous: `tmux -V` is essentially instant. A timeout
 	// keeps a wedged binary on a misconfigured PATH from hanging the
 	// liveness check forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+	tmuxVer, err := tmuxctl.ProbeVersionWithBinary(ctx, tmuxBin)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "probe failed: %s\n", err)
 		return fmt.Errorf("%w: %w", errProbeFailed, err)
