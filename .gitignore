@@ -1,0 +1,6 @@
+/tmux-mcp
+/dist/
+*.test
+*.out
+.idea/
+.vscode/

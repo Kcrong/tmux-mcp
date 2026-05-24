@@ -1,0 +1,57 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on:
+      - codebuild-tmux-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux
+        run: |
+          set -eux
+          if command -v tmux >/dev/null 2>&1; then
+            tmux -V
+            exit 0
+          fi
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends tmux
+          elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y tmux
+          elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y tmux
+          else
+            echo "no supported package manager found" >&2
+            exit 1
+          fi
+          tmux -V
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          set -eux
+          out="$(gofmt -s -l .)"
+          if [ -n "$out" ]; then
+            echo "files need formatting:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+
+      - name: build
+        run: go build -trimpath ./...
+
+      - name: test
+        run: go test ./... -count=1 -race
