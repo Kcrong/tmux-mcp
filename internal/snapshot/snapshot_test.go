@@ -6,6 +6,7 @@ import (
 )
 
 func TestRecord_DetectsChange(t *testing.T) {
+	t.Parallel()
 	s := New()
 	a := s.Record("sess", "hello")
 	if a.Token == "" {
@@ -31,6 +32,7 @@ func TestRecord_DetectsChange(t *testing.T) {
 }
 
 func TestDiffSince_ReturnsLineDiff(t *testing.T) {
+	t.Parallel()
 	s := New()
 	first := s.Record("sess", "alpha\nbeta\ngamma")
 	if first.Token == "" {
@@ -46,6 +48,7 @@ func TestDiffSince_ReturnsLineDiff(t *testing.T) {
 }
 
 func TestDiffSince_NoDiffWhenIdentical(t *testing.T) {
+	t.Parallel()
 	s := New()
 	first := s.Record("sess", "x\ny")
 	snap, diffs := s.DiffSince("sess", first.Token, "x\ny")
@@ -58,6 +61,7 @@ func TestDiffSince_NoDiffWhenIdentical(t *testing.T) {
 }
 
 func TestDiffSince_FullResetWhenTokenUnknown(t *testing.T) {
+	t.Parallel()
 	s := New()
 	_ = s.Record("sess", "ignored")
 	body := "one\ntwo\nthree"
@@ -76,6 +80,7 @@ func TestDiffSince_FullResetWhenTokenUnknown(t *testing.T) {
 }
 
 func TestDiffSince_HandlesRemovedLines(t *testing.T) {
+	t.Parallel()
 	s := New()
 	first := s.Record("sess", "a\nb\nc")
 	_, diffs := s.DiffSince("sess", first.Token, "a")
@@ -91,6 +96,7 @@ func TestDiffSince_HandlesRemovedLines(t *testing.T) {
 }
 
 func TestForget_DropsSessionHistory(t *testing.T) {
+	t.Parallel()
 	s := New()
 	first := s.Record("sess", "alpha\nbeta")
 	if first.Token == "" {
@@ -131,6 +137,7 @@ func TestForget_DropsSessionHistory(t *testing.T) {
 }
 
 func TestDiffSince_PreservesPriorOnlyForOneStep(t *testing.T) {
+	t.Parallel()
 	// History keeps two entries — the snapshot you just took and the one
 	// before it. After three captures, the original token must be too
 	// stale to diff against.
