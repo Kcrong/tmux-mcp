@@ -562,6 +562,7 @@ embedded secrets stay out of the audit trail.
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
 | `window_select` | Make a window the active one of its session via `tmux select-window`. |
 | `window_rename` | Rename a window via `tmux rename-window` (same regex/length policy as window_create). |
+| `select_layout` | Apply a preset (even-horizontal/-vertical, main-horizontal/-vertical, tiled) or stored layout dump to a window via `tmux select-layout`; supports `-n` / `-p` cycling and `-E` spread. |
 | `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 | `show_options` | Wrap `tmux show-options` to return the resolved server / session / window option set as a flat `key → value` map. |
 
