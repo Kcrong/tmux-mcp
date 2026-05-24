@@ -17,13 +17,15 @@ import (
 const maxPaneCommandLen = 4096
 
 // paneTargetRE accepts the tmux pane-target forms the boundary
-// understands: bare "session", "session:window", or
-// "session:window.pane". The pieces all use the conservative session-
-// name policy (alnum/underscore/dash) and the numeric tail is digits
-// only. We deliberately leave the deeper validation (does the pane
-// exist?) to tmux — the regex is just a cheap up-front guard against
-// stray quoting / shell metachars / very long inputs.
-var paneTargetRE = regexp.MustCompile(`^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$`)
+// understands: bare "session", "session:window",
+// "session:window.pane", or the tmux internal pane id "%N" (e.g.
+// "%5") that pane_split returns and the agent can hand straight back
+// to pane_kill / pane_select. The pieces all use the conservative
+// session-name policy (alnum/underscore/dash) and the numeric tail is
+// digits only. We deliberately leave the deeper validation (does the
+// pane exist?) to tmux — the regex is just a cheap up-front guard
+// against stray quoting / shell metachars / very long inputs.
+var paneTargetRE = regexp.MustCompile(`^([A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?|%[0-9]+)$`)
 
 // panesToolDefs holds the JSON Schemas for the multi-pane tools. They
 // are appended onto the main toolDefs slice via the package init() in
@@ -94,6 +96,30 @@ var panesToolDefs = []map[string]any{
 				},
 			},
 			"required":             []string{"session", "direction"},
+			"additionalProperties": false,
+		},
+	},
+	{
+		"name": "pane_kill",
+		"description": "Destroy a pane via `tmux kill-pane -t <target_pane>`. `target_pane` accepts any tmux " +
+			"pane-target form (\"session\", \"session:window\", or \"session:window.pane\"). Mirrors " +
+			"the natural tmux semantics: killing the only remaining pane of a window also tears down " +
+			"that window, and if it was the only remaining window of a session the session itself is " +
+			"reaped — pre-check with list_panes / list_windows when the caller needs to guard against " +
+			"that. Returns a small JSON ack `{\"killed\": true}` on success.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Optional session id (informational only; len 1-64, [A-Za-z0-9_-]).",
+				},
+				"target_pane": map[string]any{
+					"type":        "string",
+					"description": "Pane target (\"session\", \"session:window\", or \"session:window.pane\").",
+				},
+			},
+			"required":             []string{"target_pane"},
 			"additionalProperties": false,
 		},
 	},
@@ -236,4 +262,41 @@ func (t *Tools) paneSplit(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		"id":    res.ID,
 		"index": res.Index,
 	})
+}
+
+// paneKill drives tmuxctl.Controller.KillPane. The handler validates
+// the optional `session` reference (when supplied) and the required
+// `target_pane` shape up front so a caller passing a malformed value
+// sees CodeInvalidParams (-32602) before any tmux command runs. The
+// response is a small JSON ack `{"killed": true}`; the boundary
+// deliberately does not expose whether the kill collapsed the window
+// or session — that information is one list_panes / list_windows call
+// away if the caller actually needs it.
+func (t *Tools) paneKill(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Session    string `json:"session"`
+		TargetPane string `json:"target_pane"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("pane_kill: %v", err)
+	}
+	// session is informational here (the target string already pins the
+	// pane) — only validate when the caller bothered to supply it, so an
+	// agent that already has a fully-qualified target_pane doesn't have
+	// to redundantly repeat the session name.
+	if args.Session != "" {
+		if rerr := validateSessionRef(args.Session); rerr != nil {
+			return nil, rerr
+		}
+	}
+	if args.TargetPane == "" {
+		return nil, invalidParams("pane_kill: target_pane required")
+	}
+	if rerr := validatePaneTarget(args.TargetPane); rerr != nil {
+		return nil, rerr
+	}
+	if err := t.Ctl.KillPane(ctx, args.TargetPane); err != nil {
+		return nil, internalError(fmt.Errorf("pane_kill: %w", err))
+	}
+	return jsonBlock(map[string]any{"killed": true})
 }
