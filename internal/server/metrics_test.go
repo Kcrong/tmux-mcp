@@ -234,7 +234,7 @@ func TestMetricsServer_ServesMetrics(t *testing.T) {
 	m.observeToolCall("send_keys", 1*time.Millisecond, &rpcError{Code: -32602, Message: "bad"})
 	m.SetSessionsActive(2)
 
-	srv, err := NewMetricsServer("127.0.0.1:0", reg)
+	srv, err := NewMetricsServer("127.0.0.1:0", reg, m)
 	if err != nil {
 		t.Fatalf("NewMetricsServer: %v", err)
 	}
@@ -282,9 +282,9 @@ func TestMetricsServer_ServesMetrics(t *testing.T) {
 func TestMetricsServer_ShutdownReleasesAddress(t *testing.T) {
 	t.Parallel()
 	reg := prometheus.NewRegistry()
-	NewMetrics(reg) // register so Gather has something to emit
+	m := NewMetrics(reg) // register so Gather has something to emit
 
-	srv, err := NewMetricsServer("127.0.0.1:0", reg)
+	srv, err := NewMetricsServer("127.0.0.1:0", reg, m)
 	if err != nil {
 		t.Fatalf("NewMetricsServer: %v", err)
 	}
