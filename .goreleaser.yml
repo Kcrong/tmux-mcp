@@ -13,10 +13,16 @@ builds:
   - id: tmux-mcp
     main: ./cmd/tmux-mcp
     binary: tmux-mcp
+    # Pin go module file mod times to the commit timestamp so the
+    # produced object/binary is byte-identical across builds of the
+    # same commit. Combined with -trimpath and -buildvcs=false this
+    # makes builds reproducible regardless of when they ran.
+    mod_timestamp: '{{ .CommitTimestamp }}'
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
+      - -buildvcs=false
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -32,6 +38,10 @@ archives:
   - id: default
     ids:
       - tmux-mcp
+    # Set archive entry timestamps to the commit time so two snapshot
+    # builds of the same commit produce byte-identical tarballs.
+    builds_info:
+      mtime: '{{ .CommitDate }}'
     formats:
       - tar.gz
     # Windows users expect .zip; everyone else gets the default tar.gz.
