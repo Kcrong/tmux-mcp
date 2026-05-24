@@ -83,6 +83,13 @@ Flags:
                           abandoning in-flight responses). On timeout the
                           binary exits non-zero so supervisors can flag a
                           forced shutdown.
+  -session-idle-timeout D auto-kill any session that has had no tool-call
+                          activity for at least D (default 0 = disabled).
+                          Activity is any tools/call referencing the
+                          session by name; session_list and
+                          kill_all_sessions are explicitly excluded so
+                          they cannot extend an idle session's lifetime.
+                          Negative values are rejected at startup.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -102,6 +109,12 @@ func main() {
 	if errors.Is(err, errInvalidLogFormat) {
 		os.Exit(2)
 	}
+	// Same exit-code convention for a malformed -session-idle-timeout
+	// (currently: a negative duration). The diagnostic was already
+	// written to stderr by the validator, so we don't double-log.
+	if errors.Is(err, errInvalidIdleTimeout) {
+		os.Exit(2)
+	}
 	// The -probe path has already written a "probe failed: …" line to
 	// stderr; logging the error again via slog would just duplicate it.
 	// Every other failure mode goes through slog so it shows up in the
@@ -114,6 +127,12 @@ func main() {
 	}
 	os.Exit(1)
 }
+
+// errInvalidIdleTimeout is the sentinel returned when -session-idle-timeout
+// receives a value the run path can't accept (currently: any strictly
+// negative duration). main() recognises it via [errors.Is] and maps it
+// to exit code 2 — the conventional "CLI usage error" status.
+var errInvalidIdleTimeout = errors.New("invalid -session-idle-timeout")
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tmux-mcp", flag.ContinueOnError)
@@ -163,11 +182,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	shutdownTimeout := fs.Duration("shutdown-timeout", 5*time.Second,
 		"on SIGTERM/SIGINT, drain in-flight tools/call responses for up to DUR "+
 			"before exiting; 0 disables the drain")
+	// Default 0 = feature disabled. The reaper goroutine is only
+	// launched when this is positive, so leaving the flag unset (or
+	// passing 0 explicitly) preserves the historical "tmux-mcp never
+	// kills a session for you" behaviour for desktop deployments
+	// where the human / agent decides session lifetime.
+	sessionIdleTimeout := fs.Duration("session-idle-timeout", 0,
+		"auto-kill any session idle for at least DUR (0 disables; rejected if negative)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected positional argument %q (run with -help)", fs.Arg(0))
+	}
+	// Reject negative durations up front with a clean stderr line and a
+	// non-zero exit. Positive zero is the documented "disabled" case so
+	// we leave it alone; only the strictly-negative path is invalid.
+	if *sessionIdleTimeout < 0 {
+		_, _ = fmt.Fprintf(stderr, "tmux-mcp: -session-idle-timeout %s must not be negative\n", *sessionIdleTimeout)
+		return errInvalidIdleTimeout
 	}
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
@@ -262,6 +295,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
 		server.WithAudit(audit),
 		server.WithShutdownTimeout(*shutdownTimeout),
+		// Pass the controller's KillSession as the reaper's kill hook so
+		// reaped sessions go through the same code path session_kill
+		// uses. WithSessionIdleTimeout treats d <= 0 as "disabled" and
+		// returns a no-op option, so the goroutine cost is paid only
+		// when the operator explicitly opted in.
+		server.WithSessionIdleTimeout(*sessionIdleTimeout, ctl.KillSession),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can
