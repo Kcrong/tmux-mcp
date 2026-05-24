@@ -37,18 +37,22 @@ client (Claude Desktop, an agent framework, etc.) — running it directly
 in a terminal is only useful for smoke tests.
 
 Flags:
-  -version          print version and exit
-  -version-json     print version metadata as JSON and exit
-  -help             print this message and exit
-  -probe            run a startup health check (verify tmux + version)
-                    and exit. Prints "ok\ttmux=<v>\ttmux-mcp=<v>" on
-                    success; non-zero exit + stderr diagnostic on
-                    failure. Useful for k8s liveness, systemd
-                    ExecStartPre, Docker HEALTHCHECK.
-  -log-level LEVEL  log verbosity: error|warn|info|debug (default "info")
-  -socket PATH      absolute path for the private tmux socket
-                    (also TMUX_MCP_SOCKET env var; flag wins).
-                    Default: a fresh directory under $TMPDIR.
+  -version                print version and exit
+  -version-json           print version metadata as JSON and exit
+  -help                   print this message and exit
+  -probe                  run a startup health check (verify tmux + version)
+                          and exit. Prints "ok\ttmux=<v>\ttmux-mcp=<v>" on
+                          success; non-zero exit + stderr diagnostic on
+                          failure. Useful for k8s liveness, systemd
+                          ExecStartPre, Docker HEALTHCHECK.
+  -log-level LEVEL        log verbosity: error|warn|info|debug (default "info")
+  -socket PATH            absolute path for the private tmux socket
+                          (also TMUX_MCP_SOCKET env var; flag wins).
+                          Default: a fresh directory under $TMPDIR.
+  -max-concurrent-calls N cap simultaneously-executing tools/call frames
+                          (default 64). Excess callers wait — back-pressure
+                          rather than failure. 0 disables the cap (unbounded
+                          goroutines, original behaviour).
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -89,6 +93,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	socket := fs.String("socket", os.Getenv("TMUX_MCP_SOCKET"),
 		"absolute path for the private tmux socket "+
 			"(env TMUX_MCP_SOCKET; default: fresh tempdir)")
+	// 64 is a generous default for an interactive single-agent client
+	// (Claude Desktop typically runs 1–4 tools in parallel) while still
+	// putting a ceiling on goroutines a misbehaving / flooding client
+	// can spawn. Operators who genuinely want unbounded behaviour can
+	// pass -max-concurrent-calls=0.
+	maxConcurrentCalls := fs.Int("max-concurrent-calls", 64,
+		"cap simultaneously-executing tools/call frames; 0 disables")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -127,7 +138,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
-	return server.Serve(ctx, stdin, stdout, tools.Handle)
+	return server.Serve(ctx, stdin, stdout, tools.Handle,
+		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
+	)
 }
 
 // parseLogLevel maps the -log-level flag value onto a slog.Level.

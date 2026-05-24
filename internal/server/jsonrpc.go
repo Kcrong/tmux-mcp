@@ -55,9 +55,41 @@ type rpcError struct {
 // error. A nil result is allowed (used for notifications).
 type Handler func(ctx context.Context, method string, params json.RawMessage) (any, *rpcError)
 
+// ServeOption configures Serve. Options compose into a serveConfig
+// struct; pass them as variadic trailing args so existing callers that
+// don't need to tune anything (`Serve(ctx, in, out, h)`) keep working
+// unchanged.
+type ServeOption func(*serveConfig)
+
+// serveConfig is the internal bag-of-knobs Serve assembles from its
+// ServeOption arguments. Keeping it unexported pins down the public API
+// to the option setters — we can grow new knobs (timeouts, max frame
+// size, …) without rewriting every test that constructs a server.
+type serveConfig struct {
+	// maxConcurrentCalls is the cap on simultaneously-executing
+	// tools/call frames. <=0 means unbounded (the historical default).
+	maxConcurrentCalls int
+}
+
+// WithMaxConcurrentCalls caps how many tools/call frames may be
+// in-flight simultaneously. Limit <=0 disables the cap (preserving the
+// pre-flag behaviour of unbounded goroutines). Other JSON-RPC methods
+// (initialize, notifications/initialized, tools/list) are not gated —
+// only tools/call frames consume a slot — so the limit reflects "how
+// many tool invocations am I willing to run at once" rather than total
+// RPC concurrency.
+func WithMaxConcurrentCalls(limit int) ServeOption {
+	return func(c *serveConfig) { c.maxConcurrentCalls = limit }
+}
+
 // Serve runs the JSON-RPC dispatch loop on a line-delimited reader and
 // writer until the reader hits EOF or the context is cancelled.
-func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
+func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...ServeOption) error {
+	var cfg serveConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	limiter := newCallLimiter(cfg.maxConcurrentCalls)
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
 	// wg tracks every dispatched handler goroutine so Serve can hold
@@ -124,6 +156,22 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 			// wg.Wait() observes a fully-handled request even when the
 			// handler panics.
 			defer wg.Done()
+			// Concurrency gate. Only tools/call frames are gated so
+			// initialize / tools/list / notifications stay snappy even
+			// when a flood of tool invocations is queued — those frames
+			// don't touch tmux and don't justify back-pressure. limiter
+			// is nil when the operator left -max-concurrent-calls at 0,
+			// in which case Acquire/Release are no-ops.
+			if req.Method == "tools/call" {
+				if err := limiter.Acquire(reqCtx, req.Method); err != nil {
+					if len(req.ID) == 0 {
+						return
+					}
+					send(rpcResponse{ID: req.ID, Error: internalError(err)})
+					return
+				}
+				defer limiter.Release()
+			}
 			// Recover from any panic raised inside the user-supplied
 			// Handler. Without this, a panic would (a) skip wg.Done and
 			// hang Shutdown, and (b) deny the client any response.
