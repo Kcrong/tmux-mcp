@@ -69,6 +69,11 @@ type serveConfig struct {
 	// maxConcurrentCalls is the cap on simultaneously-executing
 	// tools/call frames. <=0 means unbounded (the historical default).
 	maxConcurrentCalls int
+	// audit is the optional JSONL audit sink. When non-nil, every
+	// `tools/call` (success or failure) produces a record. Other
+	// JSON-RPC methods are excluded — they are protocol bookkeeping
+	// and would dominate the log without adding signal.
+	audit *Audit
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -82,6 +87,16 @@ func WithMaxConcurrentCalls(limit int) ServeOption {
 	return func(c *serveConfig) { c.maxConcurrentCalls = limit }
 }
 
+// WithAudit installs an optional JSONL audit sink. When non-nil, every
+// successful or failed `tools/call` produces a record. Other JSON-RPC
+// methods (initialize, notifications/initialized, tools/list) are
+// intentionally excluded — they are protocol bookkeeping and would
+// dominate the log without adding signal. A nil audit handle keeps the
+// audit-disabled fast-path (no record emission, no allocations).
+func WithAudit(a *Audit) ServeOption {
+	return func(c *serveConfig) { c.audit = a }
+}
+
 // Serve runs the JSON-RPC dispatch loop on a line-delimited reader and
 // writer until the reader hits EOF or the context is cancelled.
 func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...ServeOption) error {
@@ -90,6 +105,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		o(&cfg)
 	}
 	limiter := newCallLimiter(cfg.maxConcurrentCalls)
+	audit := cfg.audit
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
 	// wg tracks every dispatched handler goroutine so Serve can hold
@@ -140,7 +156,9 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		// the method name) to a request-scoped logger. Every log line
 		// emitted from the request path — here and inside Handler —
 		// carries "rid" so operators can stitch concurrent requests
-		// back together across goroutines.
+		// back together across goroutines. The same id is also passed
+		// to the audit sink so audit records and the structured log
+		// stream share a correlation key.
 		rid := newRequestID()
 		reqLogger := slog.Default().With("rid", rid, "method", req.Method)
 		reqCtx := WithLogger(ctx, reqLogger)
@@ -148,7 +166,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		// Dispatch each request on its own goroutine so a slow tool call
 		// doesn't block other traffic on the same stdio pipe.
 		wg.Add(1)
-		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger) {
+		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger, rid string) {
 			// wg.Done is registered first so that, in defer-LIFO order,
 			// the recovery defer below executes *before* wg.Done — i.e.
 			// recover() runs, the error reply is written, and only then
@@ -200,7 +218,18 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			}()
 			started := time.Now()
 			result, rerr := h(reqCtx, req.Method, req.Params)
-			durMs := time.Since(started).Milliseconds()
+			dur := time.Since(started)
+			durMs := dur.Milliseconds()
+			// Audit only `tools/call` — initialize / notifications /
+			// tools/list are protocol bookkeeping and would drown the
+			// log in noise without adding signal. Notifications go
+			// through here too, but tools/call is always a request
+			// (carries an id) so the early-return below for
+			// notifications fires first only on non-tools/call
+			// methods.
+			if req.Method == "tools/call" {
+				audit.Record(rid, toolNameFromParams(req.Params), toolArgsFromParams(req.Params), dur, rerr)
+			}
 			// Notifications have no id field; they get no response.
 			if len(req.ID) == 0 {
 				reqLogger.Debug("rpc end", "dur_ms", durMs, "notification", true)
@@ -213,8 +242,43 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			}
 			reqLogger.Debug("rpc end", "dur_ms", durMs)
 			send(rpcResponse{ID: req.ID, Result: result})
-		}(req, reqCtx, reqLogger)
+		}(req, reqCtx, reqLogger, rid)
 	}
+}
+
+// toolNameFromParams pulls the {"name": "..."} field out of a
+// `tools/call` params payload. Returns "" when the params are absent
+// or malformed — Record will still emit a record with tool="" so the
+// failure is visible in the audit log instead of swallowed.
+func toolNameFromParams(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	return probe.Name
+}
+
+// toolArgsFromParams returns the raw bytes of the "arguments" field
+// inside a `tools/call` params payload. The audit record only stores
+// the byte length of this slice (never its contents — see Audit.Record),
+// but we extract it as bytes so [extractSession] can peek at a single
+// well-known field without needing to know any tool's full schema.
+func toolArgsFromParams(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var probe struct {
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil
+	}
+	return probe.Arguments
 }
 
 // invalidParams builds a typed JSON-RPC error for malformed params.

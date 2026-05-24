@@ -415,6 +415,18 @@ The unit pins the socket at `/run/tmux-mcp/sock` (managed by
 `MemoryMax=512M`, …). Tweak `User=`, the socket path, or the resource
 caps to taste before installing.
 
+### Audit log
+
+Pass `-audit-log=PATH` to emit one JSONL record per `tools/call` (other
+methods are protocol bookkeeping and stay out of the log). Use
+`-audit-log=stderr` to share the slog stream, or any other value as a
+file path opened append-only at mode `0600`. Each record carries
+`ts`, `request_id`, `tool`, `session`, `duration_ms`, `result`,
+`error_code` (errors only), and `args_size_bytes`.
+**Privacy:** `args_size_bytes` is the byte length of the raw arguments
+JSON only — argument *content* is never logged, so commands and any
+embedded secrets stay out of the audit trail.
+
 ## Tool surface
 
 | Tool | Purpose |

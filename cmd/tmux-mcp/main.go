@@ -53,6 +53,12 @@ Flags:
                           (default 64). Excess callers wait — back-pressure
                           rather than failure. 0 disables the cap (unbounded
                           goroutines, original behaviour).
+  -audit-log PATH         when set, write one JSONL audit record per
+                          tools/call. Use "stderr" to share the slog
+                          stream, or any other value as a file path
+                          (opened append-only at mode 0600).
+                          Records carry args_size_bytes only — never
+                          args content. Default: disabled.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -100,6 +106,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// pass -max-concurrent-calls=0.
 	maxConcurrentCalls := fs.Int("max-concurrent-calls", 64,
 		"cap simultaneously-executing tools/call frames; 0 disables")
+	// Empty default keeps the audit log opt-in: existing deployments
+	// see no behaviour change. "stderr" is a magic path that shares
+	// the slog stream; any other value is a filesystem path.
+	auditLog := fs.String("audit-log", "",
+		"path for JSONL audit records (\"stderr\" or a file path; default: disabled)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -133,6 +144,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer cancel()
 	defer ctl.Shutdown(context.Background())
 
+	// Open the audit sink before constructing the server so we surface
+	// path/permission problems as a clean startup error instead of
+	// half-running with a broken sink. OpenAudit returns (nil, nil) for
+	// the disabled case so audit stays a true no-op when the flag is
+	// not set.
+	audit, err := server.OpenAudit(*auditLog, stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = audit.Close() }()
+
 	tools := server.NewTools(ctl)
 	// Propagate the ldflags-injected binary version so MCP clients see
 	// the same value the -version flag prints, instead of a hardcoded
@@ -140,6 +162,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	tools.Version = version
 	return server.Serve(ctx, stdin, stdout, tools.Handle,
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
+		server.WithAudit(audit),
 	)
 }
 

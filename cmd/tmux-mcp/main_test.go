@@ -205,6 +205,26 @@ func TestRunProbeSuccess(t *testing.T) {
 	}
 }
 
+// TestAuditLogBadPathFailsStartup pins the operator-visible contract for
+// -audit-log: when the supplied path is unopenable (e.g. the parent
+// directory does not exist), run() must surface the error so main exits
+// non-zero. Silently running with audit disabled would betray the
+// operator's expectation that audit is on.
+func TestAuditLogBadPathFailsStartup(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-audit-log=/no/such/dir/audit.log"},
+		strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for unopenable audit-log path, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log") {
+		t.Fatalf("expected error to mention audit log, got %v", err)
+	}
+}
+
 // TestDebugLevelEmitsJSONLogs is a smoke test: with -log-level=debug a
 // malformed request line on stdin must produce a JSON-formatted slog
 // record on stderr (and stdout must stay valid JSON-RPC).
