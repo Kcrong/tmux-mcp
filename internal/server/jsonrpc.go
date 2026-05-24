@@ -51,6 +51,9 @@ type Handler func(ctx context.Context, method string, params json.RawMessage) (a
 func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
+	// wg tracks every dispatched handler goroutine so Serve can hold
+	// shutdown until all in-flight calls have written their response.
+	var wg sync.WaitGroup
 	send := func(resp rpcResponse) {
 		resp.JSONRPC = "2.0"
 		buf, err := json.Marshal(resp)
@@ -64,13 +67,18 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 	}
 	for {
 		if ctx.Err() != nil {
+			// Drain in-flight handlers before surfacing cancellation so
+			// the caller's tmux/process teardown can't race their writes.
+			wg.Wait()
 			return ctx.Err()
 		}
 		line, err := r.ReadBytes('\n')
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				wg.Wait()
 				return nil
 			}
+			wg.Wait()
 			return err
 		}
 		if len(line) == 0 {
@@ -98,7 +106,9 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 		reqLogger.Debug("rpc start", "id", string(req.ID))
 		// Dispatch each request on its own goroutine so a slow tool call
 		// doesn't block other traffic on the same stdio pipe.
+		wg.Add(1)
 		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger) {
+			defer wg.Done()
 			started := time.Now()
 			result, rerr := h(reqCtx, req.Method, req.Params)
 			durMs := time.Since(started).Milliseconds()

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -328,5 +329,69 @@ func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
 	}
 	if errRid != startRid {
 		t.Fatalf("error rid %q did not match start rid %q", errRid, startRid)
+	}
+}
+
+// TestServe_WaitsForInFlightHandlers verifies the WaitGroup contract:
+// once stdin closes (or ctx cancels), Serve must not return until every
+// dispatched goroutine finishes its handler body. The test queues a
+// request whose handler sleeps for 200ms while bumping an atomic
+// counter, closes stdin immediately after, and asserts Serve only
+// returns *after* the counter has been incremented.
+func TestServe_WaitsForInFlightHandlers(t *testing.T) {
+	in := &threadSafeBuffer{}
+	out := &bytes.Buffer{}
+	outMu := &sync.Mutex{}
+	syncWriter := &lockedWriter{w: out, mu: outMu}
+
+	var (
+		handlerStarted = make(chan struct{})
+		handlerDone    atomic.Int32
+	)
+	handler := func(_ context.Context, _ string, _ json.RawMessage) (any, *rpcError) {
+		close(handlerStarted)
+		time.Sleep(200 * time.Millisecond)
+		handlerDone.Add(1)
+		return map[string]any{"slow": true}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+
+	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"slow"}` + "\n"))
+
+	// Wait until we know the handler has actually started — otherwise
+	// closing stdin too early could let Serve race past wg.Add.
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	// Closing stdin makes ReadBytes return io.EOF, which without the
+	// WaitGroup fix would let Serve return while the 200ms handler is
+	// still running.
+	in.Close()
+
+	select {
+	case err := <-done:
+		if got := handlerDone.Load(); got != 1 {
+			t.Fatalf("Serve returned (err=%v) before handler finished: counter=%d", err, got)
+		}
+		if err != nil {
+			t.Fatalf("Serve returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s after stdin close")
+	}
+
+	// Sanity: response should still have been written before Serve exited.
+	outMu.Lock()
+	body := out.String()
+	outMu.Unlock()
+	if !strings.Contains(body, `"slow":true`) {
+		t.Fatalf("expected slow handler response in output, got %q", body)
 	}
 }
