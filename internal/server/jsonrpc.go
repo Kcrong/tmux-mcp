@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Standard JSON-RPC 2.0 error codes.
@@ -86,22 +87,34 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 			send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInvalidRequest, Message: "expected jsonrpc=2.0 with method"}})
 			continue
 		}
-		slog.Debug("rpc request", "method", req.Method, "id", string(req.ID))
+		// Generate a server-side request id and attach it (alongside
+		// the method name) to a request-scoped logger. Every log line
+		// emitted from the request path — here and inside Handler —
+		// carries "rid" so operators can stitch concurrent requests
+		// back together across goroutines.
+		rid := newRequestID()
+		reqLogger := slog.Default().With("rid", rid, "method", req.Method)
+		reqCtx := WithLogger(ctx, reqLogger)
+		reqLogger.Debug("rpc start", "id", string(req.ID))
 		// Dispatch each request on its own goroutine so a slow tool call
 		// doesn't block other traffic on the same stdio pipe.
-		go func(req rpcRequest) {
-			result, rerr := h(ctx, req.Method, req.Params)
+		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger) {
+			started := time.Now()
+			result, rerr := h(reqCtx, req.Method, req.Params)
+			durMs := time.Since(started).Milliseconds()
 			// Notifications have no id field; they get no response.
 			if len(req.ID) == 0 {
+				reqLogger.Debug("rpc end", "dur_ms", durMs, "notification", true)
 				return
 			}
 			if rerr != nil {
-				slog.Warn("rpc error", "method", req.Method, "code", rerr.Code, "message", rerr.Message)
+				reqLogger.Warn("rpc error", "code", rerr.Code, "message", rerr.Message, "dur_ms", durMs)
 				send(rpcResponse{ID: req.ID, Error: rerr})
 				return
 			}
+			reqLogger.Debug("rpc end", "dur_ms", durMs)
 			send(rpcResponse{ID: req.ID, Result: result})
-		}(req)
+		}(req, reqCtx, reqLogger)
 	}
 }
 
