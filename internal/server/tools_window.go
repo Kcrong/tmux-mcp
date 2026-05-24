@@ -69,6 +69,28 @@ var windowToolDefs = []map[string]any{
 			"required": []string{"session", "window"},
 		},
 	},
+	{
+		"name": "list_windows",
+		"description": "Enumerate windows visible to this server. Pass `session` to scope the listing to a " +
+			"single tmux session; omit it to list every window on the server (-a). Each entry " +
+			"includes the window index, name, active flag, and pane count, so callers can build " +
+			"a `session:index` target for follow-up window_kill / send_keys / capture calls.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"maxLength":   maxSessionNameLen,
+					"description": "Optional session name; len 1-64, [A-Za-z0-9_-]. Omit to list every window.",
+				},
+			},
+			// list_windows takes only the optional `session` arg today.
+			// Locking additionalProperties keeps the schema strict so an
+			// agent that misnames a field gets a fast schema-shaped
+			// rejection rather than a silent no-op.
+			"additionalProperties": false,
+		},
+	},
 }
 
 // windowNameRE mirrors sessionNameRE so window names share the same
@@ -211,4 +233,49 @@ func (t *Tools) windowKill(ctx context.Context, raw json.RawMessage) (any, *rpcE
 		return nil, internalError(err)
 	}
 	return textBlock(fmt.Sprintf("window %q killed", args.Session+":"+args.Window)), nil
+}
+
+// listWindows drives tmuxctl.Controller.ListWindows and serialises the
+// result to the standard `{"content":[{"type":"text","text":"<json>"}]}`
+// envelope MCP expects from a tools/call. The response shape is a flat
+// object keyed by "windows" so a future filter (e.g. "active_only" or
+// a "scope" knob) can be added without breaking callers that iterate
+// the list.
+//
+// `session` is optional: when present it must satisfy the same regex /
+// length policy as every other session reference; when absent the
+// listing covers every window on the server (the -a branch). Unknown
+// session names surface via the wrapped errs.ErrSessionNotFound which
+// the JSON-RPC layer maps to CodeSessionNotFound.
+func (t *Tools) listWindows(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Session string `json:"session"`
+	}
+	// json.Unmarshal on an empty payload is fine — the schema permits
+	// `arguments: {}` here, and the zero value of args.Session means
+	// "list every window on the server".
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, invalidParams("list_windows: %v", err)
+		}
+	}
+	if args.Session != "" {
+		if rerr := validateSessionRef(args.Session); rerr != nil {
+			return nil, rerr
+		}
+	}
+	wins, err := t.Ctl.ListWindows(ctx, args.Session)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	out := make([]map[string]any, 0, len(wins))
+	for _, w := range wins {
+		out = append(out, map[string]any{
+			"index":  w.Index,
+			"name":   w.Name,
+			"active": w.Active,
+			"panes":  w.Panes,
+		})
+	}
+	return jsonBlock(map[string]any{"windows": out})
 }

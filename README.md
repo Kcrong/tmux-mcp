@@ -510,6 +510,7 @@ embedded secrets stay out of the audit trail.
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
+| `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
@@ -681,6 +682,21 @@ Returns
 `{"panes": [{"id": "%0", "title": "vim", "session_win": "demo:0", "index": 0, "active": true, "width": 120, "height": 40}, …]}`.
 Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
 `target` argument expected by `pane_select`.
+
+### `list_windows`
+
+```jsonc
+{ "session": "demo" }   // omit `session` to list every window on the server
+```
+
+Returns
+`{"windows": [{"index": 0, "name": "bash", "active": true, "panes": 1}, …]}`.
+Combine the session name with `index` (e.g. `demo:0`) to build a
+window target string for follow-up `window_kill` / `send_keys` calls.
+Unknown session names yield JSON-RPC code `-32000`
+(`CodeSessionNotFound`); the schema rejects unknown fields up front
+(`additionalProperties: false`) so a typo in the argument name fails
+fast with `-32602` (invalid params).
 
 ### `pane_select`
 
