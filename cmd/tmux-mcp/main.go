@@ -69,6 +69,13 @@ Flags:
                           A value of 0 disables cleanup entirely (history is
                           only released when the session is killed). Accepts
                           any Go duration: 30s, 5m, 2h, …
+  -shutdown-timeout DUR   on SIGTERM/SIGINT, wait up to DUR for in-flight
+                          tools/call handlers to finish writing their
+                          JSON-RPC responses before exiting (default 5s).
+                          Set to 0 to disable the drain (exit immediately,
+                          abandoning in-flight responses). On timeout the
+                          binary exits non-zero so supervisors can flag a
+                          forced shutdown.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -134,6 +141,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// preserves pre-flag behaviour for anyone who explicitly opts out.
 	snapshotTTL := fs.Duration("snapshot-ttl", snapshot.DefaultTTL,
 		"max idle time a session's snapshot history is kept (0 disables cleanup)")
+	// 5s is long enough that an in-flight `tools/call` returning a
+	// capture-pane snapshot or a wait_for_text result has time to
+	// serialise its response; short enough that systemd's default
+	// TimeoutStopSec=90s never trips on us. Operators with longer
+	// wait_for_text deadlines can bump it; setting 0 keeps the legacy
+	// "drop in-flight responses on the floor" behaviour for tests /
+	// scripts that don't care.
+	shutdownTimeout := fs.Duration("shutdown-timeout", 5*time.Second,
+		"on SIGTERM/SIGINT, drain in-flight tools/call responses for up to DUR "+
+			"before exiting; 0 disables the drain")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -182,8 +199,35 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// Bind SIGTERM/SIGINT to ctx cancellation by hand (instead of via
+	// signal.NotifyContext) so we can also try to close stdin on
+	// signal. Serve's dispatcher already wakes on ctx.Done(), but its
+	// internal reader goroutine is parked in a blocking ReadBytes; the
+	// stdin Close lets that helper exit cleanly instead of being leaked
+	// until process teardown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			slog.Info("shutdown signal received",
+				"signal", sig.String(),
+				"shutdown_timeout", *shutdownTimeout,
+			)
+			cancel()
+			// Close stdin to unblock Serve's ReadBytes. If stdin
+			// isn't a Closer (uncommon — os.Stdin always is) we just
+			// rely on ctx cancellation + the next frame to wake the
+			// loop.
+			if c, ok := stdin.(io.Closer); ok {
+				_ = c.Close()
+			}
+		case <-ctx.Done():
+		}
+	}()
 	defer ctl.Shutdown(context.Background())
 
 	// Open the audit sink before constructing the server so we surface
@@ -202,10 +246,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
-	return server.Serve(ctx, stdin, stdout, tools.Handle,
+	serr := server.Serve(ctx, stdin, stdout, tools.Handle,
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
 		server.WithAudit(audit),
+		server.WithShutdownTimeout(*shutdownTimeout),
 	)
+	if errors.Is(serr, server.ErrShutdownTimedOut) {
+		// Surface the timeout via a non-zero exit so supervisors can
+		// flag a forced shutdown. The slog.Warn from Serve already
+		// logged the cause; main() will log the wrapped error too.
+		return serr
+	}
+	// Plain ctx cancellation is the happy SIGTERM path — not an error.
+	if errors.Is(serr, context.Canceled) {
+		return nil
+	}
+	return serr
 }
 
 // parseLogLevel maps the -log-level flag value onto a slog.Level.

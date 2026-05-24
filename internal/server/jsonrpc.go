@@ -74,6 +74,14 @@ type serveConfig struct {
 	// JSON-RPC methods are excluded — they are protocol bookkeeping
 	// and would dominate the log without adding signal.
 	audit *Audit
+	// shutdownTimeout caps how long Serve will wait for in-flight
+	// handlers to finish writing their responses after the read loop
+	// exits (ctx cancel or EOF). The zero value (shutdownTimeoutSet
+	// false) preserves the pre-flag behaviour of waiting indefinitely.
+	// shutdownTimeoutSet=true with shutdownTimeout=0 means "skip the
+	// drain entirely"; any in-flight handlers keep running detached.
+	shutdownTimeout    time.Duration
+	shutdownTimeoutSet bool
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -97,8 +105,39 @@ func WithAudit(a *Audit) ServeOption {
 	return func(c *serveConfig) { c.audit = a }
 }
 
+// WithShutdownTimeout caps how long Serve waits for in-flight handlers
+// to finish after the read loop exits (ctx cancel or stdin EOF). When
+// the timeout fires Serve returns ErrShutdownTimedOut so the caller can
+// surface a non-zero exit status. d=0 disables the drain (Serve returns
+// immediately, in-flight handlers are abandoned mid-write); negative
+// values are treated as 0. Callers that don't apply this option keep
+// the historical behaviour of an unbounded drain.
+func WithShutdownTimeout(d time.Duration) ServeOption {
+	return func(c *serveConfig) {
+		if d < 0 {
+			d = 0
+		}
+		c.shutdownTimeout = d
+		c.shutdownTimeoutSet = true
+	}
+}
+
+// ErrShutdownTimedOut is returned by Serve when the in-flight drain
+// fails to complete inside the timeout configured via
+// WithShutdownTimeout. Callers can use [errors.Is] to recognise it and
+// map it to a non-zero exit code.
+var ErrShutdownTimedOut = errors.New("shutdown drain timed out")
+
 // Serve runs the JSON-RPC dispatch loop on a line-delimited reader and
 // writer until the reader hits EOF or the context is cancelled.
+//
+// Shutdown semantics: when ctx is cancelled (typically because main
+// caught SIGTERM), Serve stops dispatching new tools/call frames and
+// instead replies to any newly-arrived request with -32603
+// "shutting down". It then waits for previously-dispatched handlers to
+// finish — bounded by [WithShutdownTimeout] (default: unbounded) — so
+// in-flight responses get a chance to land on the wire before the
+// process exits.
 func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...ServeOption) error {
 	var cfg serveConfig
 	for _, o := range opts {
@@ -122,22 +161,160 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		_, _ = out.Write(buf)
 		_, _ = out.Write([]byte{'\n'})
 	}
-	for {
-		if ctx.Err() != nil {
-			// Drain in-flight handlers before surfacing cancellation so
-			// the caller's tmux/process teardown can't race their writes.
-			wg.Wait()
-			return ctx.Err()
-		}
-		line, err := r.ReadBytes('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				wg.Wait()
-				return nil
+	// readFrame ferries lines from the blocking ReadBytes call into a
+	// channel so the dispatch loop can select on ctx.Done() too. Without
+	// this hand-off, a SIGTERM with no further client traffic would
+	// keep ReadBytes parked indefinitely on the underlying read syscall
+	// — Go's runtime won't always interrupt a blocking pipe read just
+	// because os.Stdin.Close() was called from another goroutine. The
+	// reader exits when the underlying stream EOFs (or errors); on ctx
+	// cancellation we abandon it and let the OS reap it on process
+	// exit, which is fine because stdio is single-use anyway.
+	type frame struct {
+		line []byte
+		err  error
+	}
+	frames := make(chan frame, 1)
+	go func() {
+		for {
+			line, err := r.ReadBytes('\n')
+			frames <- frame{line: line, err: err}
+			if err != nil {
+				return
 			}
-			wg.Wait()
-			return err
 		}
+	}()
+	// drain runs after the read loop exits. It bounds the wg.Wait by
+	// shutdownTimeout so a wedged handler can't block process teardown
+	// forever. While waiting it also pulls any frames that arrive on
+	// the read channel and replies -32603 "shutting down" so a flooding
+	// client can't extend the drain window. Returns
+	// ErrShutdownTimedOut when the timeout fires.
+	drain := func() error {
+		// Caller explicitly opted in to a 0 timeout: skip the drain.
+		// Any in-flight goroutines keep running detached until the
+		// process exits.
+		if cfg.shutdownTimeoutSet && cfg.shutdownTimeout == 0 {
+			return nil
+		}
+		waitDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitDone)
+		}()
+		// rejectFrame replies "shutting down" to any post-cancel frame
+		// that still parses as a request with an id. Notifications and
+		// malformed frames are swallowed silently — there's nothing
+		// useful to send back.
+		rejectFrame := func(f frame) {
+			if f.err != nil {
+				return
+			}
+			if len(f.line) == 0 {
+				return
+			}
+			var req rpcRequest
+			if jerr := json.Unmarshal(f.line, &req); jerr != nil {
+				return
+			}
+			if len(req.ID) == 0 {
+				return
+			}
+			send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInternalError, Message: "shutting down"}})
+		}
+		// drainPendingFrames pulls every frame currently sitting in the
+		// channel and rejects it. Used after waitDone fires to make sure
+		// a frame the reader goroutine queued just before / during ctx
+		// cancel still gets a "shutting down" reply instead of being
+		// silently dropped. We only consume frames that are already
+		// ready — if the channel is empty we don't wait, since the
+		// in-flight side has finished and there's nothing left to
+		// coordinate with.
+		drainPendingFrames := func() {
+			for {
+				select {
+				case f := <-frames:
+					rejectFrame(f)
+				default:
+					return
+				}
+			}
+		}
+		// No timeout configured (back-compat for callers that don't
+		// pass WithShutdownTimeout): wait indefinitely, matching the
+		// pre-flag behaviour where Serve always blocked on every
+		// handler.
+		if !cfg.shutdownTimeoutSet {
+			for {
+				select {
+				case <-waitDone:
+					drainPendingFrames()
+					return nil
+				case f := <-frames:
+					rejectFrame(f)
+				}
+			}
+		}
+		t := time.NewTimer(cfg.shutdownTimeout)
+		defer t.Stop()
+		// shortPoll bounds how long we wait, after handlers drain, for
+		// straggler frames the reader goroutine may have queued just as
+		// ctx fired. Without it the test (and any client that writes
+		// post-cancel frames) races the wg.Wait() goroutine and may
+		// observe drain returning before the frame is rejected.
+		const shortPoll = 100 * time.Millisecond
+		for {
+			select {
+			case <-waitDone:
+				// Give late-arriving frames a brief window to land before
+				// we exit the drain. The remaining time budget is also
+				// honoured so a flooding client can't extend shutdown
+				// past the configured timeout.
+				postWait := time.NewTimer(shortPoll)
+				for {
+					select {
+					case f := <-frames:
+						rejectFrame(f)
+					case <-postWait.C:
+						drainPendingFrames()
+						return nil
+					case <-t.C:
+						postWait.Stop()
+						drainPendingFrames()
+						return nil
+					}
+				}
+			case <-t.C:
+				slog.Warn("shutdown drain timed out", "timeout", cfg.shutdownTimeout)
+				return ErrShutdownTimedOut
+			case f := <-frames:
+				rejectFrame(f)
+			}
+		}
+	}
+	for {
+		var f frame
+		select {
+		case <-ctx.Done():
+			return drain()
+		case f = <-frames:
+		}
+		if f.err != nil {
+			if errors.Is(f.err, io.EOF) {
+				return drain()
+			}
+			if derr := drain(); derr != nil {
+				return derr
+			}
+			// If ctx was cancelled, surface that — it's the more useful
+			// signal for callers (read errors during shutdown are
+			// expected when stdin is closed to break the blocking read).
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return f.err
+		}
+		line := f.line
 		if len(line) == 0 {
 			continue
 		}
@@ -150,6 +327,16 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		if req.JSONRPC != "2.0" || req.Method == "" {
 			slog.Warn("invalid request", "method", req.Method, "jsonrpc", req.JSONRPC)
 			send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInvalidRequest, Message: "expected jsonrpc=2.0 with method"}})
+			continue
+		}
+		// Belt-and-suspenders: if ctx fired between the channel recv
+		// and here (e.g. signal raced the dispatch), reject the frame
+		// the same way we reject post-cancel arrivals. Notifications
+		// get no response either way.
+		if ctx.Err() != nil {
+			if len(req.ID) > 0 {
+				send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInternalError, Message: "shutting down"}})
+			}
 			continue
 		}
 		// Generate a server-side request id and attach it (alongside
