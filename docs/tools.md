@@ -30,6 +30,7 @@ Tool calls fail with a JSON-RPC `error` object. Codes are stable:
 | `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
 | `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
 | `-32004` | `errs.ErrSessionExists`        | A session name collides with an existing one (e.g. `session_rename` to a name in use). |
+| `-32010` | `errs.ErrOversizedResponse`    | Marshalled response exceeded the `-max-response-bytes` ceiling; the original payload was suppressed. The underlying call did execute. |
 
 Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
 mapping is performed by `errs.CodeOf`.
@@ -769,6 +770,89 @@ window, drive it.
 
 ---
 
+## `list_clients`
+
+Enumerate clients (attached terminals) visible to this server via
+`tmux list-clients`. Useful for an agent that needs to know whether a
+human is currently watching a session before driving it, or to
+sanity-check that a headless tmux server it owns has nothing
+attached. The boundary returns each client's controlling TTY, the
+session it is bound to, the TERM string it advertised, the current
+size, the read-only flag, and an RFC3339 attachment timestamp.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | no       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to list every client on the server. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"sesion"` fails fast instead of silently
+behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `clients`:
+
+```jsonc
+{
+  "clients": [
+    {
+      "tty":           "/dev/pts/3",
+      "session":       "demo",
+      "term":          "xterm-256color",
+      "size":          { "cols": 120, "rows": 40 },
+      "readonly":      false,
+      "creation_time": "2025-01-02T03:04:05Z"
+    }
+  ]
+}
+```
+
+| Field           | Type    | Notes                                                                           |
+| --------------- | ------- | ------------------------------------------------------------------------------- |
+| `tty`           | string  | Absolute path of the client's controlling terminal device.                      |
+| `session`       | string  | Name of the session the client is currently attached to.                        |
+| `term`          | string  | TERM value the client advertised when it attached (`#{client_termname}`).       |
+| `size.cols`     | integer | Client terminal width in columns at the moment of the listing.                  |
+| `size.rows`     | integer | Client terminal height in rows at the moment of the listing.                    |
+| `readonly`      | boolean | True when the client attached read-only (`tmux attach -r`).                     |
+| `creation_time` | string  | RFC3339 attachment timestamp parsed from `#{client_created}`.                   |
+
+A server with nothing attached returns `{"clients": []}` — a clean
+empty list rather than an error — so callers can iterate the response
+without a separate "is this an error" branch. This is the load-bearing
+case for the headless tmux servers tmux-mcp owns.
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `session` present but malformed, or an unknown field was sent.       |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// scope to a single session
+{ "session": "demo" }
+
+// list every client on the server
+{}
+```
+
+Pair with `session_list` to find the live sessions, then ask which
+ones have a human watching them:
+
+```jsonc
+{ "name": "session_list",  "arguments": {} }
+{ "name": "list_clients",  "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
@@ -990,6 +1074,63 @@ layout actually flipped:
 { "name": "list_panes", "arguments": { "session": "demo" } }
 { "name": "pane_swap",  "arguments": { "src": "demo:0.0", "dst": "demo:0.1" } }
 { "name": "list_panes", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `pane_join`
+
+Move a pane out of its current window and re-attach it to another
+window via `tmux join-pane -s <src> -t <dst>` (with `-h` when
+`horizontal` is true). The source pane keeps its `#{pane_id}`,
+contents, and running process — only the layout slot changes — so
+follow-up `pane_select` / `send_keys` calls against the moved pane see
+the new placement immediately. Useful for consolidating panes from
+multiple windows back into one (e.g. moving a long-lived REPL out of
+its own window and into the editor's window without restarting the
+process).
+
+When the donor window has no remaining panes after the join, tmux
+reaps it: a `list_windows` call after a join may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                       |
+| ------------ | ------- | -------- | --------------------------------------------------------------------------- |
+| `src`        | string  | yes      | Source pane target (e.g. `"mysession:1.0"`)                                 |
+| `dst`        | string  | yes      | Destination window target (e.g. `"mysession:0"`)                            |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.   |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the join (e.g. trying to join a pane to its own window).                              |
+
+### Example
+
+```jsonc
+{ "src": "mysession:1.0", "dst": "mysession:0" }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "mysession" } }
+{ "name": "pane_join",    "arguments": { "src": "mysession:1.0", "dst": "mysession:0" } }
+{ "name": "list_windows", "arguments": { "session": "mysession" } }
 ```
 
 ---

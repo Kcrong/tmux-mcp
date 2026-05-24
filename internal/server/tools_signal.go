@@ -82,7 +82,7 @@ func (t *Tools) sendSignal(ctx context.Context, raw json.RawMessage) (any, *rpcE
 			args.Signal, tmuxctl.SignalNames(),
 		)
 	}
-	if err := t.Ctl.SendSignal(ctx, args.Session, args.Signal); err != nil {
+	if err := t.Ctl.SendSignal(ctx, t.resolveSessionRef(args.Session), args.Signal); err != nil {
 		return nil, internalError(fmt.Errorf("send_signal: %w", err))
 	}
 	return textBlock("ok"), nil

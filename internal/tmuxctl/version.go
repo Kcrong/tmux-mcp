@@ -157,14 +157,26 @@ func probeTmuxVersion(ctx context.Context, bin string) (tmuxVersion, error) {
 // fast-path used by `tmux-mcp -probe` so orchestrators (k8s liveness,
 // systemd ExecStartPre, Docker HEALTHCHECK) can confirm the binary is
 // functional without spinning up the JSON-RPC loop.
+//
+// Equivalent to [ProbeVersionWithBinary] with an empty override. Kept
+// as a thin wrapper so existing callers don't have to thread an extra
+// argument through paths that never override the binary.
 func ProbeVersion(ctx context.Context) (string, error) {
-	bin, err := exec.LookPath("tmux")
+	return ProbeVersionWithBinary(ctx, "")
+}
+
+// ProbeVersionWithBinary is the explicit-path variant of [ProbeVersion].
+// When override is empty the function looks tmux up on $PATH (the
+// historical behaviour). When override is non-empty it must be an
+// absolute path to an existing executable — same validation contract as
+// [WithBinary] — and that binary is exec'd verbatim. This is what the
+// `-probe` and `-dry-run` paths use when the operator passed
+// `-tmux-bin`, so the probe reflects the binary the rest of the
+// process will actually drive.
+func ProbeVersionWithBinary(ctx context.Context, override string) (string, error) {
+	bin, err := resolveTmuxBin(override)
 	if err != nil {
-		return "", fmt.Errorf(
-			"tmux not found on PATH — install it first "+
-				"(e.g. `apt-get install tmux`, `brew install tmux`): %w",
-			err,
-		)
+		return "", err
 	}
 	v, err := probeTmuxVersion(ctx, bin)
 	if err != nil {

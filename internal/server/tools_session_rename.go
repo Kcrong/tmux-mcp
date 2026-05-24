@@ -89,7 +89,17 @@ func (t *Tools) sessionRename(ctx context.Context, raw json.RawMessage) (any, *r
 		// collision with a different session.
 		return nil, invalidParams("name and new_name are equal; nothing to rename")
 	}
-	if err := t.Ctl.RenameSession(ctx, args.Name, args.NewName); err != nil {
+	// Reject a destination name that would overflow the per-session
+	// length budget once the configured prefix is glued on. Without the
+	// guard, an overlong rename would land on tmux as a name no other
+	// tool can validly reference.
+	if rerr := validateCombinedSessionName(t.SessionPrefix, args.NewName); rerr != nil {
+		return nil, invalidParams("new_name: %s", rerr.Message)
+	}
+	if err := t.Ctl.RenameSession(ctx,
+		t.resolveSessionRef(args.Name),
+		t.resolveSessionRef(args.NewName),
+	); err != nil {
 		return nil, internalError(err)
 	}
 	// Echo the rename back so audit logs / clients have the pre/post

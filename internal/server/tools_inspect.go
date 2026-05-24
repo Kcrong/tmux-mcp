@@ -58,7 +58,7 @@ func (t *Tools) sessionInspect(ctx context.Context, raw json.RawMessage) (any, *
 	if rerr := validateSessionRef(args.Session); rerr != nil {
 		return nil, rerr
 	}
-	info, err := t.Ctl.InspectSession(ctx, args.Session)
+	info, err := t.Ctl.InspectSession(ctx, t.resolveSessionRef(args.Session))
 	if err != nil {
 		return nil, internalError(err)
 	}

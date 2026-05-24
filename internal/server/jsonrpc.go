@@ -104,6 +104,23 @@ type serveConfig struct {
 	// histogram) into the collectors it owns. nil keeps the
 	// metrics-disabled fast-path: no allocations, no Inc/Observe.
 	metrics *Metrics
+	// maxResponseBytes caps the marshalled JSON-RPC response body
+	// length (excluding the trailing newline) before it is written to
+	// stdout. <=0 disables the cap (the historical default). When a
+	// reply would exceed the ceiling, the dispatcher replaces it with
+	// a typed [errs.CodeOversizedResponse] error so a misbehaving tool
+	// (e.g. capture_pane on a 10MB scrollback) cannot dump a
+	// multi-megabyte frame onto a client whose reader can't tolerate
+	// it.
+	maxResponseBytes int64
+	// sessionPrefix mirrors the operator-supplied -session-prefix CLI
+	// flag at the dispatcher layer. Handlers in *Tools already apply
+	// the prefix on the session-name path themselves; the dispatcher
+	// needs its own copy to namespace the [IdleReaper] Touch entries
+	// the same way, so a session created as "agent_alice_demo" on tmux
+	// is reaped under that name (not the bare "demo" the client
+	// supplied). Empty keeps the historical no-prefix behaviour.
+	sessionPrefix string
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -167,6 +184,38 @@ func WithSessionIdleTimeout(d time.Duration, kill KillFunc) ServeOption {
 // WithShutdownTimeout. Callers can use [errors.Is] to recognise it and
 // map it to a non-zero exit code.
 var ErrShutdownTimedOut = errors.New("shutdown drain timed out")
+
+// WithMaxResponseBytes caps the marshalled JSON-RPC response body length
+// (excluding the trailing newline) the dispatcher will write to stdout.
+// Limit <=0 disables the cap (preserving the pre-flag behaviour of
+// streaming whatever the handler produced). When a reply exceeds the
+// ceiling, the dispatcher replaces it with a typed JSON-RPC error
+// carrying [errs.CodeOversizedResponse] and a message of the form
+// "response body N bytes exceeds max-response-bytes M" so the client
+// gets a structured signal instead of a truncated payload. The
+// underlying tools/call still ran — its audit / metrics records are
+// emitted with the oversize sentinel as the error so operators can
+// distinguish "the tool failed" from "the answer was too big".
+// Notifications (no id) get nothing, same as today.
+func WithMaxResponseBytes(limit int64) ServeOption {
+	return func(c *serveConfig) { c.maxResponseBytes = limit }
+}
+
+// WithSessionPrefix tells the dispatcher to namespace [IdleReaper]
+// Touch entries with the operator-supplied prefix so the reaper kills
+// sessions under their actual tmux names. Handlers in *Tools apply the
+// same prefix to every controller call independently — this option is
+// only about the activity table that lives on the dispatch side. Empty
+// (the default) keeps the no-prefix behaviour and is the right value
+// for a deployment that does not pass -session-prefix.
+//
+// Pass the same value the operator gave to *Tools.SessionPrefix so the
+// two layers stay consistent. Validation happens once at startup
+// against [ValidateSessionPrefix] in the binary's main; this option
+// trusts the input.
+func WithSessionPrefix(prefix string) ServeOption {
+	return func(c *serveConfig) { c.sessionPrefix = prefix }
+}
 
 // WithToolsListChangedNotifier wires the spec-defined
 // notifications/tools/list_changed surface. Serve runs setter once,
@@ -244,10 +293,70 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		if err != nil {
 			return
 		}
+		// Cap the wire-frame length when -max-response-bytes is set.
+		// We deliberately measure the marshalled body (excluding the
+		// trailing newline) so the limit reflects what actually crosses
+		// the pipe — re-marshalling the rpcResponse just to count its
+		// fields would diverge from the bytes the client receives.
+		// Notifications carry no id, so a synthesised error has nowhere
+		// to land; we suppress them entirely (matching the existing
+		// "notifications get nothing" contract above).
+		if cfg.maxResponseBytes > 0 && int64(len(buf)) > cfg.maxResponseBytes {
+			if len(resp.ID) == 0 {
+				return
+			}
+			rerr := &rpcError{
+				Code: errs.CodeOversizedResponse,
+				Message: fmt.Sprintf(
+					"response body %d bytes exceeds max-response-bytes %d",
+					len(buf), cfg.maxResponseBytes,
+				),
+			}
+			replacement := rpcResponse{JSONRPC: "2.0", ID: resp.ID, Error: rerr}
+			rb, rerrMarshal := json.Marshal(replacement)
+			if rerrMarshal != nil {
+				return
+			}
+			buf = rb
+		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		_, _ = out.Write(buf)
 		_, _ = out.Write([]byte{'\n'})
+	}
+	// oversizeRerr returns the typed error the dispatcher should attribute
+	// to a tools/call whose marshalled response exceeded
+	// -max-response-bytes. Audit and metrics consult it pre-send so the
+	// record reflects "the call ran, but its output was suppressed" rather
+	// than the silent success the handler reported. Returns nil when
+	// either the cap is disabled (preserving the historical fast-path) or
+	// the response would have fit.
+	oversizeRerr := func(resp rpcResponse) *rpcError {
+		if cfg.maxResponseBytes <= 0 {
+			return nil
+		}
+		if resp.Error != nil {
+			// A failed call already carries an error code; resizing
+			// it to a different sentinel would mask the real cause
+			// the handler reported.
+			return nil
+		}
+		probe := resp
+		probe.JSONRPC = "2.0"
+		buf, err := json.Marshal(probe)
+		if err != nil {
+			return nil
+		}
+		if int64(len(buf)) <= cfg.maxResponseBytes {
+			return nil
+		}
+		return &rpcError{
+			Code: errs.CodeOversizedResponse,
+			Message: fmt.Sprintf(
+				"response body %d bytes exceeds max-response-bytes %d",
+				len(buf), cfg.maxResponseBytes,
+			),
+		}
 	}
 	// Build the spec-defined list-change emitter and hand it to
 	// whoever opted in via WithToolsListChangedNotifier (typically
@@ -536,6 +645,17 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			// not a session-bearing tools/call.
 			if reaper != nil && req.Method == "tools/call" {
 				if name := sessionFromArgs(toolNameFromParams(req.Params), toolArgsFromParams(req.Params)); name != "" {
+					// Glue the configured -session-prefix on so the
+					// reaper's activity table keys on the same name the
+					// controller sees. Without this, a "demo" Touch from
+					// a prefixed deployment would land under a key the
+					// reaper's own kill (which goes through ctl.KillSession
+					// against the prefixed name) never matches, so the
+					// session would either never be reaped or be reaped
+					// from a stale entry. Empty prefix is a no-op.
+					if cfg.sessionPrefix != "" {
+						name = cfg.sessionPrefix + name
+					}
 					reaper.Touch(name)
 				}
 			}
@@ -543,6 +663,21 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			result, rerr := h(reqCtx, req.Method, req.Params)
 			dur := time.Since(started)
 			durMs := dur.Milliseconds()
+			// Pre-check the marshalled response against
+			// -max-response-bytes so audit / metrics see the oversize
+			// sentinel instead of a silent success when the handler
+			// produced a payload too big to ship. Notifications are
+			// excluded — they carry no id, so a synthesised error has
+			// nowhere to land. The actual wire-replacement happens
+			// inside `send`, but mirroring the decision here keeps the
+			// audit record honest. No-op (returns nil) when the cap is
+			// disabled or the response would have fit.
+			if rerr == nil && len(req.ID) > 0 {
+				if oversize := oversizeRerr(rpcResponse{ID: req.ID, Result: result}); oversize != nil {
+					rerr = oversize
+					result = nil
+				}
+			}
 			// Audit only `tools/call` — initialize / notifications /
 			// tools/list are protocol bookkeeping and would drown the
 			// log in noise without adding signal. Notifications go

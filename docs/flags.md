@@ -18,12 +18,15 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-log-source`              | `false`                         | —                   | Include file/line of the call site in each log record (slight perf cost). JSON records gain a `source` object, text records a `source=…` key. |
 | `-log-output`              | `stderr`                        | —                   | Destination for slog output: `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (opened append-only at mode `0600`). The file is closed cleanly on shutdown. tmux-mcp does not rotate the file — pair it with `logrotate(8)`. |
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
+| `-tmux-bin`                | `""` (resolve `tmux` from `$PATH`) | `TMUX_MCP_TMUX_BIN` | Absolute path to the tmux executable. Empty default keeps the legacy PATH lookup. When set the path must be absolute and point at an existing executable file; startup fails with `tmux binary "<path>" not executable: …` otherwise. Flag wins over env var. See **`-tmux-bin`** below. |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
+| `-max-response-bytes`      | `0` (disabled)                  | —                   | Hard ceiling on the marshalled JSON-RPC response body in bytes. When a reply exceeds the cap, the server replaces it with a typed JSON-RPC error (code `-32010`) so a misbehaving tool (e.g. `capture_pane` on a 10MB scrollback) cannot dump a multi-megabyte frame onto an MCP client whose reader can't tolerate it. Clients see the error, not a truncated payload. The audit + metrics records still fire with the oversize sentinel. `0` disables the ceiling (the historical behaviour). |
 | `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
 | `-snapshot-ttl`            | `1h`                            | —                   | Maximum idle time a session's snapshot history may sit in memory before it is pruned. `0` disables cleanup (history released only when the session is killed). Accepts any Go duration: `30s`, `5m`, `2h`. |
 | `-shutdown-timeout`        | `5s`                            | —                   | On `SIGTERM`/`SIGINT`, wait up to this duration for in-flight `tools/call` handlers to finish writing their JSON-RPC responses before exiting. `0` disables the drain (immediate exit). On timeout the binary exits non-zero so supervisors can flag a forced shutdown. |
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
+| `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
 
 ## `-version-json` output
 
@@ -95,6 +98,35 @@ a Claude Desktop config to a new socket path / audit log location.
 - When neither the flag nor the env var is set, the legacy behaviour
   applies: a fresh tempdir under `$TMPDIR` holds the socket.
 
+## `-tmux-bin`
+
+- Empty default keeps the legacy behaviour: tmux-mcp resolves `tmux`
+  via `exec.LookPath` and uses whatever the deployment's `$PATH`
+  points at. Existing deployments see no change.
+- When set, the value must be an **absolute path** and must point at
+  an **existing executable file**. Validation runs at startup so a
+  bogus path surfaces a single clean diagnostic
+  (`tmux binary "<path>" not executable: …`) before any tmux command
+  is dispatched, rather than an obscure `fork/exec` failure once the
+  JSON-RPC loop is already serving requests.
+- The same validated path is used everywhere the binary is exec'd:
+  the controller's tmux invocations, the `-probe` health check, the
+  `-dry-run` bootstrap, and the `/healthz` background probe. So
+  `-probe` reflects exactly the binary the runtime would otherwise
+  drive.
+- The version floor (`tmux 3.0+`) applies to the override too — a
+  pinned tmux that's older than the floor is rejected with the same
+  upgrade-hint diagnostic the default path emits.
+- Useful for:
+  - **Nix / Homebrew**: pin a specific tmux store path so the binary
+    can't drift under tmux-mcp when the system PATH shifts.
+  - **Containers**: select between multiple tmux versions installed
+    side-by-side without rewriting PATH.
+  - **Sandboxes / static builds**: point at a vendored tmux that
+    lives outside any standard search path.
+  - **Testing**: drive integration tests against a known-good tmux
+    version regardless of what's on the developer's PATH.
+
 ## `-log-format` & `-log-source`
 
 - Default is `text`; passing `-log-format=json` switches to a
@@ -138,6 +170,29 @@ a Claude Desktop config to a new socket path / audit log location.
   gracefully under bursts instead of returning errors.
 - Pass `0` to disable the cap entirely (the original unbounded
   behaviour).
+
+## `-max-response-bytes`
+
+- Default `0` keeps the cap disabled and preserves the historical
+  "stream whatever the handler produced" behaviour. Set to a positive
+  byte count to enforce a hard ceiling on the marshalled JSON-RPC
+  response body that crosses stdout.
+- When the cap fires, the original payload is **not** sent. The server
+  synthesises a typed JSON-RPC error in its place: code `-32010`
+  (`CodeOversizedResponse`), message
+  `response body N bytes exceeds max-response-bytes M`. Clients see a
+  structured error and can decide how to recover — there is no
+  truncated frame to misparse.
+- The underlying `tools/call` still ran. Its audit record and Prometheus
+  metric fire with the oversize sentinel as the error code, so operators
+  can distinguish "the tool failed" from "the answer was too big" in
+  log / dashboard queries.
+- Notifications (no id) carry no response, oversize or otherwise; the
+  cap is a no-op for them.
+- Useful for protecting fragile MCP clients (or pipes / sockets with
+  bounded buffers) from `capture_pane` on a 10MB scrollback or other
+  pathologically large outputs. Pair with a generous
+  `-max-concurrent-calls` to keep the cost-per-rejection bounded too.
 
 ## `-audit-log`
 
@@ -219,12 +274,69 @@ a Claude Desktop config to a new socket path / audit log location.
     pass an explicit allowlist of the tools you do want — there is
     no `-denylist` flag.
 
+## `-session-prefix`
+
+- Empty default keeps the prefix feature opt-in: the original
+  single-tenant behaviour is preserved, and existing deployments see
+  no behaviour change.
+- A non-empty value namespaces every session this server creates so
+  multiple tmux-mcp instances can safely share one tmux server (e.g. a
+  shared dev container with one agent per developer). `session_create`
+  with `name=demo` and `-session-prefix=agent_alice_` lands on tmux as
+  `agent_alice_demo`. The reverse direction is transparent: `capture`,
+  `send_keys`, `session_kill`, `session_describe`, `session_inspect`,
+  `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
+  `send_signal`, `pane_*`, `window_*`, and `clear_history` all accept
+  the bare logical name and forward to the prefixed identity.
+- `session_list` returns only sessions inside this prefix (with the
+  prefix stripped), and `kill_all_sessions` kills only those — a
+  co-tenant agent's sessions (different prefix or none) are left
+  running.
+- **Validation rules** (enforced at startup; failure exits 2):
+  - Must match the regex `[A-Za-z0-9_-]+` — no whitespace, colons,
+    dots, slashes, or shell metacharacters that would let a hostile
+    name break out of the prefix into a sibling session.
+  - May **not** end with `-` (regex-legal but creates surprising
+    names like `agent--build` when the user-supplied name itself
+    starts with a dash); the idiomatic separator is `_`.
+  - Must leave room for at least one byte of session name within the
+    64-byte tmux session-name budget — i.e. the prefix length must be
+    ≤ 63.
+  - At runtime, `session_create` rejects a `prefix + name`
+    combination that would overflow 64 bytes with `-32602`
+    (invalid params) so the JSON-RPC client gets a clean error rather
+    than a tmux session that no other tool can reference.
+- The pane-target shapes (`session`, `session:window`,
+  `session:window.pane`) are rewritten so only the session half picks
+  up the prefix; tmux pane-id strings (`%5`) carry no session
+  reference and pass through unchanged.
+- The `window_move` `src`/`dst` arguments (always
+  `<session>:<window>` or `<session>:`) get the prefix on the session
+  half too.
+- The `[IdleReaper]` activity table is keyed on the tmux-real
+  (prefixed) name, so a session reaped after the configured
+  `-session-idle-timeout` reaches the same session the controller
+  drives; a deployment with `-session-prefix=` and
+  `-session-idle-timeout=…` works correctly out of the box.
+
+Examples:
+
+```sh
+# alice and bob share one tmux server, each with their own namespace
+tmux-mcp -session-prefix=agent_alice_   # agent A
+tmux-mcp -session-prefix=agent_bob_     # agent B (separate process)
+
+# combine with -allowlist for a least-privilege namespaced deployment
+tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
+```
+
 ## Environment variables
 
-| Variable          | Used by    | Notes                                                         |
-| ----------------- | ---------- | ------------------------------------------------------------- |
-| `TMUX_MCP_SOCKET` | `-socket`  | Absolute path. Loses to `-socket` when both are set.          |
-| `TMPDIR`          | (default)  | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
+| Variable             | Used by      | Notes                                                         |
+| -------------------- | ------------ | ------------------------------------------------------------- |
+| `TMUX_MCP_SOCKET`    | `-socket`    | Absolute path. Loses to `-socket` when both are set.          |
+| `TMUX_MCP_TMUX_BIN`  | `-tmux-bin`  | Absolute path to the tmux executable. Loses to `-tmux-bin` when both are set; empty value keeps the legacy `exec.LookPath("tmux")` behaviour. |
+| `TMPDIR`             | (default)    | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
 
 ## Examples
 
@@ -242,6 +354,11 @@ tmux-mcp -log-output=/var/log/tmux-mcp/agent.log  # redirect slog to a file
 # pin the socket for a systemd unit / container
 tmux-mcp -socket=/run/tmux-mcp/sock
 TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
+
+# pin a specific tmux binary (Nix / Homebrew / vendored static build)
+tmux-mcp -tmux-bin=/nix/store/abcd-tmux-3.5a/bin/tmux
+tmux-mcp -tmux-bin=/opt/homebrew/Cellar/tmux/3.5a/bin/tmux
+TMUX_MCP_TMUX_BIN=/usr/local/bin/tmux tmux-mcp
 
 # liveness probe
 tmux-mcp -probe || echo "tmux missing or too old"
@@ -261,4 +378,7 @@ tmux-mcp -shutdown-timeout=10s
 
 # least-privilege: only expose read-only inspection tools
 tmux-mcp -allowlist=capture,wait_for_text,snapshot_diff,session_list
+
+# multi-agent isolation: each agent gets its own session namespace
+tmux-mcp -session-prefix=agent_alice_
 ```
