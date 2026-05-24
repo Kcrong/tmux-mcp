@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 // Controller drives a private tmux server.
@@ -115,6 +117,19 @@ func (c *Controller) Shutdown(ctx context.Context) {
 	_ = os.Remove(c.socket)
 }
 
+// isSessionMissingMsg reports whether stderr text from tmux indicates the
+// targeted session does not exist. tmux phrases this several ways across
+// versions ("can't find session", "session not found", "no current
+// session", "session not found:foo"); detect them all so callers can
+// rely on errs.ErrSessionNotFound regardless of the version on PATH.
+func isSessionMissingMsg(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "can't find session") ||
+		strings.Contains(m, "session not found") ||
+		strings.Contains(m, "no current session") ||
+		strings.Contains(m, "no such session")
+}
+
 func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
 	// -S takes an absolute socket path (whereas -L names a socket inside
 	// /tmp/tmux-<uid>/). We control the path explicitly so multiple
@@ -129,6 +144,13 @@ func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
+		// Surface "session not found" as a typed sentinel so the JSON-RPC
+		// layer can map it to a stable code; clients can then reliably
+		// switch on the code instead of substring-matching the message.
+		if isSessionMissingMsg(msg) {
+			return "", fmt.Errorf("tmux %s: %s: %w",
+				strings.Join(args, " "), msg, errs.ErrSessionNotFound)
+		}
 		return "", fmt.Errorf("tmux %s: %s", strings.Join(args, " "), msg)
 	}
 	return stdout.String(), nil
@@ -136,12 +158,12 @@ func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
 
 // SessionSpec describes a session to create.
 type SessionSpec struct {
-	Name    string
-	Command string
-	Cwd     string
-	Width   int
-	Height  int
-	Env     map[string]string
+	Name    string            // tmux session name; required.
+	Command string            // initial command to run; empty starts the user's default shell.
+	Cwd     string            // working directory for the new session.
+	Width   int               // pane width in columns; 0 falls back to a sensible default.
+	Height  int               // pane height in rows; 0 falls back to a sensible default.
+	Env     map[string]string // extra environment variables passed to tmux via -e.
 }
 
 // CreateSession starts a new detached session.
@@ -301,7 +323,9 @@ func (c *Controller) WaitForStable(ctx context.Context, session string, quiet, s
 			return last, nil
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return last, fmt.Errorf("wait_for_stable: timed out after %s", timeout)
+			// Wrap ErrTimeout so callers can switch on errors.Is and the
+			// JSON-RPC layer can map this to CodeTimeout (-32002).
+			return last, fmt.Errorf("wait_for_stable: timed out after %s: %w", timeout, errs.ErrTimeout)
 		}
 		select {
 		case <-ctx.Done():

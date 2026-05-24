@@ -39,9 +39,9 @@ func New() *Store {
 
 // Snapshot is the result of recording a capture.
 type Snapshot struct {
-	Token   string
-	Body    string
-	Changed bool
+	Token   string // content-addressed handle the caller passes back to DiffSince.
+	Body    string // captured pane body, exactly as recorded.
+	Changed bool   // true when Body differs from the previous capture for this session.
 }
 
 // Forget drops any history we kept for session. Callers should invoke

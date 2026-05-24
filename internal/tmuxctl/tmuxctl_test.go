@@ -2,6 +2,7 @@ package tmuxctl
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 func skipIfNoTmux(t *testing.T) {
@@ -119,6 +122,59 @@ func TestWaitForText_TimesOut(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found within") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// Must wrap the typed timeout sentinel so the JSON-RPC layer can map
+	// it to CodeTimeout (-32002).
+	if !errors.Is(err, errs.ErrTimeout) {
+		t.Fatalf("error %v does not wrap errs.ErrTimeout", err)
+	}
+}
+
+// TestKillSession_UnknownWrapsSentinel proves tmuxctl surfaces a missing
+// session via the typed sentinel — relied on by the dispatcher to emit
+// CodeSessionNotFound on the wire.
+func TestKillSession_UnknownWrapsSentinel(t *testing.T) {
+	skipIfNoTmux(t)
+	c := newCtl(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Create-then-kill so the tmux server is definitely up; then ask it
+	// to kill a name that doesn't exist.
+	if err := c.CreateSession(ctx, SessionSpec{Name: "real", Command: "/bin/sh"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	err := c.KillSession(ctx, "ghost_session_nonexistent")
+	if err == nil {
+		t.Fatal("expected error killing missing session")
+	}
+	if !errors.Is(err, errs.ErrSessionNotFound) {
+		t.Fatalf("error %v does not wrap errs.ErrSessionNotFound", err)
+	}
+}
+
+// TestWaitForStable_TimesOutWrapsSentinel confirms the WaitForStable
+// timeout path also wraps the typed sentinel.
+func TestWaitForStable_TimesOutWrapsSentinel(t *testing.T) {
+	skipIfNoTmux(t)
+	c := newCtl(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.CreateSession(ctx, SessionSpec{Name: "ws", Command: "/bin/sh"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Constant churn: keep printing the date in a tight loop so the pane
+	// is never quiet for the requested window.
+	if err := c.SendKeys(ctx, "ws", []string{"while :; do date +%N; done", "Enter"}, false); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	// quiet > timeout guarantees the deadline trips first.
+	_, err := c.WaitForStable(ctx, "ws", 1*time.Second, 50*time.Millisecond, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected wait_for_stable timeout error")
+	}
+	if !errors.Is(err, errs.ErrTimeout) {
+		t.Fatalf("error %v does not wrap errs.ErrTimeout", err)
 	}
 }
 
