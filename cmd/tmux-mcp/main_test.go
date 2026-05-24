@@ -9,6 +9,7 @@ import (
 )
 
 func TestVersionFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"-version"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run(-version): %v (stderr=%q)", err, stderr.String())
@@ -20,6 +21,7 @@ func TestVersionFlag(t *testing.T) {
 }
 
 func TestHelpFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
 	// flag.ContinueOnError surfaces -help as flag.ErrHelp; treat that as success.
@@ -32,6 +34,7 @@ func TestHelpFlag(t *testing.T) {
 }
 
 func TestUnknownFlag(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"-nope"}, strings.NewReader(""), &stdout, &stderr); err == nil {
 		t.Fatal("expected error for unknown flag, got nil")
@@ -39,6 +42,7 @@ func TestUnknownFlag(t *testing.T) {
 }
 
 func TestPositionalArgsRejected(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"oops"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
@@ -50,6 +54,7 @@ func TestPositionalArgsRejected(t *testing.T) {
 }
 
 func TestInvalidLogLevelRejected(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"-log-level=loud"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
@@ -97,6 +102,7 @@ func TestSocketEnvFallback(t *testing.T) {
 }
 
 func TestParseLogLevel(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in      string
 		wantErr bool
