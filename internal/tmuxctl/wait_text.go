@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 // TextMatch describes where pattern matched the captured pane.
 type TextMatch struct {
-	Match    string
-	Snapshot string
+	Match    string // the matched substring returned by the regex.
+	Snapshot string // the full visible pane at the moment of the match.
 }
 
 // WaitForText polls the visible pane until pattern matches, or until
@@ -40,7 +42,10 @@ func (c *Controller) WaitForText(ctx context.Context, session, pattern string, s
 			return TextMatch{Match: m, Snapshot: body}, nil
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return TextMatch{Snapshot: body}, fmt.Errorf("wait_for_text: pattern %q not found within %s", pattern, timeout)
+			// Wrap ErrTimeout so the JSON-RPC layer can surface
+			// CodeTimeout (-32002). The legacy "not found within"
+			// substring is preserved for log/grep compatibility.
+			return TextMatch{Snapshot: body}, fmt.Errorf("wait_for_text: pattern %q not found within %s: %w", pattern, timeout, errs.ErrTimeout)
 		}
 		select {
 		case <-ctx.Done():

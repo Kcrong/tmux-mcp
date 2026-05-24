@@ -9,17 +9,26 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
-// Standard JSON-RPC 2.0 error codes.
+// JSON-RPC 2.0 framing-level error codes. These cover failures detected
+// before a method handler runs (parse/dispatch errors). Codes for handler
+// failures live in internal/errs and are stable across the server's life.
 const (
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
+	// codeInvalidParams and codeInternalError are kept here as aliases of
+	// the canonical constants in internal/errs so the dispatcher and the
+	// rest of the server can keep using the short names while sharing the
+	// same underlying values.
+	codeInvalidParams = errs.CodeInvalidParams
+	codeInternalError = errs.CodeInternal
 )
 
 type rpcRequest struct {
@@ -108,7 +117,39 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 		// doesn't block other traffic on the same stdio pipe.
 		wg.Add(1)
 		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger) {
+			// wg.Done is registered first so that, in defer-LIFO order,
+			// the recovery defer below executes *before* wg.Done — i.e.
+			// recover() runs, the error reply is written, and only then
+			// is the WaitGroup released. This guarantees Shutdown's
+			// wg.Wait() observes a fully-handled request even when the
+			// handler panics.
 			defer wg.Done()
+			// Recover from any panic raised inside the user-supplied
+			// Handler. Without this, a panic would (a) skip wg.Done and
+			// hang Shutdown, and (b) deny the client any response.
+			// We log the panic + stack to stderr at error level for
+			// operators and reply with a generic "internal server error"
+			// so we never leak Go internals (stack frames, panic value)
+			// to the JSON-RPC client.
+			defer func() {
+				r := recover()
+				if r == nil {
+					return
+				}
+				reqLogger.Error("handler panic",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				// Notifications (no id) don't expect a response, even
+				// on panic.
+				if len(req.ID) == 0 {
+					return
+				}
+				send(rpcResponse{
+					ID:    req.ID,
+					Error: &rpcError{Code: codeInternalError, Message: "internal server error"},
+				})
+			}()
 			started := time.Now()
 			result, rerr := h(reqCtx, req.Method, req.Params)
 			durMs := time.Since(started).Milliseconds()
@@ -134,9 +175,11 @@ func invalidParams(format string, args ...any) *rpcError {
 }
 
 // internalError builds a typed JSON-RPC error wrapping an upstream
-// failure (tmux exit, regex error, etc.).
+// failure (tmux exit, regex error, etc.). The wire code is selected by
+// errs.CodeOf so known sentinels (session not found, timeout, ...) get
+// stable codes while everything else falls back to -32603.
 func internalError(err error) *rpcError {
-	return &rpcError{Code: codeInternalError, Message: err.Error()}
+	return &rpcError{Code: errs.CodeOf(err), Message: err.Error()}
 }
 
 // methodNotFound for unsupported MCP methods.
