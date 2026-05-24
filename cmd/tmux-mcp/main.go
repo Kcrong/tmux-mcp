@@ -83,6 +83,20 @@ Flags:
                           (default 64). Excess callers wait — back-pressure
                           rather than failure. 0 disables the cap (unbounded
                           goroutines, original behaviour).
+  -max-response-bytes N   hard ceiling on the marshalled JSON-RPC response
+                          body (in bytes) before it is written to stdout
+                          (default 0 = disabled, original behaviour). When
+                          a reply exceeds the cap, the server replaces it
+                          with a typed JSON-RPC error (code -32010, message
+                          "response body N bytes exceeds max-response-bytes
+                          M") so a misbehaving tool (capture_pane on a 10MB
+                          scrollback, etc.) cannot dump a multi-megabyte
+                          frame onto an MCP client whose reader can't
+                          tolerate it. Clients see the error — not a
+                          truncated payload. The underlying tools/call still
+                          ran (its audit + metrics records fire with the
+                          oversize sentinel) so operators can distinguish
+                          "the tool failed" from "the answer was too big".
   -audit-log PATH         when set, write one JSONL audit record per
                           tools/call. Use "stderr" to share the slog
                           stream, or any other value as a file path
@@ -257,6 +271,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// pass -max-concurrent-calls=0.
 	maxConcurrentCalls := fs.Int("max-concurrent-calls", 64,
 		"cap simultaneously-executing tools/call frames; 0 disables")
+	// Default 0 = disabled, preserving the historical "stream whatever
+	// the handler produced" behaviour. A positive value caps the
+	// marshalled JSON-RPC response body so a misbehaving tool (e.g.
+	// capture_pane on a 10MB scrollback) cannot dump a multi-megabyte
+	// frame onto an MCP client whose reader can't tolerate it. Int64 so
+	// the flag can name multi-GB ceilings on 32-bit hosts without
+	// overflow; negative values are treated as 0 by the server.
+	var maxResponseBytes int64
+	fs.Int64Var(&maxResponseBytes, "max-response-bytes", 0,
+		"cap marshalled JSON-RPC response body in bytes; 0 disables")
 	// Empty default keeps the audit log opt-in: existing deployments
 	// see no behaviour change. "stderr" is a magic path that shares
 	// the slog stream; any other value is a filesystem path.
@@ -558,6 +582,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	serr := server.Serve(ctx, stdin, stdout, tools.Handle,
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
+		server.WithMaxResponseBytes(maxResponseBytes),
 		server.WithAudit(audit),
 		server.WithShutdownTimeout(*shutdownTimeout),
 		// Pass the controller's KillSession as the reaper's kill hook so

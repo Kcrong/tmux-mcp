@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 // threadSafeBuffer is a tiny buffered pipe — the server reads requests
@@ -332,6 +334,124 @@ func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
 	if errRid != startRid {
 		t.Fatalf("error rid %q did not match start rid %q", errRid, startRid)
 	}
+}
+
+// TestOversizedResponse verifies the -max-response-bytes contract: when
+// a handler produces a marshalled body larger than the configured cap,
+// the dispatcher must replace the wire frame with a typed JSON-RPC
+// error (CodeOversizedResponse) instead of leaking the original payload
+// onto stdout. The handler's actual return value (here a 1KB string)
+// must NOT appear on the wire — clients see a structured error, not a
+// truncated reply. Default behaviour (cap == 0) is covered implicitly
+// by every other Serve test in this file: they all run without the
+// option set and observe their full payloads round-tripped intact.
+func TestOversizedResponse(t *testing.T) {
+	t.Parallel()
+	in := &threadSafeBuffer{}
+	out := &bytes.Buffer{}
+	outMu := &sync.Mutex{}
+	syncWriter := &lockedWriter{w: out, mu: outMu}
+
+	// 1KB string — comfortably larger than the 128-byte cap below
+	// once embedded in a JSON-RPC envelope, so the marshalled body is
+	// guaranteed to trip the limiter regardless of envelope overhead.
+	bigPayload := strings.Repeat("x", 1024)
+	handler := func(_ context.Context, _ string, _ json.RawMessage) (any, *rpcError) {
+		return map[string]any{"big": bigPayload}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, in, syncWriter, handler, WithMaxResponseBytes(128))
+	}()
+
+	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"big_call"}` + "\n"))
+
+	// Wait for the response frame to land. We deliberately match on
+	// the typed error code rather than a substring of the message so
+	// minor wording tweaks don't break the test.
+	wantCode := errs.CodeOversizedResponse
+	codeMarker := "\"code\":" + jsonInt(wantCode)
+	deadline := time.Now().Add(3 * time.Second)
+	var body string
+	for time.Now().Before(deadline) {
+		outMu.Lock()
+		body = out.String()
+		outMu.Unlock()
+		if strings.Contains(body, codeMarker) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(body, codeMarker) {
+		t.Fatalf("expected oversize error code %d on the wire, got %q", wantCode, body)
+	}
+
+	// The original 1KB payload must not have leaked onto stdout — the
+	// whole point of the cap is that a misbehaving tool can't dump a
+	// multi-megabyte frame onto a fragile client.
+	if strings.Contains(body, bigPayload) {
+		t.Fatalf("oversize payload leaked through cap; body=%q", body)
+	}
+
+	// Decode the wire response and assert structural fields. We can't
+	// rely on exact byte equality of the message — len(buf) varies
+	// with the marshalled envelope — so check the substantive bits:
+	// jsonrpc=2.0, the original id round-tripped, an error object
+	// carrying the right code, and a non-empty message.
+	var resp struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      any    `json:"id"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Result any `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &resp); err != nil {
+		t.Fatalf("decode response: %v body=%q", err, body)
+	}
+	if resp.JSONRPC != "2.0" {
+		t.Fatalf("wrong jsonrpc field: %q", resp.JSONRPC)
+	}
+	// JSON unmarshals integer ids into float64; assert the round-trip
+	// without forcing the test to know that.
+	if rid, ok := resp.ID.(float64); !ok || rid != 1 {
+		t.Fatalf("id not round-tripped: got %#v", resp.ID)
+	}
+	if resp.Error == nil {
+		t.Fatalf("expected error object on oversize response, got %+v", resp)
+	}
+	if resp.Error.Code != wantCode {
+		t.Fatalf("error code = %d, want %d", resp.Error.Code, wantCode)
+	}
+	if resp.Error.Message == "" {
+		t.Fatalf("expected non-empty oversize error message")
+	}
+	if !strings.Contains(resp.Error.Message, "max-response-bytes") {
+		t.Fatalf("oversize message should reference the flag name; got %q", resp.Error.Message)
+	}
+	if resp.Result != nil {
+		t.Fatalf("result must be absent on oversize replacement; got %#v", resp.Result)
+	}
+
+	in.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit after EOF")
+	}
+}
+
+// jsonInt formats an int the way encoding/json does so substring-search
+// over the wire frame matches reliably (no surprise sign / spacing
+// quirks). Kept local to this test to avoid pulling fmt-dependent
+// helpers into production code paths.
+func jsonInt(n int) string {
+	b, _ := json.Marshal(n)
+	return string(b)
 }
 
 // TestServe_WaitsForInFlightHandlers verifies the WaitGroup contract:
