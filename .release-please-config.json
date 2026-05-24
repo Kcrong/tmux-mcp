@@ -1,0 +1,19 @@
+{
+  "release-type": "go",
+  "packages": {
+    ".": {
+      "package-name": "tmux-mcp",
+      "include-component-in-tag": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance"},
+        {"type": "ci", "section": "CI"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "test", "section": "Tests"},
+        {"type": "refactor", "section": "Refactoring"},
+        {"type": "chore", "hidden": true}
+      ]
+    }
+  }
+}
