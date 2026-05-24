@@ -16,7 +16,9 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-log-level`               | `info`                          | —                   | Log verbosity. One of `error`, `warn`, `info`, `debug`. Logs go to stderr; stdout stays JSON-RPC.                 |
 | `-log-format`              | `text` (auto `json` at `debug`) | —                   | slog output format: `text` or `json`. Unset + `-log-level=debug` auto-promotes to `json`; passing the flag pins the chosen value. |
 | `-log-source`              | `false`                         | —                   | Include file/line of the call site in each log record (slight perf cost). JSON records gain a `source` object, text records a `source=…` key. |
-| `-log-output`              | `stderr`                        | —                   | Destination for slog output: `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (opened append-only at mode `0600`). The file is closed cleanly on shutdown. tmux-mcp does not rotate the file — pair it with `logrotate(8)`. |
+| `-log-output`              | `stderr`                        | —                   | Destination for slog output: `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (opened append-only at mode `0600`). The file is closed cleanly on shutdown. By default tmux-mcp does not rotate the file — pair it with `logrotate(8)` or pass `-log-rotate-size`. |
+| `-log-rotate-size`         | `0` (disabled)                  | —                   | Enable size-based rotation on `-log-output`. When the next Write would push the file past N bytes, tmux-mcp renames the live file to `<path>.<unix-ns>` and reopens a fresh `<path>` in place. Counted in bytes — e.g. `10485760` for 10MB. `0` preserves the legacy "open once, never rotate" behaviour for deployments paired with `logrotate(8)`. |
+| `-log-rotate-keep`         | `5`                             | —                   | Maximum count of rotated archive files retained on disk alongside `-log-output`. After a rollover, the oldest archives (by mtime) are deleted once the count exceeds K. Ignored when `-log-rotate-size=0`. |
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
 | `-tmux-bin`                | `""` (resolve `tmux` from `$PATH`) | `TMUX_MCP_TMUX_BIN` | Absolute path to the tmux executable. Empty default keeps the legacy PATH lookup. When set the path must be absolute and point at an existing executable file; startup fails with `tmux binary "<path>" not executable: …` otherwise. Flag wins over env var. See **`-tmux-bin`** below. |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
@@ -155,9 +157,40 @@ a Claude Desktop config to a new socket path / audit log location.
   append-only with mode `0600` (same shape as `-audit-log`). The
   file is closed cleanly on shutdown so the last record is
   flushed.
-- tmux-mcp does **not** rotate the log file. Pair it with
-  `logrotate(8)` (or equivalent) on long-lived hosts so the file
-  does not grow without bound.
+- By default tmux-mcp does **not** rotate the log file. Pair it with
+  `logrotate(8)` (or equivalent) on long-lived hosts, or pass
+  `-log-rotate-size` for the in-process size-based rotator
+  documented below.
+
+## `-log-rotate-size` & `-log-rotate-keep`
+
+- Default `-log-rotate-size=0` is **disabled** — the writer is a
+  plain `*os.File` opened once and never rotated. Existing
+  deployments paired with `logrotate(8)` see no behavioural drift.
+- Pass `-log-rotate-size=N` (in bytes) to enable the in-process
+  rotator. On every `Write`, the rotator checks whether `current
+  size + len(p)` would exceed N and, if so, renames the live file
+  to `<path>.<unix-ns>` and reopens a fresh `<path>` in place
+  (mode `0600`, same as the live file). The size counter is held
+  in-memory and seeded from `os.File.Stat()` at open time, so an
+  `O_APPEND` reopen of an existing file resumes accounting from
+  the right offset without paying for an `fstat(2)` per record.
+- `-log-rotate-keep K` (default `5`) bounds the number of archive
+  files retained on disk. After every rollover, the rotator
+  enumerates `<path>.*` siblings, sorts them by `mtime`, and
+  deletes the oldest until at most K archives remain. Pass `0` to
+  retain every archive (useful for forensic / compliance reasons).
+- The rotation runs **synchronously** inside `Write` — slog
+  handlers do not buffer through goroutines, so every record
+  arrives on the writer in order and the `<path>.<stamp>`
+  archives are guaranteed to slot in between adjacent slog
+  records, never mid-record.
+- The rotator deliberately does *not* depend on a third-party
+  package like `lumberjack`. Operators who need richer rotation
+  semantics (compression, daily rotation, copytruncate, …)
+  should still pair `-log-output` with `logrotate(8)` and leave
+  `-log-rotate-size=0`.
+- Examples: `tmux-mcp -log-output=/var/log/tmux-mcp/agent.log -log-rotate-size=10485760` (10MB cap, 5 archives kept), or `tmux-mcp -log-output=/var/log/tmux-mcp/agent.log -log-rotate-size=104857600 -log-rotate-keep=10` (100MB cap, 10 archives kept).
 
 ## `-max-concurrent-calls`
 
@@ -350,6 +383,12 @@ tmux-mcp -log-level=debug
 tmux-mcp -log-level=debug -log-format=text   # pin text even at debug
 tmux-mcp -log-source                         # add file:line to every record
 tmux-mcp -log-output=/var/log/tmux-mcp/agent.log  # redirect slog to a file
+
+# in-process size-based rotation: 10MB cap, keep 5 archives (the default)
+tmux-mcp -log-output=/var/log/tmux-mcp/agent.log -log-rotate-size=10485760
+
+# 100MB cap, keep 10 archives (forensic / compliance retention)
+tmux-mcp -log-output=/var/log/tmux-mcp/agent.log -log-rotate-size=104857600 -log-rotate-keep=10
 
 # pin the socket for a systemd unit / container
 tmux-mcp -socket=/run/tmux-mcp/sock
