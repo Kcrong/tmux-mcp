@@ -51,6 +51,20 @@ Pass `-log-format=text|json` to pin the slog output shape (default
 `text`; `-log-level=debug` auto-promotes to `json` only when the flag
 is left unset, so log aggregators can opt in to JSON at any level).
 
+Add `-log-source=true` to include the file/line of each `slog` call
+site in every record — JSON records gain a structured `"source": {
+"function": "...", "file": "...", "line": N }` object, text records
+gain a `source=…` attribute. Off by default because `AddSource` walks
+`runtime.Callers` on every record (small but real cost on a hot logging
+path); flip it on for ad-hoc debugging when you need to grep a log line
+back to the exact `slog.Info` call that produced it.
+
+| Flag             | Default  | Notes                                               |
+| ---------------- | -------- | --------------------------------------------------- |
+| `-log-level`     | `info`   | `error\|warn\|info\|debug`                          |
+| `-log-format`    | `text`   | `text\|json`; `debug` auto-promotes to `json` when unset |
+| `-log-source`    | `false`  | include `file:line` of each call site (slight perf cost) |
+
 ---
 
 ## Contents
@@ -800,7 +814,9 @@ client at the binary there.
 **Q: How do I debug what tools the agent is calling?**
 A: Run with `-log-level=debug`. Each request logs `rid`, `method`, and
 `dur_ms` to stderr — stdout stays pure JSON-RPC, so the logs never
-corrupt the protocol stream.
+corrupt the protocol stream. Add `-log-source=true` when investigating
+an issue to attach the `file:line` of each emitting `slog` call to the
+record (small perf cost — leave off in production).
 
 **Q: Is the `snapshot_diff` token persistent?**
 A: No. Snapshots are kept in memory per session, and only the two most
@@ -876,6 +892,22 @@ that never matches with no `timeout_ms`). Always pass a finite
 process needs to disappear immediately. A `-shutdown-timeout` flag is
 on the roadmap for a hard ceiling on the drain; until it lands, rely
 on per-call timeouts plus the supervisor's own `TimeoutStopSec=`.
+
+### Why are my hangs so long after the client closed?
+
+When the MCP client closes its end of the stdio pipe (process exit, pipe
+break, IDE shutdown without SIGTERM), `tmux-mcp` cancels every in-flight
+handler's request context immediately — a `wait_for_text` call with
+`timeout_ms=10000` returns within one poll step (~100 ms) instead of
+riding out the full 10 seconds. If you're seeing a multi-second hang
+after a client disconnect, the call is almost certainly stuck inside
+tmux itself rather than spinning on its own polling loop; check the
+structured log (each request carries an `rid` correlation key) for the
+last `rpc start` with no matching `rpc end`, and confirm the
+`-shutdown-timeout` you've configured (default `5s`) bounds the wait.
+Code surfaced to the client in this case is `-32003`
+("context cancelled"), not `-32002` ("timeout"), so callers can
+distinguish "client gave up" from "wait budget exceeded".
 
 ### Tool calls deadlock under load
 
