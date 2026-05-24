@@ -11,16 +11,6 @@ import (
 	"time"
 )
 
-// pipePair returns matched ReadCloser/WriteCloser pairs the test can
-// use as the server's stdin and stdout.
-func pipePair() (io.Reader, io.Writer, *bytes.Buffer, *sync.Mutex) {
-	in := &threadSafeBuffer{}
-	out := &bytes.Buffer{}
-	mu := &sync.Mutex{}
-	_ = mu
-	return in, out, out, &in.mu // out also returned as buffer for assertions
-}
-
 // threadSafeBuffer is a tiny buffered pipe — the server reads requests
 // from it; the test writes them in.
 type threadSafeBuffer struct {

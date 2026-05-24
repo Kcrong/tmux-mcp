@@ -9,8 +9,22 @@ The goal is to keep the agent's experience as close to a human user's
 as possible: it sees what you would see, types what you would type, and
 waits the way you would wait.
 
-> **Docs:** the same content with examples lives at
-> [kcrong.github.io/tmux-mcp](https://kcrong.github.io/tmux-mcp/).
+---
+
+## Contents
+
+- [Why tmux](#why-tmux)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Wire it up](#wire-it-up)
+- [Tool surface](#tool-surface)
+- [Tool reference](#tool-reference)
+- [End-to-end example](#end-to-end-example)
+- [Patterns](#patterns)
+- [Design notes](#design-notes)
+- [Troubleshooting](#troubleshooting)
+
+---
 
 ## Why tmux
 
@@ -54,27 +68,8 @@ your MCP client won't find the binary.
 
 ## Wire it up
 
-### With the [coding](https://github.com/Kcrong/coding) agent
-
-Add an entry to your project's `.coding/mcp.json` (or
-`~/.coding/mcp.json` for a user-wide config). The config is a flat
-`{ name: spec }` map:
-
-```json
-{
-  "tmux": {
-    "command": "/absolute/path/to/tmux-mcp"
-  }
-}
-```
-
-On launch, every tool is exposed as `tmux__<tool-name>` —
-e.g. `tmux__session_create`, `tmux__send_keys`, `tmux__capture`.
-
-### With any MCP client
-
-The server speaks JSON-RPC 2.0 over stdin/stdout. Most clients use a
-config block similar to this:
+`tmux-mcp` is a generic MCP stdio server — any client that speaks MCP
+over stdio can use it. The config typically looks like this:
 
 ```json
 {
@@ -87,7 +82,28 @@ config block similar to this:
 }
 ```
 
+Where this config goes depends on the client — most desktop MCP clients
+ship a config file under their app-data directory; agent frameworks
+usually have their own discovery path (e.g. `.<tool>/mcp.json` in the
+project root or `~/.<tool>/mcp.json` for user-wide). Check your
+client's docs for the exact path.
+
+If your client expects a flat `{ name: spec }` map instead of an
+`mcpServers` wrapper, drop the wrapper:
+
+```json
+{
+  "tmux": { "command": "/absolute/path/to/tmux-mcp" }
+}
+```
+
+Restart your client after editing the config. On launch the server's
+tools usually appear under a namespaced prefix (e.g. `tmux__send_keys`)
+so they don't collide with tools from other servers.
+
 ### Smoke test by hand
+
+You can drive the server from a shell to confirm it's alive:
 
 ```sh
 printf '%s\n' \
@@ -116,6 +132,151 @@ the same framing.
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
 
+## Tool reference
+
+All tools share the same envelope: a JSON-RPC `tools/call` with
+`{ "name": "<tool>", "arguments": { … } }`. Examples below show only the
+`arguments` body for brevity.
+
+### `session_create`
+
+```jsonc
+{
+  "name":    "demo",            // required
+  "command": "/bin/sh",         // optional; defaults to the user's shell
+  "cwd":     "/tmp",            // optional
+  "width":   120,               // optional, default 120
+  "height":  40,                // optional, default 40
+  "env":     { "PS1": "$ " }    // optional
+}
+```
+
+### `session_list`
+
+```jsonc
+{}
+```
+
+Returns `{"sessions": ["demo", …]}`.
+
+### `session_kill`
+
+```jsonc
+{ "name": "demo" }
+```
+
+### `send_keys`
+
+```jsonc
+{
+  "session": "demo",
+  "keys":    ["echo hello", "Enter"],   // tmux key names recognised
+  "literal": false                       // true → bypass key-name parsing
+}
+```
+
+`tmux` recognises named keys verbatim — common ones include `Enter`,
+`Tab`, `Escape`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
+`PageUp`, `PageDown`, `BSpace`, `DC` (delete), `C-c`, `C-d`, `C-z`,
+`M-x` (Meta/Alt), `F1`–`F12`.
+
+Use `literal: true` when you want the raw text including characters that
+would otherwise look like key names.
+
+### `capture`
+
+```jsonc
+{
+  "session": "demo",
+  "mode":    "visible",   // or "scrollback"
+  "ansi":    false        // true keeps colour escape sequences
+}
+```
+
+Returns
+`{"snapshot": "...", "token": "ab12cd34", "changed": true}`. Hold on to
+`token` if you plan to call `snapshot_diff` later.
+
+### `wait_for_stable`
+
+Block until the visible pane has been unchanged for `quiet_ms`, then
+return the snapshot.
+
+```jsonc
+{
+  "session":    "demo",
+  "quiet_ms":   400,    // default
+  "step_ms":    100,    // poll interval
+  "timeout_ms": 10000
+}
+```
+
+### `wait_for_text`
+
+Block until a Go-regex pattern matches the visible pane.
+
+```jsonc
+{
+  "session":    "demo",
+  "pattern":    "READY-\\d+",
+  "step_ms":    100,
+  "timeout_ms": 10000
+}
+```
+
+Returns `{"match": "READY-42", "snapshot": "...", "token": "..."}`.
+
+### `snapshot_diff`
+
+Capture and return only the lines that changed since `prior_token`. Use
+an empty string on the first call.
+
+```jsonc
+{ "session": "demo", "prior_token": "" }
+```
+
+Returns
+`{"token": "...", "changed": true, "diff": [{"line": 3, "old": "...", "new": "..."}, …]}`.
+History keeps only the two most recent captures per session — if your
+token is older than that you'll get a full reset (every line marked as
+new).
+
+### `resize`
+
+```jsonc
+{ "session": "demo", "width": 100, "height": 30 }
+```
+
+## End-to-end example
+
+A complete walkthrough showing how an agent might smoke-test `htop`:
+
+```jsonc
+// 1. spin up a session
+{ "name": "session_create",
+  "arguments": { "name": "top", "command": "/bin/sh", "width": 100, "height": 30 } }
+
+// 2. launch the program
+{ "name": "send_keys",
+  "arguments": { "session": "top", "keys": ["htop", "Enter"] } }
+
+// 3. wait for the UI to settle
+{ "name": "wait_for_stable",
+  "arguments": { "session": "top", "quiet_ms": 500, "timeout_ms": 5000 } }
+
+// 4. confirm we're really in htop
+{ "name": "wait_for_text",
+  "arguments": { "session": "top", "pattern": "F10\\s*Quit", "timeout_ms": 3000 } }
+
+// 5. interact (sort by memory)
+{ "name": "send_keys", "arguments": { "session": "top", "keys": ["F6"] } }
+{ "name": "wait_for_stable", "arguments": { "session": "top", "quiet_ms": 200 } }
+
+// 6. quit cleanly
+{ "name": "send_keys", "arguments": { "session": "top", "keys": ["F10"] } }
+{ "name": "session_kill", "arguments": { "name": "top" } }
+```
+
 ## Patterns
 
 ### Press a key, then read the screen
@@ -125,9 +286,9 @@ keystroke and you'll see a half-rendered frame. Wait for the pane to
 settle first:
 
 ```text
-tmux__send_keys      session=demo  keys=["echo hi", "Enter"]
-tmux__wait_for_stable session=demo  quiet_ms=300
-tmux__capture        session=demo
+send_keys       session=demo  keys=["echo hi", "Enter"]
+wait_for_stable session=demo  quiet_ms=300
+capture         session=demo
 ```
 
 ### Wait for the prompt to come back
@@ -137,8 +298,8 @@ sentinel your tool prints when it's ready. More robust than a fixed
 sleep.
 
 ```text
-tmux__send_keys      session=demo  keys=["./long-build", "Enter"]
-tmux__wait_for_text  session=demo  pattern="^\\$ $"  timeout_ms=300000
+send_keys      session=demo  keys=["./long-build", "Enter"]
+wait_for_text  session=demo  pattern="^\\$ $"  timeout_ms=300000
 ```
 
 ### Only show me what changed
@@ -156,8 +317,8 @@ After your first capture you'll get a `token`. Pass it to
 ### Cancel a runaway TUI
 
 ```text
-tmux__send_keys      session=demo  keys=["C-c"]
-tmux__wait_for_stable session=demo  quiet_ms=200
+send_keys       session=demo  keys=["C-c"]
+wait_for_stable session=demo  quiet_ms=200
 ```
 
 ## Design notes
@@ -172,11 +333,15 @@ tmux__wait_for_stable session=demo  quiet_ms=200
 - **Diff snapshots are line-anchored.** `snapshot_diff` returns the
   changed lines plus their indices, plus an opaque token to pass on the
   next call.
+- **Each request is dispatched on its own goroutine** so a slow tool
+  call (e.g. a 30s `wait_for_text`) does not block other traffic on the
+  same stdio pipe.
 
 ## Troubleshooting
 
 - **`tmux not found on PATH`** — install `tmux` with your package
-  manager. The server probes `$PATH` at startup.
+  manager (`apt-get install tmux`, `brew install tmux`, etc.). The
+  server probes `$PATH` at startup.
 - **Capture looks empty even though the program is running** — you
   probably captured during a redraw. Call `wait_for_stable` first, or
   wait for a sentinel string with `wait_for_text`.
@@ -184,9 +349,12 @@ tmux__wait_for_stable session=demo  quiet_ms=200
   `tmux-mcp` instance creates its own private socket. If you're seeing
   leakage, you're sharing one server process across both agents. Spawn a
   separate `tmux-mcp` per agent.
-- **Agent calls report `method not found: tools/call:<name>`** — your
-  client is calling a tool the server doesn't expose. Run `tools/list`
-  to see the canonical names.
+- **Calls report `method not found: tools/call:<name>`** — your client
+  is calling a tool the server doesn't expose. Run `tools/list` to see
+  the canonical names.
+- **`wait_for_text` always times out** — remember the pattern is a Go
+  regex, not a shell glob. Escape `.`, `+`, `?`, `*`, `(`, `)`, `[`,
+  `]`, `{`, `}`, `^`, `$`, `|`, `\` if you mean them literally.
 
 ## License
 
