@@ -109,6 +109,31 @@ jobs:
           # the CODECOV_TOKEN repo secret to lift that.
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  test-macos:
+    # Advisory only — surfaces macOS-specific tmux/process behavior
+    # (e.g. BSD ps, fork/exec semantics) without blocking merges.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install tmux
+        run: |
+          set -eux
+          if command -v tmux >/dev/null 2>&1; then
+            tmux -V
+            exit 0
+          fi
+          brew install tmux
+          tmux -V
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: test (race)
+        run: go test ./... -count=1 -race
+
   windows-build:
     # Cross-compile smoke test. tmux does not run on Windows, but we
     # ship Windows binaries in releases so users with a Go toolchain on
