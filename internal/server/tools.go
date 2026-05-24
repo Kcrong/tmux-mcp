@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Kcrong/tmux-mcp/internal/snapshot"
@@ -152,6 +154,13 @@ var toolDefs = []map[string]any{
 	},
 }
 
+// ToolHandler is the per-call signature every dynamically-registered
+// tool must implement. It mirrors the dispatch contract of the
+// statically-wired tools so registrants can reuse the same error
+// helpers (invalidParams / internalError) the rest of the surface
+// uses.
+type ToolHandler func(ctx context.Context, args json.RawMessage) (any, *rpcError)
+
 // Tools holds the dispatch state shared across calls.
 type Tools struct {
 	Ctl  *tmuxctl.Controller // controller backing every tmux operation the tools issue.
@@ -161,6 +170,41 @@ type Tools struct {
 	// (ldflags-injected) at construction time. Empty/zero values fall
 	// back to "dev" so the field always carries a sensible string.
 	Version string
+
+	// mu guards defs, dyn, and notify.
+	//
+	// Per the MCP spec the server may grow / shrink its tool surface at
+	// runtime (see notifications/tools/list_changed). RegisterTool /
+	// UnregisterTool walk these maps under mu so a concurrent
+	// tools/list snapshot stays internally consistent — callers never
+	// observe a half-applied registration.
+	mu sync.Mutex
+	// defs is the per-instance copy of the tool definitions surfaced
+	// via tools/list. It is seeded lazily from the package-level
+	// toolDefs slice so static registrations (the legacy init() hooks
+	// in tools_panes.go / tools_signal.go / tools_describe.go) remain
+	// the source of truth for the initial surface, with dynamic
+	// Register/Unregister mutations layered on top.
+	defs []map[string]any
+	// dyn maps a dynamically-registered tool's name to its handler.
+	// The static dispatcher in callTool retains its switch statement
+	// for the built-in tools; dyn is consulted only when the switch
+	// has no match, so adding a new built-in does not require touching
+	// the dynamic path.
+	dyn map[string]ToolHandler
+	// notify is the writeMu-locked emitter Serve hands to *Tools via
+	// SetNotifier. nil before Serve binds it (e.g. when RegisterTool
+	// is called from a unit test that never starts the dispatcher),
+	// in which case Register/Unregister silently skip the wire-level
+	// notification — there is no client to notify.
+	notify func()
+	// initialized records whether the dispatcher has seen an
+	// `initialize` request. The MCP spec only expects the server to
+	// emit list-change notifications after the connection is up, so
+	// Register/Unregister gate emission on this flag to avoid sending
+	// notifications during the brief window between Serve binding the
+	// notifier and the client driving initialize.
+	initialized atomic.Bool
 }
 
 // NewTools wires a Controller and Store together. Any [snapshot.Option]
@@ -169,6 +213,150 @@ type Tools struct {
 // site (`NewTools(c)`) used by tests and the default deployment.
 func NewTools(c *tmuxctl.Controller, opts ...snapshot.Option) *Tools {
 	return &Tools{Ctl: c, Snap: snapshot.New(opts...)}
+}
+
+// SetNotifier installs the callback Tools uses to emit
+// notifications/tools/list_changed frames after a Register/Unregister
+// mutation. Serve invokes this from its setup phase with a function
+// that writes through the dispatcher's writeMu, so notifications stay
+// interleaving-safe with regular RPC responses. Passing nil clears the
+// hook (used by tests that want to assert on register/unregister
+// without consuming notifications).
+func (t *Tools) SetNotifier(notify func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.notify = notify
+}
+
+// snapshotDefs returns a copy of the current tool-definition slice for
+// tools/list. The copy is needed so the response we hand to the
+// dispatcher cannot be mutated by a concurrent RegisterTool /
+// UnregisterTool while the JSON encoder is walking it. Map values are
+// not deep-copied because the schemas are treated as immutable once
+// registered.
+func (t *Tools) snapshotDefs() []map[string]any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.defs == nil {
+		// First access: seed from the package-level toolDefs that the
+		// init() hooks have already populated. Copying here keeps the
+		// per-instance slice independent of the package global so
+		// tests that spin up multiple *Tools don't observe each
+		// other's mutations.
+		t.defs = make([]map[string]any, len(toolDefs))
+		copy(t.defs, toolDefs)
+	}
+	out := make([]map[string]any, len(t.defs))
+	copy(out, t.defs)
+	return out
+}
+
+// RegisterTool adds a tool to the dispatch surface at runtime and
+// emits notifications/tools/list_changed so subscribed clients
+// re-fetch tools/list. def must carry at least a "name" key whose
+// value is a non-empty string — the same field the JSON Schema entry
+// exposes via tools/list. A duplicate name replaces the previous
+// registration in place (the slice entry is overwritten and the
+// handler map updated) so callers can hot-swap an implementation
+// without first calling UnregisterTool.
+//
+// The notification is suppressed when SetNotifier has not been called
+// or when the server has not yet processed an `initialize` frame:
+// there is no client to notify in either case, and the MCP spec
+// expects list-change frames only after the connection is up.
+func (t *Tools) RegisterTool(def map[string]any, handler ToolHandler) {
+	if def == nil || handler == nil {
+		return
+	}
+	name, _ := def["name"].(string)
+	if name == "" {
+		return
+	}
+
+	t.mu.Lock()
+	if t.defs == nil {
+		t.defs = make([]map[string]any, len(toolDefs))
+		copy(t.defs, toolDefs)
+	}
+	if t.dyn == nil {
+		t.dyn = make(map[string]ToolHandler)
+	}
+	// Replace in place when the name is already present so a hot-swap
+	// does not leave a stale schema entry behind.
+	replaced := false
+	for i, existing := range t.defs {
+		if existingName, _ := existing["name"].(string); existingName == name {
+			t.defs[i] = def
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		t.defs = append(t.defs, def)
+	}
+	t.dyn[name] = handler
+	notify := t.notify
+	t.mu.Unlock()
+
+	if notify != nil && t.initialized.Load() {
+		notify()
+	}
+}
+
+// UnregisterTool drops the named tool from the dispatch surface and
+// emits notifications/tools/list_changed. Names that do not match a
+// previously-registered tool are silently ignored — the goal is "make
+// this tool not be there", which is already true. Static built-ins
+// (the entries seeded from the package toolDefs) can be removed too;
+// callers wanting to "hide" a built-in for a particular client can
+// drop it without restarting the server.
+//
+// Like RegisterTool, the notification is suppressed when no notifier
+// has been bound or the server has not yet processed `initialize`.
+func (t *Tools) UnregisterTool(name string) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	if t.defs == nil {
+		t.defs = make([]map[string]any, len(toolDefs))
+		copy(t.defs, toolDefs)
+	}
+	removed := false
+	for i, existing := range t.defs {
+		if existingName, _ := existing["name"].(string); existingName == name {
+			t.defs = append(t.defs[:i], t.defs[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if t.dyn != nil {
+		if _, ok := t.dyn[name]; ok {
+			delete(t.dyn, name)
+			removed = true
+		}
+	}
+	notify := t.notify
+	t.mu.Unlock()
+
+	if !removed {
+		return
+	}
+	if notify != nil && t.initialized.Load() {
+		notify()
+	}
+}
+
+// dynamicHandler returns the handler registered for name, or nil if
+// no dynamic registration matches. The static dispatcher consults
+// this when its switch has no built-in case for the tool name.
+func (t *Tools) dynamicHandler(name string) ToolHandler {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dyn == nil {
+		return nil
+	}
+	return t.dyn[name]
 }
 
 // serverVersion returns the version string the server should advertise
@@ -183,18 +371,41 @@ func (t *Tools) serverVersion() string {
 
 // Handle is the dispatcher passed to server.Serve. It implements MCP's
 // initialize / tools/list / tools/call surface.
+//
+// The tools/list response is built from a per-instance snapshot of the
+// tool definitions so concurrent RegisterTool / UnregisterTool calls
+// cannot race a tools/list encode. Beyond returning the static
+// built-ins seeded at construction time, the server now supports
+// dynamic registration: a RegisterTool / UnregisterTool call mutates
+// the surface and emits notifications/tools/list_changed so
+// subscribed clients re-fetch the list.
+//
+// The advertised capabilities include `tools.listChanged: true` to
+// signal that the server emits list-change notifications when its
+// surface mutates — clients that opt in re-fetch tools/list on every
+// notification rather than caching the original response forever.
+//
+// initialize also flips an internal flag so subsequent register /
+// unregister calls actually emit the notification. The MCP spec only
+// expects servers to surface list-change frames after the connection
+// is up, so the flag suppresses spurious frames during the brief
+// window between Serve binding the notifier and the first initialize
+// arriving.
 func (t *Tools) Handle(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "initialize":
+		t.initialized.Store(true)
 		return map[string]any{
 			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "tmux-mcp", "version": t.serverVersion()},
+			"capabilities": map[string]any{
+				"tools": map[string]any{"listChanged": true},
+			},
+			"serverInfo": map[string]any{"name": "tmux-mcp", "version": t.serverVersion()},
 		}, nil
 	case "notifications/initialized":
 		return nil, nil
 	case "tools/list":
-		return map[string]any{"tools": toolDefs}, nil
+		return map[string]any{"tools": t.snapshotDefs()}, nil
 	case "tools/call":
 		return t.callTool(ctx, params)
 	}
@@ -246,6 +457,13 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.windowKill(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
+	}
+	// Fall back to the dynamic registry. Tools added via RegisterTool
+	// don't have a hard-coded case above, so this is the only path
+	// that reaches them. Returning methodNotFound preserves the
+	// existing wire contract for genuinely-unknown names.
+	if h := t.dynamicHandler(call.Name); h != nil {
+		return h(ctx, call.Arguments)
 	}
 	return nil, methodNotFound("tools/call:" + call.Name)
 }
