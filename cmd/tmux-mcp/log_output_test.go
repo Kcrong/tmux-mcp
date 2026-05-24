@@ -28,7 +28,7 @@ func TestOpenLogOutput_DefaultStderr(t *testing.T) {
 	// "operator took the default" and "operator passed -log-output=stderr".
 	for _, target := range []string{"", LogOutputStderr} {
 		t.Run("target="+target, func(t *testing.T) {
-			w, closer, err := openLogOutput(target, stderr, stdout)
+			w, closer, err := openLogOutput(target, stderr, stdout, 0, 0)
 			if err != nil {
 				t.Fatalf("openLogOutput(%q): %v", target, err)
 			}
@@ -58,7 +58,7 @@ func TestOpenLogOutput_StdoutMagic(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	stdout := &bytes.Buffer{}
 
-	w, closer, err := openLogOutput(LogOutputStdout, stderr, stdout)
+	w, closer, err := openLogOutput(LogOutputStdout, stderr, stdout, 0, 0)
 	if err != nil {
 		t.Fatalf("openLogOutput(stdout): %v", err)
 	}
@@ -83,7 +83,7 @@ func TestOpenLogOutput_FilePath_WritesAndCloses(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.log")
 
-	w, closer, err := openLogOutput(path, stderr, stdout)
+	w, closer, err := openLogOutput(path, stderr, stdout, 0, 0)
 	if err != nil {
 		t.Fatalf("openLogOutput(%q): %v", path, err)
 	}
@@ -130,7 +130,7 @@ func TestOpenLogOutput_FilePath_AppendsAcrossOpens(t *testing.T) {
 	path := filepath.Join(dir, "agent.log")
 
 	for _, payload := range []string{"first run\n", "second run\n"} {
-		w, closer, err := openLogOutput(path, stderr, stdout)
+		w, closer, err := openLogOutput(path, stderr, stdout, 0, 0)
 		if err != nil {
 			t.Fatalf("openLogOutput(%q): %v", path, err)
 		}
@@ -162,7 +162,7 @@ func TestOpenLogOutput_MissingParentDir(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "no-such-dir", "agent.log")
 
-	w, closer, err := openLogOutput(bad, stderr, stdout)
+	w, closer, err := openLogOutput(bad, stderr, stdout, 0, 0)
 	if err == nil {
 		// Defensive cleanup if the OS unexpectedly let this through.
 		_ = closer()
@@ -196,7 +196,7 @@ func TestOpenLogOutput_PermissionDenied(t *testing.T) {
 	}
 	target := filepath.Join(denied, "agent.log")
 
-	w, closer, err := openLogOutput(target, stderr, stdout)
+	w, closer, err := openLogOutput(target, stderr, stdout, 0, 0)
 	if err == nil {
 		_ = closer()
 		t.Fatalf("expected permission error opening %q, got writer=%T", target, w)
