@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
   schedule:
     # Weekly run so CVE drops surface even without a PR open.
     # Cron: 06:30 UTC every Wednesday — offset from CodeQL (Mon 06:00)

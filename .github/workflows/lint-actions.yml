@@ -22,6 +22,10 @@ on:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+  # The merge queue dispatches a check_suite on a synthetic merge_group
+  # ref. We always run actionlint there (no path filter) so the queue
+  # cannot trip on a workflow YAML change that races a non-workflow PR.
+  merge_group:
   workflow_dispatch:
 
 permissions:
