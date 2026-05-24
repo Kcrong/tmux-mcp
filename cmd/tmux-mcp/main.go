@@ -37,6 +37,9 @@ Flags:
   -version          print version and exit
   -help             print this message and exit
   -log-level LEVEL  log verbosity: error|warn|info|debug (default "info")
+  -socket PATH      absolute path for the private tmux socket
+                    (also TMUX_MCP_SOCKET env var; flag wins).
+                    Default: a fresh directory under $TMPDIR.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -60,6 +63,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	showVersion := fs.Bool("version", false, "print version and exit")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
+	// Default to the env var so systemd / container deployments can
+	// pin a known socket path without rewriting argv. The flag, when
+	// passed, wins.
+	socket := fs.String("socket", os.Getenv("TMUX_MCP_SOCKET"),
+		"absolute path for the private tmux socket "+
+			"(env TMUX_MCP_SOCKET; default: fresh tempdir)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -79,7 +88,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// line-delimited JSON-RPC frames the MCP client consumes.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: lvl})))
 
-	ctl, err := tmuxctl.New()
+	ctl, err := tmuxctl.NewWithSocket(*socket)
 	if err != nil {
 		return err
 	}
