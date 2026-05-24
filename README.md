@@ -69,8 +69,8 @@ is left unset, so log aggregators can opt in to JSON at any level).
 - [Architecture](#architecture)
 - [Design notes](#design-notes)
 - [FAQ](#faq)
-- [Performance & tuning](#performance--tuning)
 - [Troubleshooting](#troubleshooting)
+- [Performance & tuning](#performance--tuning)
 - [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
 
@@ -809,6 +809,95 @@ every line is reported as new. Sessions that go idle longer than
 memory growth on long-running servers — set `-snapshot-ttl=0` to keep
 history until the session is killed explicitly.
 
+## Troubleshooting
+
+The defaults aim to "just work" for desktop MCP clients, but a handful
+of failure modes show up often enough to be worth naming. Each entry
+below maps the symptom to the smallest fix and links to the flag or
+section that documents it in full.
+
+### `tmux server already running` / socket conflict
+
+Every `tmux-mcp` PID gets its own private socket under `$TMPDIR` by
+default, so two instances never collide unless an operator pinned both
+to the same path. If you see this, either drop the explicit socket flag
+and let the server pick a fresh path, or override
+[`-socket`](#process-management-systemd-containers-supervisors) (or the
+`TMUX_MCP_SOCKET` env var) to a path that no other process owns —
+e.g. `tmux-mcp -socket=/run/tmux-mcp/agent-b.sock`. The flag wins over
+the env var, so a one-off launch can override a baked-in unit setting.
+
+### `tmux: command not found` / startup fails before stdio
+
+`tmux-mcp` looks `tmux` up on `$PATH` at startup and refuses to serve
+without it. Run [`tmux-mcp -probe`](#health-check) to confirm — it
+prints `ok\ttmux=<v>\ttmux-mcp=<v>` on success, or `probe failed: …`
+to stderr with the exact diagnostic. Install with your package manager:
+`sudo apt-get install tmux` on Debian/Ubuntu, `brew install tmux` on
+macOS. Container users can pull `ghcr.io/kcrong/tmux-mcp` which already
+bundles `tmux`.
+
+### `audit-log permission denied` / nothing in the audit file
+
+The [`-audit-log`](#audit-log) flag opens its target append-only at
+mode `0600`, so the running user must be able to create or write to
+that file and **the parent directory must already exist** —
+`tmux-mcp` will not `mkdir -p` for you. Under systemd, expand
+`ReadWritePaths=` to include the audit path (or put the file under the
+unit's `RuntimeDirectory=` / `LogsDirectory=`), otherwise the strict
+`ProtectSystem=strict` sandbox in
+[`scripts/tmux-mcp.service`](scripts/tmux-mcp.service) will block the
+open. Use `-audit-log=stderr` to side-step file permissions entirely
+when you only need ad-hoc inspection.
+
+### JSON-RPC frame too large / `EOF` after a `capture`
+
+A `capture` with `mode=scrollback` on a long-lived shell can return
+tens of MB in a single response, which inflates the JSON-RPC frame
+past what some clients buffer comfortably and shows up as an `EOF`
+or truncated read. The [`capture`](#capture) tool already caps
+`mode=scrollback` at **5000 lines by default**; lower it further with
+`max_lines` (e.g. `"max_lines": 500`) when you only need recent
+history. The oldest lines drop first and the response sets
+`truncated: true` so the agent knows it saw a window, not the full
+buffer. See also [Performance & tuning](#performance--tuning) for the
+broader rationale.
+
+### Server hangs on shutdown
+
+`tmux-mcp` installs a SIGINT/SIGTERM handler via
+`signal.NotifyContext`, then drains every in-flight `tools/call` before
+returning — see [Architecture](#architecture). A hang almost always
+means a handler is stuck inside tmux itself (e.g. a `wait_for_text`
+that never matches with no `timeout_ms`). Always pass a finite
+`timeout_ms` on long waits, and send SIGKILL as a last resort if the
+process needs to disappear immediately. A `-shutdown-timeout` flag is
+on the roadmap for a hard ceiling on the drain; until it lands, rely
+on per-call timeouts plus the supervisor's own `TimeoutStopSec=`.
+
+### Tool calls deadlock under load
+
+The [concurrency cap](#concurrency-cap) (`-max-concurrent-calls`,
+default `64`) makes excess `tools/call` frames wait rather than fail.
+That is the desired back-pressure, but a misconfigured cap of `1` or
+`2` plus a long-running `wait_for_text` will look like a deadlock to
+the client. Either raise the cap (`-max-concurrent-calls=128`) or set
+it to `0` to disable gating entirely. When a call blocks more than
+100 ms a single `slog.Warn` records the queue depth, so look for
+`rpc concurrency wait` in the structured log to confirm saturation
+before tuning.
+
+### `tmux version too old`
+
+`tmux-mcp` requires **tmux 3.0+** (older releases lack flags this
+package depends on, e.g. `new-session -x/-y`) — see
+[Requirements](#requirements). Upgrade with `apt-get install tmux`
+or `brew upgrade tmux`; on a frozen distro pin a backport repo or
+build from source. The error wraps a stable JSON-RPC code so clients
+can switch on it instead of substring-matching the message, and
+`tmux-mcp -probe` surfaces the same diagnostic before the JSON-RPC
+loop starts.
+
 ## Performance & tuning
 
 `tmux-mcp` is happy under everyday agent traffic, but there are a few
@@ -863,26 +952,6 @@ conservative so that "do nothing" is the safe choice.
   [PR #51](https://github.com/Kcrong/tmux-mcp/pull/51) — once that
   lands, set it explicitly on shared deployments so a runaway client
   cannot exhaust goroutines or the tmux server.
-
-## Troubleshooting
-
-- **`tmux not found on PATH`** — install `tmux` with your package
-  manager (`apt-get install tmux`, `brew install tmux`, etc.). The
-  server probes `$PATH` at startup and the error message itself
-  includes the install hint.
-- **Capture looks empty even though the program is running** — you
-  probably captured during a redraw. Call `wait_for_stable` first, or
-  wait for a sentinel string with `wait_for_text`.
-- **Two agents see each other's sessions** — they shouldn't; each
-  `tmux-mcp` instance creates its own private socket. If you're seeing
-  leakage, you're sharing one server process across both agents. Spawn a
-  separate `tmux-mcp` per agent.
-- **Calls report `method not found: tools/call:<name>`** — your client
-  is calling a tool the server doesn't expose. Run `tools/list` to see
-  the canonical names.
-- **`wait_for_text` always times out** — remember the pattern is a Go
-  regex, not a shell glob. Escape `.`, `+`, `?`, `*`, `(`, `)`, `[`,
-  `]`, `{`, `}`, `^`, `$`, `|`, `\` if you mean them literally.
 
 ## Releases
 
