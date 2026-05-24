@@ -43,7 +43,7 @@ Docs:  https://github.com/Kcrong/tmux-mcp
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "tmux-mcp:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "tmux-mcp:", err)
 		os.Exit(1)
 	}
 }
@@ -60,7 +60,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected positional argument %q (run with -help)", fs.Arg(0))
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, versionString())
+		_, _ = fmt.Fprintln(stdout, versionString())
 		return nil
 	}
 
