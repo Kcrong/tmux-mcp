@@ -82,6 +82,12 @@ type serveConfig struct {
 	// drain entirely"; any in-flight handlers keep running detached.
 	shutdownTimeout    time.Duration
 	shutdownTimeoutSet bool
+	// reaper, when non-nil, runs in the background and kills sessions
+	// that have had no tools/call activity for at least the configured
+	// idle timeout. The dispatcher records activity on every
+	// session-bearing tools/call. nil disables the feature, matching
+	// the -session-idle-timeout=0 default.
+	reaper *IdleReaper
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -122,6 +128,24 @@ func WithShutdownTimeout(d time.Duration) ServeOption {
 	}
 }
 
+// WithSessionIdleTimeout enables the background reaper that kills tmux
+// sessions that have had no tools/call activity for at least `d`. Pass
+// the controller's KillSession method as `kill` so the reaper can
+// terminate sessions in the same tmux server the rest of the dispatcher
+// is driving. d <= 0 disables the feature entirely (matching the
+// -session-idle-timeout=0 CLI default), in which case the reaper
+// goroutine is never started and the dispatcher's Touch calls become
+// no-ops.
+//
+// Activity is defined as any tools/call that names a session — the
+// session-bearing list is encoded inside [sessionFromArgs]. Methods
+// that operate on the table as a whole (session_list,
+// kill_all_sessions) are deliberately excluded so they cannot keep
+// otherwise-idle sessions alive.
+func WithSessionIdleTimeout(d time.Duration, kill KillFunc) ServeOption {
+	return func(c *serveConfig) { c.reaper = NewIdleReaper(d, kill) }
+}
+
 // ErrShutdownTimedOut is returned by Serve when the in-flight drain
 // fails to complete inside the timeout configured via
 // WithShutdownTimeout. Callers can use [errors.Is] to recognise it and
@@ -156,6 +180,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 	}
 	limiter := newCallLimiter(cfg.maxConcurrentCalls)
 	audit := cfg.audit
+	reaper := cfg.reaper
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
 	// dispatchCtx is the parent of every request-scoped context Serve
@@ -170,6 +195,16 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 	// wg tracks every dispatched handler goroutine so Serve can hold
 	// shutdown until all in-flight calls have written their response.
 	var wg sync.WaitGroup
+	// Launch the idle-session reaper when -session-idle-timeout > 0.
+	// Run is a no-op on a nil reaper, but we guard the goroutine launch
+	// so an operator who left the flag at the default 0 doesn't pay an
+	// extra goroutine. The reaper exits cleanly on ctx.Done(); we
+	// deliberately don't track it on wg because the shutdown drain
+	// should not have to wait an extra reapInterval tick for the
+	// goroutine to wake up — ctx cancel is enough.
+	if reaper != nil {
+		go reaper.Run(ctx)
+	}
 	send := func(resp rpcResponse) {
 		resp.JSONRPC = "2.0"
 		buf, err := json.Marshal(resp)
@@ -438,6 +473,19 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 					Error: &rpcError{Code: codeInternalError, Message: "internal server error"},
 				})
 			}()
+			// Mark per-session activity for the idle reaper before the
+			// handler runs. Doing it pre-dispatch (rather than after the
+			// handler returns) means a long-running wait_for_text that
+			// happens to span the timeout window cannot race the reap
+			// — Touch resets the clock to "this call started", which
+			// matches operator intent ("this session is being used right
+			// now"). No-op when the reaper is disabled or the call is
+			// not a session-bearing tools/call.
+			if reaper != nil && req.Method == "tools/call" {
+				if name := sessionFromArgs(toolNameFromParams(req.Params), toolArgsFromParams(req.Params)); name != "" {
+					reaper.Touch(name)
+				}
+			}
 			started := time.Now()
 			result, rerr := h(reqCtx, req.Method, req.Params)
 			dur := time.Since(started)
