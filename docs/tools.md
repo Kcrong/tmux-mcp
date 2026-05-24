@@ -339,6 +339,78 @@ confirm the foreground PID, then signal it directly.
 
 ---
 
+## `display_message`
+
+Evaluate a tmux format string via `tmux display-message -p` and return
+the resolved single-line value. The canonical introspection escape
+hatch for any `#{...}` variable that does not yet have a dedicated
+tool — pane titles, window options, server uptime, etc.
+
+The optional `session` / `window` / `pane` combine into a tmux target:
+
+| Provided                | Target string passed to `tmux -t`     |
+| ----------------------- | ------------------------------------- |
+| `session`               | `<session>`                           |
+| `session`+`window`      | `<session>:<window>`                  |
+| `session`+`window`+`pane` | `<session>:<window>.<pane>`         |
+| (none)                  | (no `-t`; tmux uses current/global)   |
+
+The handler runs an explicit `has-session` probe before the
+`display-message` call when `session` is set, so an unknown name
+returns the typed `-32000` error instead of silently producing a blank
+value (tmux's own `display-message -t <missing>` prints an empty line
+without erroring).
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `format`  | string | yes      | tmux format DSL string; max 4096 chars; must not contain literal newlines           |
+| `session` | string | no       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                      |
+| `window`  | string | no       | window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`)                     |
+| `pane`    | string | no       | numeric pane index (`\d+`) or tmux `%N` pane id                                     |
+
+The schema sets `additionalProperties: false`, so any field other than
+the four listed above is rejected with `-32602` before tmux is
+consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "value": "demo 0 %0 /home/user/repo" }
+```
+
+`value` is whatever tmux returned for the format, with the trailing
+newline that `display-message` always appends stripped. Leading /
+trailing whitespace inside the format (e.g. from `#{=10:pane_title}`
+padding) is preserved verbatim.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing `format`, format contains a literal newline, format too long, or any of `session` / `window` / `pane` outside the regex/length policy. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`).               |
+| `-32603` | tmux refused the call for an unexpected reason (e.g. malformed format string).     |
+
+### Example
+
+```jsonc
+{ "format": "#{session_name} #{window_index} #{pane_id} #{pane_current_path}", "session": "demo" }
+```
+
+Pair with `list_panes` / `list_windows` when the agent needs to first
+discover a target before reading its format-only fields.
+
+```jsonc
+{ "name": "list_panes",      "arguments": { "session": "demo" } }
+{ "name": "display_message", "arguments": { "format": "#{pane_title}", "session": "demo", "window": "0", "pane": "1" } }
+```
+
+---
+
 ## `send_keys`
 
 Type into a session. Each entry of `keys` is interpreted by tmux: bare
