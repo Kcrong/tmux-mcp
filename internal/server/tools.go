@@ -236,6 +236,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneSelect(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
+	case "send_signal":
+		return t.sendSignal(ctx, call.Arguments)
 	}
 	return nil, methodNotFound("tools/call:" + call.Name)
 }
