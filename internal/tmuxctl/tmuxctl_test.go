@@ -464,3 +464,129 @@ func TestProbeVersionWithBinary_EmptyFallsBackToPath(t *testing.T) {
 		t.Fatalf("ProbeVersionWithBinary(\"\") = %q, want %q (= ProbeVersion)", got, want)
 	}
 }
+
+// TestWithConfigPath_HonoursExplicitPath verifies that the override
+// flows into the controller's `configPath` field so every later
+// run() picks up the supplied -f argument. Mirrors
+// TestWithBinary_HonoursExplicitPath: the controller's accessor
+// surfaces the resolved path verbatim, which is the pre-condition for
+// the run() code path that prepends "-f <path>" before the subcommand
+// verb.
+func TestWithConfigPath_HonoursExplicitPath(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte("# empty\n"), 0o600); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	c, err := NewWithSocket("", WithConfigPath(conf))
+	if err != nil {
+		t.Fatalf("NewWithSocket(WithConfigPath(%q)): %v", conf, err)
+	}
+	t.Cleanup(func() { c.Shutdown(context.Background()) })
+	if got := c.ConfigPath(); got != conf {
+		t.Fatalf("controller.ConfigPath() = %q, want %q", got, conf)
+	}
+}
+
+// TestWithConfigPath_EmptyKeepsLegacyBehaviour pins the documented
+// escape hatch: passing WithConfigPath("") must behave as if the option
+// were never applied, so callers can forward a possibly-empty CLI flag
+// without an extra branch. The controller's ConfigPath() must return
+// "" so the run() path continues to omit -f from argv (i.e. tmux uses
+// its own defaults / ~/.tmux.conf).
+func TestWithConfigPath_EmptyKeepsLegacyBehaviour(t *testing.T) {
+	skipIfNoTmux(t)
+	c, err := NewWithSocket("", WithConfigPath(""))
+	if err != nil {
+		t.Fatalf("NewWithSocket(WithConfigPath(\"\")): %v", err)
+	}
+	t.Cleanup(func() { c.Shutdown(context.Background()) })
+	if got := c.ConfigPath(); got != "" {
+		t.Fatalf("controller.ConfigPath() = %q, want \"\" for empty override", got)
+	}
+}
+
+// TestWithConfigPath_RejectsRelativePath mirrors the -socket / -tmux-bin
+// validation contract: a relative path is refused at construction time
+// so the operator immediately sees the mistake instead of an obscure
+// "tmux: file is a directory" or "no such file" failure once the
+// working directory shifts.
+func TestWithConfigPath_RejectsRelativePath(t *testing.T) {
+	_, err := NewWithSocket("", WithConfigPath("relative/tmux.conf"))
+	if err == nil {
+		t.Fatal("expected error for relative tmux config path")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestWithConfigPath_RejectsMissingFile confirms a non-existent path
+// surfaces as a clean "tmux config path %q ..." error rather than
+// getting swallowed and re-emerging downstream as a confusing tmux
+// stderr per call.
+func TestWithConfigPath_RejectsMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no-such.conf")
+	_, err := NewWithSocket("", WithConfigPath(missing))
+	if err == nil {
+		t.Fatal("expected error for missing tmux config path")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Fatalf("expected error to quote the offending path %q, got: %v", missing, err)
+	}
+}
+
+// TestWithConfigPath_RejectsDirectory makes sure a directory at the
+// supplied path is rejected up front. tmux's own diagnostic for
+// `-f <dir>` ("file is a directory") only surfaces at command time,
+// far from the operator's mistake.
+func TestWithConfigPath_RejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := NewWithSocket("", WithConfigPath(dir))
+	if err == nil {
+		t.Fatal("expected error when tmux config path is a directory")
+	}
+	if !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected 'is a directory' phrase, got: %v", err)
+	}
+}
+
+// TestWithConfigPath_LoadsCustomOptions is the load-bearing end-to-end
+// check: the controller is constructed with WithConfigPath pointing at
+// a tmux.conf that sets a sentinel server-wide option (escape-time
+// 17), the controller starts a real tmux session, and ShowOptions
+// reports the same value. If the controller forgot to inject -f the
+// option would stay at its tmux default and the test fails. The
+// sentinel value is picked deliberately to be different from tmux's
+// default (500) so we cannot accidentally match an unrelated default.
+func TestWithConfigPath_LoadsCustomOptions(t *testing.T) {
+	skipIfNoTmux(t)
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte("set -g escape-time 17\n"), 0o600); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	c, err := NewWithSocket("", WithConfigPath(conf))
+	if err != nil {
+		t.Fatalf("NewWithSocket(WithConfigPath(%q)): %v", conf, err)
+	}
+	t.Cleanup(func() { c.Shutdown(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	if cerr := c.CreateSession(ctx, SessionSpec{Name: "conftest", Command: "/bin/sh"}); cerr != nil {
+		t.Fatalf("CreateSession: %v", cerr)
+	}
+	options, err := c.ShowOptions(ctx, OptionScopeServer, "", "", false)
+	if err != nil {
+		t.Fatalf("ShowOptions(server): %v", err)
+	}
+	got, ok := options["escape-time"]
+	if !ok {
+		t.Fatalf("escape-time missing from server options: %v", options)
+	}
+	if got != "17" {
+		t.Fatalf("escape-time = %q, want %q (custom tmux.conf not loaded)", got, "17")
+	}
+}
