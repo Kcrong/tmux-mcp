@@ -107,6 +107,48 @@ signs:
       - '${artifact}'
     output: true
 
+dockers:
+  - image_templates:
+      - "ghcr.io/kcrong/tmux-mcp:{{ .Version }}-amd64"
+      - "ghcr.io/kcrong/tmux-mcp:latest-amd64"
+    use: buildx
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/Kcrong/tmux-mcp"
+      - "--label=org.opencontainers.image.licenses=MIT"
+  - image_templates:
+      - "ghcr.io/kcrong/tmux-mcp:{{ .Version }}-arm64"
+      - "ghcr.io/kcrong/tmux-mcp:latest-arm64"
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/Kcrong/tmux-mcp"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+docker_manifests:
+  - name_template: "ghcr.io/kcrong/tmux-mcp:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/kcrong/tmux-mcp:{{ .Version }}-amd64"
+      - "ghcr.io/kcrong/tmux-mcp:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/kcrong/tmux-mcp:latest"
+    image_templates:
+      - "ghcr.io/kcrong/tmux-mcp:latest-amd64"
+      - "ghcr.io/kcrong/tmux-mcp:latest-arm64"
+
 snapshot:
   version_template: '{{ incpatch .Version }}-next'
 

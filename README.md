@@ -124,6 +124,37 @@ Pass `-log-level=debug` for verbose JSON logs to stderr (stdout stays JSON-RPC).
 
 `make help` lists every available target.
 
+### Container image
+
+Multi-arch (`linux/amd64` + `linux/arm64`) images are published to
+[GitHub Container Registry](https://github.com/Kcrong/tmux-mcp/pkgs/container/tmux-mcp)
+on every release. The image is based on `alpine` and bundles `tmux`, so
+nothing else needs to be installed on the host:
+
+```sh
+docker pull ghcr.io/kcrong/tmux-mcp:latest
+docker run --rm -i ghcr.io/kcrong/tmux-mcp -version
+```
+
+`tmux-mcp` is an MCP **stdio** server, so the most common way to use
+the container is to let your MCP client launch it on demand. Wire
+`docker` as the command and let it run the image with `-i` (interactive,
+so stdin/stdout stay attached):
+
+```jsonc
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "ghcr.io/kcrong/tmux-mcp:latest"]
+    }
+  }
+}
+```
+
+Pin a specific version (e.g. `ghcr.io/kcrong/tmux-mcp:v0.2.0`) instead
+of `latest` if you want reproducibility.
+
 ## Wire it up
 
 `tmux-mcp` is a generic MCP stdio server — any client that speaks MCP
