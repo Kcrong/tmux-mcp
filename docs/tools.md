@@ -2757,6 +2757,100 @@ that produced it.
 
 ---
 
+## `set_option`
+
+Set or clear a tmux option via `tmux set-option`. Mirrors the read-side
+`show_options` tool so an agent that wants to flip a runtime knob
+(`status-interval`, `automatic-rename`, `remain-on-exit`, …) does not
+have to spawn a subshell. **Mutates tmux state**, so this tool is
+excluded from the read-only allowlist.
+
+Scopes mirror `show_options` and tmux's own flag set:
+
+- `server` — server-wide options (`tmux set-option -s NAME VALUE`). The
+  `target` argument is ignored — server options have no
+  session/window/pane qualifier.
+- `session` — per-session override on the named session
+  (`tmux set-option -t SESSION NAME VALUE`). This is the default scope.
+- `window` — per-window override on `SESSION:WINDOW`
+  (`tmux set-option -w -t SESSION:WINDOW NAME VALUE`).
+- `pane` — per-pane override on a specific pane (`tmux set-option -p -t
+  PANE NAME VALUE`). Pane options are a tmux 3.4+ concept; older builds
+  reject `-p` and the call surfaces as `-32603`.
+
+Pass `unset: true` to clear the override (`tmux set-option -u`); the
+`value` field is ignored on this path and may be omitted. tmux's own
+contract for `set-option -u` is "if no override exists, do nothing and
+exit 0", so an over-eager unset is a no-op rather than an error —
+matching the behaviour an agent would see from the CLI.
+
+### Input
+
+| Field    | Type    | Required                                  | Default     | Notes                                                                                                                                |
+| -------- | ------- | ----------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`   | string  | yes                                       | —           | option name; len 1-128, regex `^[A-Za-z0-9_-]+$`                                                                                     |
+| `value`  | string  | yes when `unset` is `false`               | —           | option value, capped at 4096 bytes. Empty string is a legitimate value tmux will store verbatim                                      |
+| `scope`  | string  | no                                        | `"session"` | one of `server`, `session`, `window`, `pane`                                                                                         |
+| `target` | string  | yes when `scope` is `session`/`window`/`pane` | —       | session name (`scope=session`); `SESSION:WINDOW` (`scope=window`); `SESSION:WINDOW.PANE` or `%N` (`scope=pane`)                      |
+| `unset`  | boolean | no                                        | `false`     | when true, clear the override (`-u`) instead of setting a value                                                                      |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front.
+
+### Output
+
+JSON block echoing the resolved scope and the branch taken so a caller
+inspecting the response can tell which side of the set/unset switch
+landed:
+
+```jsonc
+{
+  "set":   true,
+  "unset": false,
+  "name":  "status-interval",
+  "scope": "session"
+}
+```
+
+When `unset=true`, the envelope flips to `{"set": false, "unset": true,
+…}`.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name`; missing `target` for session/window/pane scope; unknown `scope`; `value` over the 4 KiB cap; or an unknown field was sent.   |
+| `-32000` | Referenced session does not exist on this server (`errs.ErrSessionNotFound`).                                                                        |
+| `-32603` | tmux refused the call (unknown option name, version mismatch on `scope=pane`, etc.).                                                                 |
+
+### Examples
+
+```jsonc
+// Server-wide: bump the maximum buffer count.
+{ "name": "buffer-limit", "value": "75", "scope": "server" }
+
+// Session-scoped (default): faster status-line refresh on the "demo" session.
+{ "name": "status-interval", "value": "1", "target": "demo" }
+
+// Window-scoped: turn off automatic renaming for the first window.
+{ "name": "automatic-rename", "value": "off", "scope": "window", "target": "demo:0" }
+
+// Pane-scoped (tmux 3.4+): keep a pane open after its command exits.
+{ "name": "remain-on-exit", "value": "on", "scope": "pane", "target": "demo:0.0" }
+
+// Unset: drop the per-session override and revert to the default.
+{ "name": "status-interval", "scope": "session", "target": "demo", "unset": true }
+```
+
+Pair with `show_options` to confirm the override actually landed:
+
+```jsonc
+{ "name": "set_option",   "arguments": { "name": "status-interval", "value": "5", "target": "demo" } }
+{ "name": "show_options", "arguments": { "scope": "session", "session": "demo" } }
+```
+
+---
+
 ## `set_window_option`
 
 Set or clear a tmux **window** option via

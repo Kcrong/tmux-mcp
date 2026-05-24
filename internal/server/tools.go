@@ -804,6 +804,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.setWindowOption(ctx, call.Arguments)
 	case "show_window_options":
 		return t.showWindowOptions(ctx, call.Arguments)
+	case "set_option":
+		return t.setOption(ctx, call.Arguments)
 	case "set_buffer":
 		return t.setBuffer(ctx, call.Arguments)
 	case "list_buffers":
