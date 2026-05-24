@@ -123,7 +123,7 @@ func TestHealthz_NonGetReturns405(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /healthz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
 	}

@@ -91,7 +91,7 @@ func TestServe_EOFCancelsInFlightHandlerCtx(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
 		done <- Serve(ctx, in, w, handler)
@@ -213,7 +213,7 @@ func TestServe_EOFAlsoCancelsCtxBoundChildren(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, w, handler) }()
 

@@ -87,7 +87,7 @@ func TestAudit_RecordsOneLinePerToolCall(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler, WithAudit(audit)) }()
 
@@ -185,7 +185,7 @@ func TestAudit_ErrorPathRecordsErrorCode(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler, WithAudit(audit)) }()
 
@@ -242,7 +242,7 @@ func TestAudit_ArgsSizeBytesEqualsRawLength(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler, WithAudit(audit)) }()
 
