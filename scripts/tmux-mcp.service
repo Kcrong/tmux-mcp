@@ -1,0 +1,75 @@
+# tmux-mcp.service — reference systemd unit for ops who want to run
+# tmux-mcp as a long-running multiplexer-helper backed by a unix socket.
+#
+# IMPORTANT: tmux-mcp is fundamentally a stdio MCP server — it reads
+# JSON-RPC frames from stdin and writes responses to stdout. The common
+# deployment is to let your MCP client (Claude Desktop, Claude Code,
+# Cursor, …) spawn the binary on demand; in that mode systemd is the
+# wrong tool.
+#
+# This unit is provided for the niche where you want a single
+# long-running tmux-mcp process that pins its private tmux socket at
+# /run/tmux-mcp/sock (the -socket flag, see PR #24) so a thin wrapper
+# (socat, a custom shim, …) can hand stdin/stdout off to it on demand.
+# The -probe flag (PR #43) is used as ExecStartPre so the unit fails
+# fast on a host that is missing tmux or has it pinned to a too-old
+# version, instead of looking healthy and crashing on the first request.
+#
+# Install:
+#   # Create a dedicated unprivileged user (one-time):
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin tmux-mcp
+#   sudo cp scripts/tmux-mcp.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tmux-mcp
+#
+# Validate the unit syntax with:
+#   systemd-analyze verify scripts/tmux-mcp.service
+
+[Unit]
+Description=tmux-mcp MCP server (socket-pinned multiplexer helper)
+Documentation=https://github.com/Kcrong/tmux-mcp
+After=network.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated unprivileged system user. Create with:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin tmux-mcp
+User=tmux-mcp
+
+# Fail fast if tmux is missing or too old. -probe exits 0 on success
+# and writes "ok\ttmux=<ver>\ttmux-mcp=<ver>" to stdout; on failure it
+# writes a "probe failed: …" diagnostic to stderr and exits non-zero,
+# which aborts the unit start before ExecStart runs.
+ExecStartPre=/usr/local/bin/tmux-mcp -probe
+
+# Pin the private tmux socket at a known path under /run so wrappers
+# and operators can find it. The parent directory must already exist;
+# RuntimeDirectory= below creates and tears it down for us.
+ExecStart=/usr/local/bin/tmux-mcp -socket /run/tmux-mcp/sock -log-level=info
+
+# /run/tmux-mcp is created on start and removed on stop. 0700 keeps the
+# socket out of reach of other local users since tmux trusts anyone who
+# can connect to the socket.
+RuntimeDirectory=tmux-mcp
+RuntimeDirectoryMode=0700
+
+Restart=on-failure
+RestartSec=2s
+
+# Hardening — tmux-mcp only needs to fork tmux, talk to its private
+# AF_UNIX socket, and write structured logs to stderr. Everything else
+# is locked down.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
