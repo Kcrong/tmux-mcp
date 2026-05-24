@@ -858,3 +858,92 @@ call with the at-a-glance check first:
 { "name": "window_kill",   "arguments": { "session": "demo", "window": "scratch" } }
 ```
 
+---
+
+## `window_select`
+
+Make `target` the active window of `session` via `tmux select-window`.
+Subsequent `send_keys` / `capture` calls that name the session will
+then act on the newly focused window. Pair with `list_windows` to
+discover the available targets when an agent doesn't track the layout
+locally.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `target`  | string | yes      | window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric tmux index (`\d+`)               |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected with `-32602` before tmux is consulted.
+
+### Output
+
+Plain text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session` or `target`, or an unknown field was sent. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`), or no window matches `target`. |
+| `-32603` | tmux refused the selection for an unexpected reason.               |
+
+### Example
+
+```jsonc
+{ "session": "demo", "target": "build" }
+```
+
+A typical chain looks like: discover the layout, jump to a specific
+window, drive it.
+
+```jsonc
+{ "name": "list_windows",  "arguments": { "session": "demo" } }
+{ "name": "window_select", "arguments": { "session": "demo", "target": "build" } }
+{ "name": "send_keys",     "arguments": { "session": "demo", "keys": ["make test", "Enter"] } }
+```
+
+---
+
+## `window_rename`
+
+Rename a window via `tmux rename-window -t <session>:<target> <name>`.
+`target` may be the existing window name or its numeric index; `name`
+is the new label and must satisfy the same conservative regex/length
+policy as `window_create`'s optional `name`.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `target`  | string | yes      | existing window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric tmux index (`\d+`)      |
+| `name`    | string | yes      | new window label; len 1-64, regex `^[A-Za-z0-9_-]+$`                               |
+
+### Output
+
+Plain text block: `window "<session>:<target>" renamed to "<name>"`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, `target`, or `name`.                    |
+| `-32000` | `session` does not exist on this server, or no window matches `target`. |
+| `-32603` | tmux refused the rename for an unexpected reason.                  |
+
+### Example
+
+```jsonc
+{ "session": "demo", "target": "0", "name": "build" }
+```
+
+Pair with `list_windows` to confirm the new label is visible:
+
+```jsonc
+{ "name": "window_rename", "arguments": { "session": "demo", "target": "0", "name": "build" } }
+{ "name": "list_windows",  "arguments": { "session": "demo" } }
+```
+

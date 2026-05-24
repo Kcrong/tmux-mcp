@@ -161,6 +161,66 @@ func (c *Controller) KillWindow(ctx context.Context, session, window string) err
 	return nil
 }
 
+// SelectWindow makes target the active window of session via
+// `tmux select-window -t <session>:<target>`. target may be either a
+// window name or a numeric index — tmux resolves both forms uniformly.
+//
+// Like CreateWindow / KillWindow, a missing session is normalised to a
+// wrapped errs.ErrSessionNotFound: `select-window -t <session>:...`
+// emits "can't find window" instead of "can't find session" because -t
+// names a window target, so detect that phrasing too and surface the
+// same typed sentinel run() uses elsewhere.
+func (c *Controller) SelectWindow(ctx context.Context, session, target string) error {
+	if session == "" {
+		return errors.New("session required")
+	}
+	if target == "" {
+		return errors.New("target required")
+	}
+	full := session + ":" + target
+	if _, err := c.run(ctx, "select-window", "-t", full); err != nil {
+		// `select-window -t <session>:<target>` rejects an unknown
+		// session/window with "can't find window", which run() does not
+		// translate. Fold it into errs.ErrSessionNotFound so the
+		// JSON-RPC layer maps the failure consistently with create/kill.
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
+// RenameWindow renames the targeted window via
+// `tmux rename-window -t <session>:<target> <newName>`. target may be a
+// window name or numeric index; newName is the new label tmux will
+// assign. Validation of newName (regex / length) lives at the boundary
+// — this method just wires the spec into the right tmux flags.
+//
+// A missing session/window surfaces as a wrapped errs.ErrSessionNotFound
+// for the same reason described on SelectWindow.
+func (c *Controller) RenameWindow(ctx context.Context, session, target, newName string) error {
+	if session == "" {
+		return errors.New("session required")
+	}
+	if target == "" {
+		return errors.New("target required")
+	}
+	if newName == "" {
+		return errors.New("name required")
+	}
+	full := session + ":" + target
+	if _, err := c.run(ctx, "rename-window", "-t", full, newName); err != nil {
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // Window describes a single tmux window as observed by `tmux list-windows`.
 //
 // The fields are the subset of window format variables that an agent
