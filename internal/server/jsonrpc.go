@@ -121,6 +121,16 @@ type serveConfig struct {
 	// is reaped under that name (not the bare "demo" the client
 	// supplied). Empty keeps the historical no-prefix behaviour.
 	sessionPrefix string
+	// readOnly mirrors the operator-supplied -read-only CLI flag. When
+	// true, every tools/call whose tool name is not in the read-only
+	// allowlist (see [IsReadOnlyTool]) is rejected with the typed
+	// [errs.CodeReadOnly] error before its handler runs, so an LLM
+	// agent constrained to diagnosis cannot mutate tmux state. False
+	// (the default) keeps the dispatcher's historical "every
+	// registered tool dispatches normally" behaviour. tools/list is
+	// intentionally not gated — a read-only client can still discover
+	// the full surface and choose which tools to invoke.
+	readOnly bool
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -215,6 +225,26 @@ func WithMaxResponseBytes(limit int64) ServeOption {
 // trusts the input.
 func WithSessionPrefix(prefix string) ServeOption {
 	return func(c *serveConfig) { c.sessionPrefix = prefix }
+}
+
+// WithReadOnly arms the dispatcher's mutation gate. When enabled, any
+// tools/call whose tool name is not in the read-only allowlist (see
+// [IsReadOnlyTool]) is rejected with [errs.CodeReadOnly] before the
+// handler runs — the message has the form
+// `tool 'X' is rejected: server in read-only mode`. The audit and
+// metrics paths still fire on every rejection so operators see the
+// blocked attempts in their dashboards, exactly as if the call had
+// produced a typed error.
+//
+// Default behaviour (enabled=false, the option not passed) leaves the
+// dispatcher byte-identical to its pre-flag wire response — every
+// registered tool dispatches normally. tools/list is never gated: a
+// read-only client can still enumerate the full surface and decide
+// which tools to invoke; only tools/call is constrained.
+//
+// Wired to the operator-supplied -read-only CLI flag in main.
+func WithReadOnly(enabled bool) ServeOption {
+	return func(c *serveConfig) { c.readOnly = enabled }
 }
 
 // WithToolsListChangedNotifier wires the spec-defined
@@ -660,7 +690,34 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 				}
 			}
 			started := time.Now()
-			result, rerr := h(reqCtx, req.Method, req.Params)
+			// Read-only gate. When -read-only is armed, every
+			// tools/call whose tool name is not in the inspection
+			// allowlist (see [IsReadOnlyTool]) is rejected with a
+			// typed [errs.CodeReadOnly] error before the handler
+			// runs. We synthesise the error here (rather than inside
+			// h) so the audit / metrics records below still fire on
+			// the rejection — operators see blocked attempts in their
+			// dashboards exactly as they would see any other typed
+			// error, and a read-only deployment is never silently
+			// permissive. Other JSON-RPC methods (initialize,
+			// notifications/initialized, tools/list) are not gated:
+			// the read-only mode constrains tool invocation, not
+			// protocol bookkeeping or surface enumeration.
+			var (
+				result any
+				rerr   *rpcError
+			)
+			if cfg.readOnly && req.Method == "tools/call" && !IsReadOnlyTool(toolNameFromParams(req.Params)) {
+				rerr = &rpcError{
+					Code: errs.CodeReadOnly,
+					Message: fmt.Sprintf(
+						"tool '%s' is rejected: server in read-only mode",
+						toolNameFromParams(req.Params),
+					),
+				}
+			} else {
+				result, rerr = h(reqCtx, req.Method, req.Params)
+			}
 			dur := time.Since(started)
 			durMs := dur.Milliseconds()
 			// Pre-check the marshalled response against

@@ -29,6 +29,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
 | `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
+| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `list_panes`, `list_windows`, `list_clients`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
 
 ## `-version-json` output
 
@@ -361,6 +362,75 @@ tmux-mcp -session-prefix=agent_bob_     # agent B (separate process)
 
 # combine with -allowlist for a least-privilege namespaced deployment
 tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
+```
+
+## `-read-only`
+
+- Default `false` keeps the dispatcher byte-identical to the pre-flag
+  wire response: every registered tool dispatches normally.
+  Unrelated deployments see no behaviour change.
+- When set, the dispatcher rejects every `tools/call` whose tool name
+  is not in the inspection allowlist (see
+  `internal/server/readonly.go`) with a typed JSON-RPC error: code
+  `-32011` (`CodeReadOnly`), message
+  `tool 'X' is rejected: server in read-only mode`. The handler is
+  never invoked — the rejection is synthesised by the dispatcher
+  itself, so a misbehaving handler cannot bypass the gate.
+- The allowlist covers both the tool names this server registers
+  today and the spec-named aliases the read-only feature reserves for
+  future renames / additions, so a tool registered later under one of
+  the alias names is automatically inspection-allowed without a second
+  policy edit:
+
+  | Registered today   | Spec alias       |
+  | ------------------ | ---------------- |
+  | `capture`          | `capture_pane`   |
+  | `wait_for_text`    | (same)           |
+  | `session_list`     | `list_sessions`  |
+  | `list_panes`       | (same)           |
+  | `list_windows`     | (same)           |
+  | `list_clients`     | (same)           |
+  | (none)             | `list_buffers`   |
+  | (none)             | `show_buffer`    |
+  | (none)             | `show_options`   |
+  | `display_message`  | `show_message`   |
+  | `session_describe` | (same)           |
+  | `session_inspect`  | (same)           |
+
+- Anything not in the table — `send_keys`, `session_create`,
+  `session_kill`, `kill_all_sessions`, `pane_*` (except listing),
+  `window_*` (except listing), `clear_history`, `send_signal`,
+  `session_rename`, `resize`, `wait_for_stable`, `snapshot_diff`,
+  and any tool a future contributor adds without updating the
+  allowlist — is rejected at dispatch time.
+- `tools/list` is **not** gated. A read-only client can still
+  enumerate the full surface and pick which inspection tools to
+  invoke; only `tools/call` is constrained. This mirrors the MCP
+  spec contract that surface enumeration is always allowed.
+- Audit + metrics records fire on rejected calls exactly as they
+  would for any other typed error, so operators see blocked attempts
+  in their dashboards (a counter labelled `result="error"` plus an
+  audit record carrying `error_code=-32011`). A read-only deployment
+  is never silently permissive — every blocked attempt is observable.
+- Composes cleanly with `-allowlist`: the allowlist runs ahead of
+  the read-only gate (because the allowlist is checked inside the
+  handler), so a tool that is filtered out by `-allowlist` still
+  returns `-32601` (`methodNotFound`) instead of `-32011`. Operators
+  who want both signals can combine the flags; operators who want a
+  pure "diagnosis only" surface can pass `-read-only` alone and
+  leave `-allowlist` empty.
+- Useful as a safer default for novice agents (no risk of
+  destructive side effects), production diagnostics where the LLM
+  should only DIAGNOSE a session, or running multiple agents against
+  the same session where exactly one is allowed to mutate.
+
+```sh
+# diagnostic-only agent: any send_keys / kill / pane mutate gets -32011
+tmux-mcp -read-only
+
+# pair with a session prefix so the diagnostic agent can only see its own
+# sessions in addition to being barred from mutating them
+tmux-mcp -read-only -session-prefix=ops_
 ```
 
 ## Environment variables
