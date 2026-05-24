@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Kcrong/tmux-mcp/internal/errs"
@@ -158,4 +159,111 @@ func (c *Controller) KillWindow(ctx context.Context, session, window string) err
 		return err
 	}
 	return nil
+}
+
+// Window describes a single tmux window as observed by `tmux list-windows`.
+//
+// The fields are the subset of window format variables that an agent
+// needs to identify a target (Index/Name) and decide whether to drive
+// it (Active, Panes count for layout-aware logic).
+type Window struct {
+	// Index is the window index within the session (0-based). Combined
+	// with the session name it forms the canonical "session:index"
+	// target string for follow-up calls (window_kill, send_keys, ...).
+	Index int
+	// Name is the human-readable label tmux assigned. May be the
+	// caller-supplied -n value or whatever tmux auto-assigned from the
+	// command's basename when no -n was passed.
+	Name string
+	// Active reports whether this window is the currently focused one
+	// of its session.
+	Active bool
+	// Panes is the number of panes currently in the window. Useful for
+	// layout-aware agents that need to know whether a window is split.
+	Panes int
+}
+
+// listWindowsFormat matches the parsing in parseWindowLine — keep them
+// in sync. tmux substitutes each #{...} variable and joins them with
+// the literal '|' between them. '|' is safe because none of these
+// variables ever contains it (the boundary validator already forbids
+// it in user-supplied window names).
+const listWindowsFormat = "#{window_index}|#{window_name}|#{?window_active,1,0}|#{window_panes}"
+
+// ListWindows enumerates every window visible to this controller's
+// tmux server. When session is non-empty the listing is scoped to that
+// session; otherwise every window on the server is returned (`-a`),
+// matching the same convention as [Controller.ListPanes].
+//
+// A typed errs.ErrSessionNotFound is returned (wrapped) when tmux
+// reports the targeted session does not exist, so the JSON-RPC layer
+// can map that to CodeSessionNotFound.
+func (c *Controller) ListWindows(ctx context.Context, session string) ([]Window, error) {
+	args := []string{"list-windows", "-F", listWindowsFormat}
+	if session != "" {
+		args = append(args, "-t", session)
+	} else {
+		// -a means "every window on the server" — only useful when no
+		// specific session was requested.
+		args = append(args, "-a")
+	}
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		// `tmux list-windows -t <session>` rejects an unknown session
+		// with "can't find session: <name>", which run() already
+		// translates to errs.ErrSessionNotFound. Some tmux builds emit
+		// "no server running" when the controller has not yet started
+		// its server — surface the same typed sentinel so callers can
+		// rely on a single error type for "session does not exist on
+		// this controller".
+		msg := strings.ToLower(err.Error())
+		if session != "" && !errors.Is(err, errs.ErrSessionNotFound) &&
+			(strings.Contains(msg, "can't find window") ||
+				strings.Contains(msg, "no server running")) {
+			return nil, fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	lines := strings.Split(out, "\n")
+	wins := make([]Window, 0, len(lines))
+	for i, line := range lines {
+		w, perr := parseWindowLine(line)
+		if perr != nil {
+			return nil, fmt.Errorf("list-windows: line %d: %w", i+1, perr)
+		}
+		wins = append(wins, w)
+	}
+	return wins, nil
+}
+
+// parseWindowLine splits one '|'-delimited row produced by
+// listWindowsFormat into a Window. The format is fixed at the call
+// site (above), so any drift in field count is a bug — reject it
+// loudly rather than guess.
+func parseWindowLine(line string) (Window, error) {
+	const wantFields = 4
+	fields := strings.Split(line, "|")
+	if len(fields) != wantFields {
+		return Window{}, fmt.Errorf("expected %d '|'-separated fields, got %d in %q", wantFields, len(fields), line)
+	}
+	idx, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return Window{}, fmt.Errorf("window_index %q: %w", fields[0], err)
+	}
+	panes, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return Window{}, fmt.Errorf("window_panes %q: %w", fields[3], err)
+	}
+	// tmux emits "1" for the active window and "0" otherwise.
+	active := strings.TrimSpace(fields[2]) == "1"
+	return Window{
+		Index:  idx,
+		Name:   fields[1],
+		Active: active,
+		Panes:  panes,
+	}, nil
 }
