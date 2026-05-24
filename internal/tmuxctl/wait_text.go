@@ -11,8 +11,8 @@ import (
 
 // TextMatch describes where pattern matched the captured pane.
 type TextMatch struct {
-	Match    string
-	Snapshot string
+	Match    string // the matched substring returned by the regex.
+	Snapshot string // the full visible pane at the moment of the match.
 }
 
 // WaitForText polls the visible pane until pattern matches, or until
