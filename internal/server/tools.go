@@ -77,14 +77,21 @@ var toolDefs = []map[string]any{
 		"description": "Read the visible pane (or full scrollback). When ansi=true the result " +
 			"includes terminal escape sequences. mode=scrollback is capped at 5000 lines by " +
 			"default; set max_lines to override (0 keeps the default cap for scrollback and " +
-			"means no cap for visible).",
+			"means no cap for visible). Scrollback captures larger than chunk_lines " +
+			"(default 5000) are split into pages — the response carries a non-empty " +
+			"cursor that the caller passes back on the next call to fetch the next chunk; " +
+			"max_lines is ignored on follow-up calls. The cursor is opaque and rejected " +
+			"with -32602 once the underlying buffer has been rotated by a newer capture " +
+			"or has aged out (5-minute TTL).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"session":   map[string]any{"type": "string"},
-				"mode":      map[string]any{"type": "string", "enum": []string{"visible", "scrollback"}, "default": "visible"},
-				"ansi":      map[string]any{"type": "boolean", "default": false},
-				"max_lines": map[string]any{"type": "integer", "minimum": 0, "default": 0},
+				"session":     map[string]any{"type": "string"},
+				"mode":        map[string]any{"type": "string", "enum": []string{"visible", "scrollback"}, "default": "visible"},
+				"ansi":        map[string]any{"type": "boolean", "default": false},
+				"max_lines":   map[string]any{"type": "integer", "minimum": 0, "default": 0},
+				"cursor":      map[string]any{"type": "string"},
+				"chunk_lines": map[string]any{"type": "integer", "minimum": 0, "default": defaultChunkLines},
 			},
 			"required": []string{"session"},
 		},
@@ -165,6 +172,11 @@ type ToolHandler func(ctx context.Context, args json.RawMessage) (any, *rpcError
 type Tools struct {
 	Ctl  *tmuxctl.Controller // controller backing every tmux operation the tools issue.
 	Snap *snapshot.Store     // per-session capture history powering snapshot_diff.
+	// captures is the per-session pending-capture buffer that backs the
+	// `capture` tool's cursor pagination. Buffers are populated when a
+	// scrollback capture is larger than chunk_lines, and dropped after
+	// the last page is delivered or after the TTL expires.
+	captures *captureBufferStore
 	// Version is the binary version reported in the MCP initialize
 	// response's serverInfo.version. It is populated from main.version
 	// (ldflags-injected) at construction time. Empty/zero values fall
@@ -231,8 +243,20 @@ type Tools struct {
 // args are forwarded verbatim to [snapshot.New], so callers can tune
 // behaviour like the snapshot TTL without breaking the zero-arg call
 // site (`NewTools(c)`) used by tests and the default deployment.
+//
+// The pending-capture buffer that powers the `capture` tool's cursor
+// pagination is also wired in here. Always go through this constructor:
+// bypassing it (a bare struct literal) leaves t.captures nil and the
+// nil-receiver methods on captureBufferStore quietly degrade — paging
+// state is silently lost, which is the right behaviour for tests that
+// only exercise validation paths but very much not what a production
+// server wants.
 func NewTools(c *tmuxctl.Controller, opts ...snapshot.Option) *Tools {
-	return &Tools{Ctl: c, Snap: snapshot.New(opts...)}
+	return &Tools{
+		Ctl:      c,
+		Snap:     snapshot.New(opts...),
+		captures: newCaptureBufferStore(),
+	}
 }
 
 // SetNotifier installs the callback Tools uses to emit
@@ -884,16 +908,40 @@ func (t *Tools) sendKeys(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 
 func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
 	var args struct {
-		Session  string `json:"session"`
-		Mode     string `json:"mode"`
-		ANSI     bool   `json:"ansi"`
-		MaxLines int    `json:"max_lines"`
+		Session    string `json:"session"`
+		Mode       string `json:"mode"`
+		ANSI       bool   `json:"ansi"`
+		MaxLines   int    `json:"max_lines"`
+		Cursor     string `json:"cursor"`
+		ChunkLines int    `json:"chunk_lines"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("capture: %v", err)
 	}
 	if rerr := validateSessionRef(args.Session); rerr != nil {
 		return nil, rerr
+	}
+	// Lazy TTL eviction. Doing it on every capture (rather than spawning
+	// a goroutine) keeps the package goroutine-free and bounds the work
+	// to one map-walk per call.
+	t.captures.cleanup()
+	if args.Cursor != "" {
+		// Follow-up page. mode/ansi/max_lines are intentionally ignored —
+		// the buffer was captured under the original args, and the
+		// caller only steers chunk_lines now. Key by the resolved tmux
+		// name so the buffer/cursor lookup stays consistent under
+		// -session-prefix.
+		resolved := t.resolveSessionRef(args.Session)
+		res, rerr := t.captureFromCursor(resolved, args.Cursor, args.ChunkLines)
+		if rerr != nil {
+			return nil, rerr
+		}
+		return jsonBlock(map[string]any{
+			"snapshot":    res.body,
+			"cursor":      res.cursor,
+			"total_lines": res.totalLines,
+			"truncated":   res.truncated,
+		})
 	}
 	var mode tmuxctl.CaptureMode
 	switch args.Mode {
@@ -909,17 +957,22 @@ func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcErro
 	if err != nil {
 		return nil, internalError(err)
 	}
-	body, truncated := capCaptureBody(body, mode, args.MaxLines)
-	// Snapshot/diff machinery sees the truncated body so subsequent
-	// snapshot_diff calls stay consistent with what the client received.
+	res := t.captureFirstPage(resolved, body, mode, args.MaxLines, args.ChunkLines)
+	// Snapshot/diff machinery sees the *first page* of a paginated
+	// capture so subsequent snapshot_diff calls stay consistent with
+	// what the client received on this call. Reassembling all pages and
+	// recording the joined body would be defensible too, but a paged
+	// caller almost certainly does not want a multi-megabyte token.
 	// Key by the resolved tmux name so capture/snapshot_diff stay
 	// consistent under -session-prefix.
-	snap := t.Snap.Record(resolved, body)
+	snap := t.Snap.Record(resolved, res.body)
 	return jsonBlock(map[string]any{
-		"snapshot":  body,
-		"token":     snap.Token,
-		"changed":   snap.Changed,
-		"truncated": truncated,
+		"snapshot":    res.body,
+		"token":       snap.Token,
+		"changed":     snap.Changed,
+		"truncated":   res.truncated,
+		"cursor":      res.cursor,
+		"total_lines": res.totalLines,
 	})
 }
 
