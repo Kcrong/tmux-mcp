@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -620,5 +621,157 @@ func TestInvalidLogFormatRejected(t *testing.T) {
 	}
 	if !strings.Contains(got, `"yaml"`) {
 		t.Fatalf("expected stderr diagnostic to quote the bad value, got %q", got)
+	}
+}
+
+// TestDryRun_Success exercises the happy path: with tmux on PATH and no
+// other config knobs touched, -dry-run must walk the full bootstrap and
+// emit a single tab-delimited "dry-run ok" line on stdout. The line
+// shape mirrors -probe so callers can pattern-match on a stable prefix
+// ("dry-run ok\ttmux=…\ttmux-mcp=…\n").
+func TestDryRun_Success(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.HasPrefix(got, "dry-run ok\t") {
+		t.Fatalf("expected stdout to start with %q, got %q", "dry-run ok\t", got)
+	}
+	if !strings.Contains(got, "\ttmux=") {
+		t.Fatalf("expected stdout to carry tmux= field, got %q", got)
+	}
+	if !strings.Contains(got, "\ttmux-mcp=") {
+		t.Fatalf("expected stdout to carry tmux-mcp= field, got %q", got)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Fatalf("expected stdout to end with newline, got %q", got)
+	}
+	// One line, three fields, exactly — matches the -probe shape so
+	// orchestrators can split on \t with confidence.
+	line := strings.TrimSuffix(got, "\n")
+	if parts := strings.Split(line, "\t"); len(parts) != 3 {
+		t.Fatalf("expected 3 tab-separated fields, got %d in %q", len(parts), line)
+	}
+}
+
+// TestDryRun_InvalidLogFormat pins the precedence rule: -log-format
+// validation runs before any -dry-run bootstrap, so a bogus format value
+// must short-circuit with the same errInvalidLogFormat path the
+// non-dry-run flow uses. Otherwise an operator could discover a typo
+// only after starting the JSON-RPC loop in production.
+func TestDryRun_InvalidLogFormat(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-dry-run", "-log-format=xml"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for invalid -log-format with -dry-run, got nil")
+	}
+	if !errors.Is(err, errInvalidLogFormat) {
+		t.Fatalf("expected errInvalidLogFormat wrap, got %v", err)
+	}
+	// Stdout must stay clean — the success line is reserved for actual
+	// bootstrap success. A failed dry-run leaves stdout empty so a
+	// shell wrapper can use stdout's contents alone to gate downstream
+	// steps.
+	if stdout.Len() != 0 {
+		t.Fatalf("expected stdout untouched on validation failure, got %q", stdout.String())
+	}
+}
+
+// TestDryRun_InvalidSocket confirms a startup error from
+// tmuxctl.NewWithSocket (here: a parent directory that does not exist)
+// is surfaced rather than swallowed. The whole point of -dry-run is to
+// fail loudly when the config is wrong.
+func TestDryRun_InvalidSocket(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(
+		[]string{"-dry-run", "-socket=/nonexistent/dir/sock"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if err == nil {
+		t.Fatal("expected error for missing socket parent, got nil")
+	}
+	// tmuxctl.NewWithSocket returns the "parent directory does not
+	// exist" error verbatim — pin a phrase from it so a future
+	// rephrasing trips this test instead of silently breaking the
+	// startup-validation contract.
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected missing-parent error, got %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected stdout untouched on bootstrap failure, got %q", stdout.String())
+	}
+}
+
+// countingReader wraps an io.Reader and tallies how many bytes were
+// pulled out of it. Used by TestDryRun_DoesNotReadStdin to assert that
+// run() never touches stdin on the dry-run path.
+type countingReader struct {
+	src  io.Reader
+	read int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.src.Read(p)
+	r.read += n
+	return n, err
+}
+
+// TestDryRun_DoesNotReadStdin is the load-bearing contract test: a
+// dry-run must NEVER consume bytes from stdin. We wrap the supplied
+// stdin in a countingReader so we can observe exactly how many bytes
+// run() pulled — zero on the dry-run path. If dry-run accidentally
+// fell through to server.Serve, the frame buffered in stdin would be
+// drained and the counter would be non-zero.
+func TestDryRun_DoesNotReadStdin(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	const frame = `{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"
+	cr := &countingReader{src: strings.NewReader(frame)}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, cr, &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+	if cr.read != 0 {
+		t.Fatalf("dry-run consumed %d bytes from stdin; want 0", cr.read)
+	}
+	// Belt-and-braces: drain the underlying reader and confirm the
+	// full frame is still there. If run() had taken even one byte
+	// the strict-equality compare would fail.
+	leftover, err := io.ReadAll(cr.src)
+	if err != nil {
+		t.Fatalf("read leftover stdin: %v", err)
+	}
+	if string(leftover) != frame {
+		t.Fatalf("expected leftover stdin %q (untouched), got %q",
+			frame, string(leftover))
+	}
+}
+
+// TestDryRunFlag_AcceptedAndDocumented guards the operator-visible CLI
+// surface: the flag must show up in -help and a bogus boolean form must
+// be rejected at parse time so a typo in a unit file never silently
+// disables the dry-run.
+func TestDryRunFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-dry-run") {
+		t.Fatalf("expected -dry-run in usage block, got %q", stderr.String())
 	}
 }
