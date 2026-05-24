@@ -66,6 +66,34 @@ func TestInvalidLogLevelRejected(t *testing.T) {
 	}
 }
 
+// TestSnapshotTTLFlag_AcceptedAndDocumented confirms that the
+// -snapshot-ttl flag is parsed (i.e. not rejected as "unknown flag")
+// and that its help line is part of the -help usage block. Behavioural
+// coverage for the underlying TTL plumbing lives in
+// internal/snapshot — here we just guard the wire-up so a future
+// rename of either side trips a test instead of silently breaking
+// operator deployment knobs.
+func TestSnapshotTTLFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-snapshot-ttl") {
+		t.Fatalf("expected -snapshot-ttl in usage block, got %q", stderr.String())
+	}
+
+	// Reject obviously bad duration syntax — flag.Duration handles
+	// this for us, so all we need to confirm is that we wired the
+	// flag up. "abc" is unparseable.
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"-snapshot-ttl=abc"}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for malformed -snapshot-ttl value, got nil")
+	}
+}
+
 // TestRelativeSocketRejected makes sure the surface validation in
 // tmuxctl.NewWithSocket bubbles up through main.run, so users see the
 // error message instead of a confused "no server running" later.
