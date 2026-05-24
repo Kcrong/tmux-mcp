@@ -764,6 +764,53 @@ and back down again:
 
 ---
 
+## `pane_swap`
+
+Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux
+swaps the layout slots: each pane keeps its `#{pane_id}`, contents, and
+running process while the positions trade. Useful for rearranging a
+multi-pane TUI layout (e.g. moving the build log next to the editor)
+without recreating panes.
+
+### Input
+
+| Field | Type   | Required | Notes                                                          |
+| ----- | ------ | -------- | -------------------------------------------------------------- |
+| `src` | string | yes      | Source pane target (`session`, `session:window`, or `session:window.pane`) |
+| `dst` | string | yes      | Destination pane target (same target forms as `src`)           |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` —
+the same conservative shape the other pane tools accept.
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                          |
+| -------- | ------------------------------------------------------------------------------ |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.  |
+| `-32000` | Either target points at a session this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the swap (e.g. one of the targets resolved to a pane that has gone away). |
+
+### Example
+
+```jsonc
+{ "src": "demo:0.0", "dst": "demo:0.1" }
+```
+
+Pair with `list_panes` (before and after) when you need to confirm the
+layout actually flipped:
+
+```jsonc
+{ "name": "list_panes", "arguments": { "session": "demo" } }
+{ "name": "pane_swap",  "arguments": { "src": "demo:0.0", "dst": "demo:0.1" } }
+{ "name": "list_panes", "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
