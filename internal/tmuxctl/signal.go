@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
@@ -21,19 +20,23 @@ import (
 // The table is exported (lowercase keys exposed via SignalNames) so
 // the JSON-RPC layer can build its enum and error messages from the
 // same source of truth, instead of hard-coding the list in two places.
-var signalTable = map[string]os.Signal{
-	"TERM": syscall.SIGTERM,
-	"HUP":  syscall.SIGHUP,
-	"INT":  syscall.SIGINT,
-	"QUIT": syscall.SIGQUIT,
-	"USR1": syscall.SIGUSR1,
-	"USR2": syscall.SIGUSR2,
-	"KILL": syscall.SIGKILL,
-}
+//
+// The map itself is defined per-platform (signal_unix.go /
+// signal_windows.go) because syscall.SIGUSR1 / SIGUSR2 are POSIX-only
+// and the Windows toolchain rejects them at compile time. Windows
+// users still see USR1/USR2 in SignalNames() so the wire protocol /
+// JSON-RPC schema is identical across platforms; SendSignal then
+// returns a platform-specific "not supported" error if they're
+// actually requested at runtime.
 
 // SignalNames returns the accepted signal names in a deterministic
 // order so callers (the tool schema, error messages) can render them
 // consistently across invocations.
+//
+// The list is identical on every platform so the JSON-RPC schema does
+// not become OS-dependent — Windows simply rejects USR1/USR2 with a
+// friendly error inside SendSignal instead of returning a different
+// enum.
 func SignalNames() []string {
 	return []string{"TERM", "HUP", "INT", "QUIT", "USR1", "USR2", "KILL"}
 }
@@ -67,6 +70,14 @@ func resolveSignal(name string) (os.Signal, bool) {
 func (c *Controller) SendSignal(ctx context.Context, session, signal string) error {
 	if session == "" {
 		return errors.New("session required")
+	}
+	// platformRejectSignal lets the Windows build refuse SIGUSR1 /
+	// SIGUSR2 with a friendly message — those constants are POSIX-only
+	// so they can't sit in signalTable on Windows, and we want the
+	// caller to see "not supported on Windows" rather than a generic
+	// "not in whitelist" that contradicts SignalNames().
+	if err := platformRejectSignal(signal); err != nil {
+		return err
 	}
 	sig, ok := resolveSignal(signal)
 	if !ok {
