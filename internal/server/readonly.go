@@ -43,6 +43,7 @@ var readOnlyTools = map[string]struct{}{
 	"list_windows":  {},
 	"list_clients":  {},
 	"list_buffers":  {},
+	"list_keys":     {},
 	// choose_tree is the snapshot form of `tmux choose-tree` — it
 	// only ever runs `tmux list-windows -F ...` under the hood and
 	// never mutates server state.
