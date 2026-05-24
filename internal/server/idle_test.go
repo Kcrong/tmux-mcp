@@ -358,6 +358,9 @@ func TestSessionFromArgs(t *testing.T) {
 		{"pane_select with bare session", "pane_select", `{"target":"demo"}`, "demo"},
 		{"pane_select with leading colon is empty", "pane_select", `{"target":":foo"}`, ""},
 
+		{"clear_history extracts session from target", "clear_history", `{"target":"demo:0.1"}`, "demo"},
+		{"clear_history with bare session", "clear_history", `{"target":"demo"}`, "demo"},
+
 		{"session_list is excluded", "session_list", `{}`, ""},
 		{"kill_all_sessions is excluded", "kill_all_sessions", `{}`, ""},
 
