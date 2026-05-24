@@ -498,6 +498,7 @@ embedded secrets stay out of the audit trail.
 | `session_kill` | Kill a session by name. |
 | `kill_all_sessions` | Kill every session this server manages and clear all snapshot history. |
 | `session_describe` | Return structured metadata for one session (windows, panes, size, creation time). |
+| `session_inspect` | Return process-level metadata (pid, cwd, command) for a session's active pane. |
 | `send_keys` | Type into a session. Accepts literal text or named keys (`C-c`, `Up`, `Enter`, …). |
 | `capture` | Read the visible pane (or scrollback) as text, optionally with ANSI escapes. |
 | `wait_for_stable` | Block until the screen has not changed for `quiet_ms`, then return the snapshot. |
@@ -708,6 +709,24 @@ Returns `{"id": "%5", "index": 1}` — the new pane's tmux id and 0-based
 index. Combine those with the original session/window to address the
 new pane in follow-up `pane_select` / `send_keys` calls (e.g. write
 `demo:0.1` to drive what `pane_split` just created).
+
+### `session_inspect`
+
+```jsonc
+{ "session": "demo" }   // len 1-64, [A-Za-z0-9_-]
+```
+
+Returns `{"name": "demo", "pid": 12345, "cwd": "/home/user/repo", "command": "bash"}`
+— the foreground process state of the session's active pane. Useful
+for debugging a stuck shell, asserting a specific tool is running
+before sending more keys, or routing follow-up commands based on the
+current cwd.
+
+Distinct from `session_describe`-style layout queries: `session_inspect`
+reports the active pane's process-level state (pid / cwd / command),
+not session-wide layout metadata. Environment variables are
+intentionally NOT exposed because they routinely carry tokens and
+other secrets.
 
 ### `send_signal`
 
