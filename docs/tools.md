@@ -828,6 +828,53 @@ and back down again:
 
 ---
 
+## `clear_history`
+
+Drop the scrollback buffer of a pane via `tmux clear-history -t <target>`.
+Useful when a long-running interactive command (build watcher, log
+tail) has accumulated megabytes of scrollback that bloats subsequent
+`capture` (mode=scrollback) payloads and snapshot diffs. Only the
+scrollback is dropped — the visible region is left untouched, the
+running process is undisturbed, and the pane id stays valid across
+the call.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                              |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `target` | string | yes      | tmux pane-target form (`session`, `session:window`, or `session:window.pane`)      |
+
+### Output
+
+JSON block: `{"cleared": true}`. The boundary deliberately does not
+echo a cleared-line count — tmux clear-history reports nothing of the
+sort, and a follow-up `capture` is one call away if the agent wants
+confirmation.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/empty `target`, or malformed `target` (regex/length policy). |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the clear for any other reason (e.g. internal tmux failure). |
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1" }
+```
+
+A common pattern is to clear right before a fresh `capture` so the
+returned snapshot stays small even after hours of activity:
+
+```jsonc
+{ "name": "clear_history", "arguments": { "target": "demo" } }
+{ "name": "capture",       "arguments": { "session": "demo", "mode": "scrollback" } }
+```
+
+---
+
 ## `pane_swap`
 
 Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux
