@@ -163,6 +163,42 @@ var windowToolDefs = []map[string]any{
 			"additionalProperties": false,
 		},
 	},
+	{
+		"name": "swap_window",
+		"description": "Exchange two windows of the same session in place via " +
+			"`tmux swap-window -s <session>:<src> -t <session>:<dst>`. tmux trades the layout " +
+			"slots: each window keeps its `#{window_id}`, contents, panes, and running " +
+			"processes while the position indices/names trade. `src` and `dst` may be window " +
+			"names (1-64, `^[A-Za-z0-9_-]+$`) or numeric indices (`\\d+`); they must differ. " +
+			"`no_select` (default false) maps to tmux's `-d` flag — when true, the session's " +
+			"active window pointer is left alone after the swap, so a chained send_keys / " +
+			"capture stays deterministic. Pairs with pane_swap (panes inside a window) and " +
+			"window_move (cross-session relocation).",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Existing session name; len 1-64, [A-Za-z0-9_-].",
+				},
+				"src": map[string]any{
+					"type":        "string",
+					"description": "Source window name (len 1-64, [A-Za-z0-9_-]) or numeric index (\\d+).",
+				},
+				"dst": map[string]any{
+					"type":        "string",
+					"description": "Destination window name (len 1-64, [A-Za-z0-9_-]) or numeric index (\\d+).",
+				},
+				"no_select": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, do not change the active window after the swap (`-d`).",
+				},
+			},
+			"required":             []string{"session", "src", "dst"},
+			"additionalProperties": false,
+		},
+	},
 }
 
 // windowNameRE mirrors sessionNameRE so window names share the same
@@ -515,4 +551,56 @@ func (t *Tools) windowMove(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	// Echo the logical (un-prefixed) src/dst the caller passed so a
 	// -session-prefix deployment never leaks the prefixed identity.
 	return textBlock(fmt.Sprintf("window %q moved to %q", args.Src, args.Dst)), nil
+}
+
+// swapWindow drives tmuxctl.Controller.SwapWindow. Validates the
+// session reference and the two window targets up front so a malformed
+// call sees CodeInvalidParams (-32602) before any tmux command runs;
+// src and dst must also differ — letting tmux be the one to refuse a
+// no-op swap would emit a less informative error than the boundary's
+// own "src and dst must differ" message.
+//
+// no_select is parsed as a *bool so the schema's documented default of
+// false is applied identically whether the field was missing, null, or
+// explicitly false. The handler returns a small JSON ack
+// `{"swapped": true}` on success — tmux's swap-window itself produces
+// no useful stdout, and chained list_windows is one call away if the
+// caller wants to confirm the layout.
+//
+// A missing session/window surfaces as CodeSessionNotFound (-32000)
+// via internalError → errs.CodeOf, mirroring window_select /
+// window_move / window_rename.
+func (t *Tools) swapWindow(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Session  string `json:"session"`
+		Src      string `json:"src"`
+		Dst      string `json:"dst"`
+		NoSelect *bool  `json:"no_select"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("swap_window: %v", err)
+	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateWindowTarget(args.Src); rerr != nil {
+		return nil, invalidParams("src: %s", rerr.Message)
+	}
+	if rerr := validateWindowTarget(args.Dst); rerr != nil {
+		return nil, invalidParams("dst: %s", rerr.Message)
+	}
+	if args.Src == args.Dst {
+		return nil, invalidParams("src and dst must differ")
+	}
+	noSelect := false
+	if args.NoSelect != nil {
+		noSelect = *args.NoSelect
+	}
+	if err := t.Ctl.SwapWindow(ctx,
+		t.resolveSessionRef(args.Session),
+		args.Src, args.Dst, noSelect,
+	); err != nil {
+		return nil, internalError(err)
+	}
+	return jsonBlock(map[string]any{"swapped": true})
 }

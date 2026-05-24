@@ -221,6 +221,62 @@ func (c *Controller) RenameWindow(ctx context.Context, session, target, newName 
 	return nil
 }
 
+// SwapWindow exchanges two windows of the same session in place via
+// `tmux swap-window -s <session>:<src> -t <session>:<dst>` (with `-d`
+// when noSelect is true). tmux trades the layout slots: each window
+// keeps its `#{window_id}`, contents, panes, and running processes
+// while the position indices/names trade. Both src and dst may be
+// either window names or numeric indices — tmux resolves both forms
+// uniformly. Pairs with [Controller.SwapPane] (which swaps panes
+// inside a single window) and [Controller.MoveWindow] (which
+// relocates a window to a different slot or session).
+//
+// noSelect maps to tmux's `-d` flag: when true, the active window of
+// the session is left where it was; when false (the default), tmux
+// behaves as it does interactively and may shift focus to follow the
+// swap. Most agents want noSelect=true so a chained
+// send_keys/capture stays deterministic.
+//
+// A missing session/window surfaces as a wrapped errs.ErrSessionNotFound
+// for the same reason described on SelectWindow: tmux's swap-window emits
+// "can't find window" when a target half doesn't exist, which run() does
+// not translate by itself, so we fold it into the typed sentinel here so
+// the JSON-RPC dispatcher maps the failure to CodeSessionNotFound.
+//
+// Other failures pass through as-is so the JSON-RPC layer surfaces them
+// via CodeInternal — the caller can read the wrapped tmux stderr to
+// tell the cases apart.
+func (c *Controller) SwapWindow(ctx context.Context, session, src, dst string, noSelect bool) error {
+	if session == "" {
+		return errors.New("session required")
+	}
+	if src == "" {
+		return errors.New("src required")
+	}
+	if dst == "" {
+		return errors.New("dst required")
+	}
+	args := []string{"swap-window", "-s", session + ":" + src, "-t", session + ":" + dst}
+	if noSelect {
+		// -d means "do not change the session's active window after the
+		// swap". Append at the end so the argv order stays easy to diff
+		// against tmux's man page (`-s … -t … [-d]`).
+		args = append(args, "-d")
+	}
+	if _, err := c.run(ctx, args...); err != nil {
+		// tmux swap-window against a missing window emits "can't find
+		// window: <name>", which run() does not translate by itself.
+		// Translate it so callers can errors.Is into errs.ErrSessionNotFound
+		// regardless of which message tmux emitted.
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // MoveWindow relocates the window addressed by src onto the dst slot via
 // `tmux move-window -s <src> -t <dst>`. Both src and dst use tmux's
 // standard `<session>:<window>` target form; dst may carry an empty
