@@ -545,6 +545,7 @@ embedded secrets stay out of the audit trail.
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
 | `pane_split` | Split a pane horizontally or vertically; optionally run a command in the new pane. |
 | `pane_kill` | Destroy a single pane via `tmux kill-pane`; tmux's own collapse semantics on the last pane of a window/session are preserved. |
+| `pane_join` | Move a pane out of its current window and re-attach it to another window via `tmux join-pane`; horizontal flag toggles `-h`. |
 | `clear_history` | Drop the scrollback buffer of a pane via `tmux clear-history`; visible region and running process are untouched. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |

@@ -156,6 +156,36 @@ var panesToolDefs = []map[string]any{
 		},
 	},
 	{
+		"name": "pane_join",
+		"description": "Move a pane out of its current window and re-attach it to another window via " +
+			"`tmux join-pane -s <src> -t <dst>` (with `-h` when horizontal=true). The source " +
+			"pane keeps its `#{pane_id}`, contents, and running process — only the layout slot " +
+			"changes. `src` is the pane to move (e.g. \"mysession:1.0\"); `dst` is the " +
+			"destination window (e.g. \"mysession:0\"). horizontal=true splits the destination " +
+			"left/right; the default (false) splits top/bottom, matching tmux's interactive " +
+			"default. Useful for consolidating panes from multiple windows back into one.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"src": map[string]any{
+					"type":        "string",
+					"description": "Source pane target (e.g. \"session:window.pane\").",
+				},
+				"dst": map[string]any{
+					"type":        "string",
+					"description": "Destination window target (e.g. \"session:window\").",
+				},
+				"horizontal": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, split the destination left/right (-h); default is top/bottom.",
+				},
+			},
+			"required":             []string{"src", "dst"},
+			"additionalProperties": false,
+		},
+	},
+	{
 		"name": "pane_resize",
 		"description": "Resize a pane via `tmux resize-pane -t <target> -{U|D|L|R} <amount>`. " +
 			"`direction` selects the side the boundary moves toward — \"up\"/\"down\" shift " +
@@ -392,6 +422,41 @@ func (t *Tools) paneSwap(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	}
 	if err := t.Ctl.SwapPane(ctx, args.Src, args.Dst); err != nil {
 		return nil, internalError(fmt.Errorf("pane_swap: %w", err))
+	}
+	return textBlock("ok"), nil
+}
+
+// paneJoin drives tmuxctl.Controller.JoinPane. Both `src` and `dst`
+// must be non-empty pane targets that pass the same conservative regex
+// applied everywhere else on the boundary — the controller refuses
+// stray quoting / shell metachars before any tmux command runs.
+// `horizontal` is optional and defaults to false; true reaches tmux as
+// `-h` (left/right split). A missing session/window/pane surfaces as
+// CodeSessionNotFound (-32000) via internalError → errs.CodeOf,
+// mirroring pane_swap / pane_split.
+func (t *Tools) paneJoin(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Src        string `json:"src"`
+		Dst        string `json:"dst"`
+		Horizontal bool   `json:"horizontal"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("pane_join: %v", err)
+	}
+	if args.Src == "" {
+		return nil, invalidParams("pane_join: src required")
+	}
+	if args.Dst == "" {
+		return nil, invalidParams("pane_join: dst required")
+	}
+	if rerr := validatePaneTarget(args.Src); rerr != nil {
+		return nil, invalidParams("pane_join: src: %s", rerr.Message)
+	}
+	if rerr := validatePaneTarget(args.Dst); rerr != nil {
+		return nil, invalidParams("pane_join: dst: %s", rerr.Message)
+	}
+	if err := t.Ctl.JoinPane(ctx, args.Src, args.Dst, args.Horizontal); err != nil {
+		return nil, internalError(fmt.Errorf("pane_join: %w", err))
 	}
 	return textBlock("ok"), nil
 }
