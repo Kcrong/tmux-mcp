@@ -91,6 +91,53 @@ var windowToolDefs = []map[string]any{
 			"additionalProperties": false,
 		},
 	},
+	{
+		"name": "window_select",
+		"description": "Make `target` the active window of `session` via `tmux select-window`. `target` " +
+			"may be a window name (1-64, [A-Za-z0-9_-]) or numeric index. Subsequent send_keys / " +
+			"capture calls that name the session will then act on the newly focused window. Pair " +
+			"with list_windows to discover the available targets.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Existing session name; len 1-64, [A-Za-z0-9_-].",
+				},
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Window name (len 1-64, [A-Za-z0-9_-]) or numeric index (\\d+).",
+				},
+			},
+			"required":             []string{"session", "target"},
+			"additionalProperties": false,
+		},
+	},
+	{
+		"name": "window_rename",
+		"description": "Rename a window via `tmux rename-window -t <session>:<target> <name>`. `target` " +
+			"may be a window name (1-64, [A-Za-z0-9_-]) or numeric index; `name` is the new " +
+			"label and must satisfy the same conservative regex/length policy as window_create.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{
+					"type":        "string",
+					"description": "Existing session name; len 1-64, [A-Za-z0-9_-].",
+				},
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Window name (len 1-64, [A-Za-z0-9_-]) or numeric index (\\d+).",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "New window name; len 1-64, [A-Za-z0-9_-].",
+				},
+			},
+			"required":             []string{"session", "target", "name"},
+			"additionalProperties": false,
+		},
+	},
 }
 
 // windowNameRE mirrors sessionNameRE so window names share the same
@@ -125,6 +172,18 @@ func validateWindowName(name string) *rpcError {
 		return invalidParams("window name %q must match %s", name, windowNameRE.String())
 	}
 	return nil
+}
+
+// validateRequiredWindowName mirrors validateWindowName but rejects the
+// empty value up front. window_rename's `name` argument is required (a
+// rename to "" is meaningless), so the handler reuses this stricter
+// variant rather than open-coding the empty check on top of the
+// optional one.
+func validateRequiredWindowName(name string) *rpcError {
+	if name == "" {
+		return invalidParams("window name required")
+	}
+	return validateWindowName(name)
 }
 
 // validateWindowTarget enforces the policy on window_kill's `window`
@@ -278,4 +337,59 @@ func (t *Tools) listWindows(ctx context.Context, raw json.RawMessage) (any, *rpc
 		})
 	}
 	return jsonBlock(map[string]any{"windows": out})
+}
+
+// windowSelect drives tmuxctl.Controller.SelectWindow. The handler
+// validates session and target up front so a malformed reference fails
+// fast with -32602 before any tmux command runs. On success the
+// response is the same trivial "ok" status text block pane_select uses
+// — callers chain into list_windows / capture if they want to confirm
+// the active flag actually moved.
+func (t *Tools) windowSelect(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Session string `json:"session"`
+		Target  string `json:"target"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("window_select: %v", err)
+	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateWindowTarget(args.Target); rerr != nil {
+		return nil, rerr
+	}
+	if err := t.Ctl.SelectWindow(ctx, args.Session, args.Target); err != nil {
+		return nil, internalError(err)
+	}
+	return textBlock("ok"), nil
+}
+
+// windowRename drives tmuxctl.Controller.RenameWindow. Validates the
+// session reference, the existing window target, and the *new* window
+// name before any tmux command runs. The new name shares the same
+// conservative regex/length policy window_create uses for its optional
+// `name`, so the rename surface stays consistent with creation.
+func (t *Tools) windowRename(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Session string `json:"session"`
+		Target  string `json:"target"`
+		Name    string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("window_rename: %v", err)
+	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateWindowTarget(args.Target); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateRequiredWindowName(args.Name); rerr != nil {
+		return nil, rerr
+	}
+	if err := t.Ctl.RenameWindow(ctx, args.Session, args.Target, args.Name); err != nil {
+		return nil, internalError(err)
+	}
+	return textBlock(fmt.Sprintf("window %q renamed to %q", args.Session+":"+args.Target, args.Name)), nil
 }
