@@ -58,7 +58,9 @@ see [Install](#install). For the full tool reference, jump to
 - [Tool reference](#tool-reference)
 - [End-to-end example](#end-to-end-example)
 - [Patterns](#patterns)
+- [Architecture](#architecture)
 - [Design notes](#design-notes)
+- [FAQ](#faq)
 - [Troubleshooting](#troubleshooting)
 - [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
@@ -134,6 +136,37 @@ make build              # produces ./tmux-mcp
 Pass `-log-level=debug` for verbose JSON logs to stderr (stdout stays JSON-RPC).
 
 `make help` lists every available target.
+
+### Container image
+
+Multi-arch (`linux/amd64` + `linux/arm64`) images are published to
+[GitHub Container Registry](https://github.com/Kcrong/tmux-mcp/pkgs/container/tmux-mcp)
+on every release. The image is based on `alpine` and bundles `tmux`, so
+nothing else needs to be installed on the host:
+
+```sh
+docker pull ghcr.io/kcrong/tmux-mcp:latest
+docker run --rm -i ghcr.io/kcrong/tmux-mcp -version
+```
+
+`tmux-mcp` is an MCP **stdio** server, so the most common way to use
+the container is to let your MCP client launch it on demand. Wire
+`docker` as the command and let it run the image with `-i` (interactive,
+so stdin/stdout stay attached):
+
+```jsonc
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "ghcr.io/kcrong/tmux-mcp:latest"]
+    }
+  }
+}
+```
+
+Pin a specific version (e.g. `ghcr.io/kcrong/tmux-mcp:v0.2.0`) instead
+of `latest` if you want reproducibility.
 
 ## Wire it up
 
@@ -513,6 +546,30 @@ send_keys       session=demo  keys=["C-c"]
 wait_for_stable session=demo  quiet_ms=200
 ```
 
+## Architecture
+
+```
+                       ┌────────────────────────┐
+   MCP client (LLM) ── │  stdio: JSON-RPC 2.0   │ ── tmux-mcp
+                       └────────────────────────┘
+                                                 │
+                                  exec.Command   │   tmux -S /tmp/.../sock
+                                                 ▼
+                                ┌─────────────────────────────────────┐
+                                │ tmux server (one per tmux-mcp PID)  │
+                                │   ├── session "demo"                │
+                                │   │     └── window 0 ── pane (PTY)  │
+                                │   └── session "build"               │
+                                └─────────────────────────────────────┘
+```
+
+One `tmux-mcp` instance owns one private socket, which means one isolated
+`tmux` server. Two `tmux-mcp` PIDs cannot see each other's sessions even
+on the same host — each gets its own socket under `/tmp`. The MCP server
+itself is single-process; each incoming request is dispatched on its own
+goroutine, so a slow `wait_for_text` doesn't block other traffic on the
+same stdio pipe.
+
 ## Design notes
 
 - **No shared global tmux server.** Each invocation of `tmux-mcp` uses
@@ -528,6 +585,40 @@ wait_for_stable session=demo  quiet_ms=200
 - **Each request is dispatched on its own goroutine** so a slow tool
   call (e.g. a 30s `wait_for_text`) does not block other traffic on the
   same stdio pipe.
+
+## FAQ
+
+**Q: Can two agents share one `tmux-mcp`?**
+A: Yes — they will see the same sessions, which is useful for
+collaboration. To isolate them, run a separate `tmux-mcp` process per
+agent; each gets its own private socket and its own tmux server.
+
+**Q: Does `tmux-mcp` persist sessions across restarts?**
+A: No. When `tmux-mcp` exits, the private tmux server it spawned exits
+with it and every session dies. `tmux-mcp` is designed for ephemeral
+driving by an agent, not for long-lived sessions you reattach to later.
+
+**Q: Why does my regex for `wait_for_text` always time out?**
+A: It is a Go [RE2](https://pkg.go.dev/regexp/syntax) regex, not a shell
+glob. Escape any of `.`, `?`, `+`, `*`, `(`, `)`, `[`, `]`, `{`, `}`,
+`^`, `$`, `|`, `\` you mean literally. When in doubt, prototype the
+pattern in a small `go run` snippet against a captured pane.
+
+**Q: Can I use `tmux-mcp` on Windows?**
+A: Binaries cross-compile for Windows, but `tmux` itself only runs on
+Linux and macOS. Use WSL or `ssh` into a *nix host and point your MCP
+client at the binary there.
+
+**Q: How do I debug what tools the agent is calling?**
+A: Run with `-log-level=debug`. Each request logs `rid`, `method`, and
+`dur_ms` to stderr — stdout stays pure JSON-RPC, so the logs never
+corrupt the protocol stream.
+
+**Q: Is the `snapshot_diff` token persistent?**
+A: No. Snapshots are kept in memory per session, and only the two most
+recent are retained. The token is good for short-lived comparisons
+between consecutive calls; older tokens fall back to a full reset where
+every line is reported as new.
 
 ## Troubleshooting
 

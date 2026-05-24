@@ -137,3 +137,47 @@ jobs:
           set -eux
           go install ./cmd/tmux-mcp
           "$(go env GOPATH)/bin/tmux-mcp" -version
+
+  benchmarks:
+    # Advisory only — does not block merge. Reviewers see the benchstat
+    # comparison as a workflow artifact so perf regressions surface at
+    # review time instead of slipping in silently.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: bench main
+        run: |
+          set -eux
+          git checkout origin/${{ github.event.pull_request.base.ref }}
+          go test -bench=. -benchmem -run=^$ -count=5 ./... > /tmp/main.txt 2>&1 || true
+
+      - name: bench PR
+        run: |
+          set -eux
+          git checkout ${{ github.event.pull_request.head.sha }}
+          go test -bench=. -benchmem -run=^$ -count=5 ./... > /tmp/pr.txt 2>&1
+
+      - name: install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: compare
+        run: |
+          "$(go env GOPATH)/bin/benchstat" /tmp/main.txt /tmp/pr.txt | tee benchstat.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchstat
+          path: |
+            /tmp/main.txt
+            /tmp/pr.txt
+            benchstat.txt
