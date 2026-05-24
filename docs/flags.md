@@ -30,7 +30,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
 | `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
-| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `list_panes`, `list_windows`, `list_clients`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
+| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `list_panes`, `list_windows`, `list_clients`, `list_keys`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
 
 ## `-version-json` output
 
@@ -422,6 +422,7 @@ tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
   | `list_panes`       | (same)           |
   | `list_windows`     | (same)           |
   | `list_clients`     | (same)           |
+  | `list_keys`        | (same)           |
   | (none)             | `list_buffers`   |
   | (none)             | `show_buffer`    |
   | (none)             | `show_options`   |
