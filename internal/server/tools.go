@@ -4,11 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Kcrong/tmux-mcp/internal/snapshot"
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
 )
+
+// defaultScrollbackMaxLines is the safety ceiling applied to
+// mode=scrollback captures when the caller does not supply max_lines.
+// Scrollback can run to tens of megabytes on long-lived shells, which
+// would blow up the JSON-RPC frame and stress the client's memory.
+const defaultScrollbackMaxLines = 5000
 
 // MCP tool surface. Each entry is (name, description, JSON Schema).
 //
@@ -64,14 +71,18 @@ var toolDefs = []map[string]any{
 		},
 	},
 	{
-		"name":        "capture",
-		"description": "Read the visible pane (or full scrollback). When ansi=true the result includes terminal escape sequences.",
+		"name": "capture",
+		"description": "Read the visible pane (or full scrollback). When ansi=true the result " +
+			"includes terminal escape sequences. mode=scrollback is capped at 5000 lines by " +
+			"default; set max_lines to override (0 keeps the default cap for scrollback and " +
+			"means no cap for visible).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"session": map[string]any{"type": "string"},
-				"mode":    map[string]any{"type": "string", "enum": []string{"visible", "scrollback"}, "default": "visible"},
-				"ansi":    map[string]any{"type": "boolean", "default": false},
+				"session":   map[string]any{"type": "string"},
+				"mode":      map[string]any{"type": "string", "enum": []string{"visible", "scrollback"}, "default": "visible"},
+				"ansi":      map[string]any{"type": "boolean", "default": false},
+				"max_lines": map[string]any{"type": "integer", "minimum": 0, "default": 0},
 			},
 			"required": []string{"session"},
 		},
@@ -290,9 +301,10 @@ func (t *Tools) sendKeys(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 
 func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
 	var args struct {
-		Session string `json:"session"`
-		Mode    string `json:"mode"`
-		ANSI    bool   `json:"ansi"`
+		Session  string `json:"session"`
+		Mode     string `json:"mode"`
+		ANSI     bool   `json:"ansi"`
+		MaxLines int    `json:"max_lines"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("capture: %v", err)
@@ -305,12 +317,47 @@ func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcErro
 	if err != nil {
 		return nil, internalError(err)
 	}
+	body, truncated := capCaptureBody(body, mode, args.MaxLines)
+	// Snapshot/diff machinery sees the truncated body so subsequent
+	// snapshot_diff calls stay consistent with what the client received.
 	snap := t.Snap.Record(args.Session, body)
 	return jsonBlock(map[string]any{
-		"snapshot": body,
-		"token":    snap.Token,
-		"changed":  snap.Changed,
+		"snapshot":  body,
+		"token":     snap.Token,
+		"changed":   snap.Changed,
+		"truncated": truncated,
 	})
+}
+
+// capCaptureBody enforces the max-lines policy for the capture tool.
+//
+// Rules:
+//   - mode=visible: cap only when the caller asked for one (max_lines > 0).
+//     Visible panes are already bounded by the terminal size, so leaving
+//     them untouched preserves back-compat.
+//   - mode=scrollback: cap at max_lines if set, otherwise fall back to
+//     defaultScrollbackMaxLines so a careless or hostile caller cannot
+//     pull tens of MB through the JSON-RPC channel.
+//
+// Truncation drops the *oldest* lines (the top of the buffer) so the
+// returned snapshot keeps the most recent activity, which is what
+// callers almost always actually want.
+func capCaptureBody(body string, mode tmuxctl.CaptureMode, maxLines int) (string, bool) {
+	limit := maxLines
+	if mode == tmuxctl.CaptureScrollback && limit <= 0 {
+		limit = defaultScrollbackMaxLines
+	}
+	if limit <= 0 {
+		return body, false
+	}
+	// tmux capture-pane emits lines separated by '\n'. Splitting on '\n'
+	// keeps a trailing empty "line" when the body ends with a newline,
+	// which we preserve to avoid a spurious diff next to the truncation.
+	lines := strings.Split(body, "\n")
+	if len(lines) <= limit {
+		return body, false
+	}
+	return strings.Join(lines[len(lines)-limit:], "\n"), true
 }
 
 func (t *Tools) waitStable(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
