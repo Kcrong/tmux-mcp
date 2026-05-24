@@ -785,6 +785,10 @@ source and check the resulting archive's SHA-256 against
 `checksums.txt` to confirm nothing in the supply chain changed your
 binary.
 
+## Examples
+
+Concrete prompts, JSON-RPC transcripts, and ready-made MCP client configs live in [`examples/`](examples/).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
