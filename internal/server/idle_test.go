@@ -300,7 +300,7 @@ func TestIdleReaper_RunReapsViaTicker(t *testing.T) {
 	clock.Advance(timeout + 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan struct{})
 	go func() {
 		r.Run(ctx)

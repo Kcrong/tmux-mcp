@@ -18,7 +18,7 @@ func TestSessionInspect_HappyPath(t *testing.T) {
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -86,7 +86,7 @@ func TestSessionInspect_UnknownSessionMapsCode(t *testing.T) {
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so the controller
 	// hits the "server up, named session missing" branch (a fresh

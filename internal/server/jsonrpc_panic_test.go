@@ -37,7 +37,7 @@ func TestServe_RecoversFromHandlerPanic(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
 
@@ -150,7 +150,7 @@ func TestServe_PanicInNotificationDoesNotReply(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
 

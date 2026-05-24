@@ -97,7 +97,7 @@ func TestServe_ShutdownTimeout_Exceeded(t *testing.T) {
 		<-releaseHandler
 		return map[string]any{"late": true}, nil
 	}
-	defer close(releaseHandler) // unblock the handler so its goroutine can exit
+	t.Cleanup(func() { close(releaseHandler) }) // unblock the handler so its goroutine can exit
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -226,7 +226,7 @@ func TestServe_ShutdownTimeout_ZeroSkipsDrain(t *testing.T) {
 		<-releaseHandler
 		return nil, nil
 	}
-	defer close(releaseHandler)
+	t.Cleanup(func() { close(releaseHandler) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -271,7 +271,7 @@ func TestServe_ShutdownTimeout_NotSetWaitsForever_BackCompat(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	// Note: no WithShutdownTimeout — exercises the back-compat path.
 	go func() { done <- Serve(ctx, in, w, handler) }()
