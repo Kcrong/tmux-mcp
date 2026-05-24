@@ -38,6 +38,16 @@ const (
 	// sentinel for "name does not exist") so clients can branch on the
 	// collision case explicitly.
 	CodeSessionExists = -32004
+	// CodeOversizedResponse is returned when a handler's marshalled
+	// JSON-RPC response body exceeds the cap configured via the server's
+	// -max-response-bytes flag. The dispatcher replaces the original
+	// payload with a typed error carrying this code so a misbehaving
+	// tool (e.g. capture_pane on a 10MB scrollback) cannot dump a
+	// multi-megabyte frame onto a client whose reader can't tolerate it.
+	// Distinct from CodeInternal so clients can recognise "the call
+	// succeeded but the answer was too big" instead of conflating it
+	// with an unspecified server failure.
+	CodeOversizedResponse = -32010
 )
 
 // Sentinel errors. Wrap them with fmt.Errorf("%w: ...", err) at the call
@@ -54,6 +64,13 @@ var (
 	// existing one — typically surfaced by session_rename when the
 	// requested new name is already taken on this controller.
 	ErrSessionExists = errors.New("session already exists")
+	// ErrOversizedResponse signals that a handler's marshalled JSON-RPC
+	// response exceeded the configured -max-response-bytes ceiling. The
+	// dispatcher itself synthesises this — handlers do not return it —
+	// but it is exported as a sentinel so audit / metrics consumers can
+	// recognise the oversize case via [errors.Is] instead of substring-
+	// matching the message.
+	ErrOversizedResponse = errors.New("response body exceeds max-response-bytes")
 )
 
 // CodeOf returns the JSON-RPC error code that best describes err. It
@@ -72,6 +89,8 @@ func CodeOf(err error) int {
 		return CodeTmuxVersionUnsupported
 	case errors.Is(err, ErrTimeout):
 		return CodeTimeout
+	case errors.Is(err, ErrOversizedResponse):
+		return CodeOversizedResponse
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return CodeContextCancelled
 	}

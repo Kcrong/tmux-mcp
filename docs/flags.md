@@ -20,6 +20,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
 | `-tmux-bin`                | `""` (resolve `tmux` from `$PATH`) | `TMUX_MCP_TMUX_BIN` | Absolute path to the tmux executable. Empty default keeps the legacy PATH lookup. When set the path must be absolute and point at an existing executable file; startup fails with `tmux binary "<path>" not executable: …` otherwise. Flag wins over env var. See **`-tmux-bin`** below. |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
+| `-max-response-bytes`      | `0` (disabled)                  | —                   | Hard ceiling on the marshalled JSON-RPC response body in bytes. When a reply exceeds the cap, the server replaces it with a typed JSON-RPC error (code `-32010`) so a misbehaving tool (e.g. `capture_pane` on a 10MB scrollback) cannot dump a multi-megabyte frame onto an MCP client whose reader can't tolerate it. Clients see the error, not a truncated payload. The audit + metrics records still fire with the oversize sentinel. `0` disables the ceiling (the historical behaviour). |
 | `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
 | `-snapshot-ttl`            | `1h`                            | —                   | Maximum idle time a session's snapshot history may sit in memory before it is pruned. `0` disables cleanup (history released only when the session is killed). Accepts any Go duration: `30s`, `5m`, `2h`. |
 | `-shutdown-timeout`        | `5s`                            | —                   | On `SIGTERM`/`SIGINT`, wait up to this duration for in-flight `tools/call` handlers to finish writing their JSON-RPC responses before exiting. `0` disables the drain (immediate exit). On timeout the binary exits non-zero so supervisors can flag a forced shutdown. |
@@ -168,6 +169,29 @@ a Claude Desktop config to a new socket path / audit log location.
   gracefully under bursts instead of returning errors.
 - Pass `0` to disable the cap entirely (the original unbounded
   behaviour).
+
+## `-max-response-bytes`
+
+- Default `0` keeps the cap disabled and preserves the historical
+  "stream whatever the handler produced" behaviour. Set to a positive
+  byte count to enforce a hard ceiling on the marshalled JSON-RPC
+  response body that crosses stdout.
+- When the cap fires, the original payload is **not** sent. The server
+  synthesises a typed JSON-RPC error in its place: code `-32010`
+  (`CodeOversizedResponse`), message
+  `response body N bytes exceeds max-response-bytes M`. Clients see a
+  structured error and can decide how to recover — there is no
+  truncated frame to misparse.
+- The underlying `tools/call` still ran. Its audit record and Prometheus
+  metric fire with the oversize sentinel as the error code, so operators
+  can distinguish "the tool failed" from "the answer was too big" in
+  log / dashboard queries.
+- Notifications (no id) carry no response, oversize or otherwise; the
+  cap is a no-op for them.
+- Useful for protecting fragile MCP clients (or pipes / sockets with
+  bounded buffers) from `capture_pane` on a 10MB scrollback or other
+  pathologically large outputs. Pair with a generous
+  `-max-concurrent-calls` to keep the cost-per-rejection bounded too.
 
 ## `-audit-log`
 
