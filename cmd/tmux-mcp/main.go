@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -37,6 +38,7 @@ in a terminal is only useful for smoke tests.
 
 Flags:
   -version          print version and exit
+  -version-json     print version metadata as JSON and exit
   -help             print this message and exit
   -probe            run a startup health check (verify tmux + version)
                     and exit. Prints "ok\ttmux=<v>\ttmux-mcp=<v>" on
@@ -77,6 +79,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	showVersion := fs.Bool("version", false, "print version and exit")
+	versionJSONFlag := fs.Bool("version-json", false, "print version metadata as JSON and exit")
 	probe := fs.Bool("probe", false,
 		"run a startup health check (verify tmux + version) and exit")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
@@ -95,6 +98,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
 		return nil
+	}
+	if *versionJSONFlag {
+		return emitVersionJSON(stdout, version, runtime.Version())
 	}
 	if *probe {
 		return runProbe(stdout, stderr)
