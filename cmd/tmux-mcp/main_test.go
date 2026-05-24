@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -114,6 +115,87 @@ func TestParseLogLevel(t *testing.T) {
 		if (err != nil) != tc.wantErr {
 			t.Errorf("parseLogLevel(%q) err=%v wantErr=%v", tc.in, err, tc.wantErr)
 		}
+	}
+}
+
+// TestProbeFlag exercises the happy path of `tmux-mcp -probe` end-to-end
+// through run(): with tmux on PATH the probe prints the
+// "ok\ttmux=<v>\ttmux-mcp=<v>" line on stdout, writes nothing on
+// stderr, and returns nil so the binary exits 0.
+func TestProbeFlag(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-probe"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-probe): %v (stderr=%q)", err, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.HasPrefix(got, "ok\ttmux=") {
+		t.Fatalf("expected stdout to start with %q, got %q", "ok\ttmux=", got)
+	}
+	if !strings.Contains(got, "\ttmux-mcp=") {
+		t.Fatalf("expected stdout to contain tmux-mcp version field, got %q", got)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Fatalf("expected stdout to end with newline, got %q", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr on success, got %q", stderr.String())
+	}
+}
+
+// TestRunProbeFailure unit-tests runProbe directly with a stripped-down
+// PATH so tmux cannot be found. The function must write a "probe
+// failed: " diagnostic to stderr, leave stdout untouched, and return an
+// error that matches errProbeFailed so main() can suppress the slog
+// duplicate.
+func TestRunProbeFailure(t *testing.T) {
+	t.Setenv("PATH", "/nonexistent-empty-dir-for-probe-test")
+	var stdout, stderr bytes.Buffer
+	err := runProbe(&stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error when tmux is not on PATH")
+	}
+	if !errors.Is(err, errProbeFailed) {
+		t.Fatalf("expected errProbeFailed, got %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout on failure, got %q", stdout.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "probe failed: ") {
+		t.Fatalf("expected stderr to start with %q, got %q",
+			"probe failed: ", stderr.String())
+	}
+}
+
+// TestRunProbeSuccess unit-tests runProbe directly with a real tmux on
+// PATH so we can assert the exact tab-delimited shape and field order
+// without spinning up a subprocess. Skips when tmux is unavailable.
+func TestRunProbeSuccess(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runProbe(&stdout, &stderr); err != nil {
+		t.Fatalf("runProbe: %v (stderr=%q)", err, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr on success, got %q", stderr.String())
+	}
+	line := strings.TrimSuffix(stdout.String(), "\n")
+	parts := strings.Split(line, "\t")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 tab-separated fields, got %d in %q", len(parts), line)
+	}
+	if parts[0] != "ok" {
+		t.Fatalf("expected first field %q, got %q", "ok", parts[0])
+	}
+	if !strings.HasPrefix(parts[1], "tmux=") {
+		t.Fatalf("expected second field to start with %q, got %q", "tmux=", parts[1])
+	}
+	if !strings.HasPrefix(parts[2], "tmux-mcp=") {
+		t.Fatalf("expected third field to start with %q, got %q", "tmux-mcp=", parts[2])
 	}
 }
 
