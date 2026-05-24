@@ -242,8 +242,8 @@ func reapInterval(timeout time.Duration) time.Duration {
 //     {"session": "..."}
 //   - session_create / session_kill / session_describe / session_rename:
 //     {"name": "..."}
-//   - pane_select: {"target": "session:window.pane"} — split on ":" to
-//     recover the session name.
+//   - pane_select / clear_history: {"target": "session:window.pane"} —
+//     split on ":" to recover the session name.
 //   - session_list / kill_all_sessions: explicitly excluded so they
 //     can never extend an idle session's lifetime.
 func sessionFromArgs(method string, args json.RawMessage) string {
@@ -258,7 +258,7 @@ func sessionFromArgs(method string, args json.RawMessage) string {
 			return ""
 		}
 		return probe.Name
-	case "pane_select":
+	case "pane_select", "clear_history":
 		var probe struct {
 			Target string `json:"target"`
 		}
