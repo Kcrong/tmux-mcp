@@ -8,6 +8,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/Kcrong/tmux-mcp?display_name=tag&sort=semver)](https://github.com/Kcrong/tmux-mcp/releases/latest)
 
+Coverage is enforced via [`.codecov.yml`](.codecov.yml): project coverage
+must stay at or above 70%, and patch (new) code must hit 80%, both with a
+1% drop tolerance.
+
 A Model Context Protocol (MCP) stdio server that exposes a real `tmux`
 session to an LLM agent so it can drive a terminal the way a human
 does — typing into a real PTY, waiting for the screen to settle, reading
@@ -79,20 +83,30 @@ solves this with a stable CLI:
 - Linux or macOS
 - Go 1.24+ (only when building from source)
 
+> Windows binaries cross-compile and ship in releases, but `tmux` runs
+> on Linux/macOS only — to actually use the server on Windows you need
+> WSL or to ssh to a Linux/macOS host.
+
 ## Install
 
 ### Prebuilt binary
 
 Pick the asset for your OS / architecture from the
 [latest release](https://github.com/Kcrong/tmux-mcp/releases/latest)
-(Linux and macOS, `amd64` and `arm64`). Each archive contains a single
-`tmux-mcp` binary — drop it on `$PATH`:
+(Linux, macOS, and Windows — `amd64` and `arm64`). Linux/macOS archives
+ship as `.tar.gz`, Windows ships as `.zip`. Each archive contains a
+single `tmux-mcp` binary — drop it on `$PATH`:
 
 ```sh
 curl -fsSL https://github.com/Kcrong/tmux-mcp/releases/latest/download/tmux-mcp_$(uname -s)_$(uname -m).tar.gz \
   | tar -xz -C /usr/local/bin tmux-mcp
 tmux-mcp -version
 ```
+
+Windows binaries are provided for completeness (e.g. you build on
+Windows but ssh to a Linux host, or you run via WSL), but the runtime
+still requires `tmux`, which is Linux/macOS only — see
+[Requirements](#requirements).
 
 Releases are signed with checksums (`checksums.txt` next to the
 archives) — see [Verifying a release](#verifying-a-release).
@@ -312,15 +326,26 @@ would otherwise look like key names.
 
 ```jsonc
 {
-  "session": "demo",
-  "mode":    "visible",   // or "scrollback"
-  "ansi":    false        // true keeps colour escape sequences
+  "session":   "demo",
+  "mode":      "visible",   // or "scrollback"
+  "ansi":      false,       // true keeps colour escape sequences
+  "max_lines": 0            // 0 = no cap for visible, default 5000-line cap for scrollback
 }
 ```
 
 Returns
-`{"snapshot": "...", "token": "ab12cd34", "changed": true}`. Hold on to
-`token` if you plan to call `snapshot_diff` later.
+`{"snapshot": "...", "token": "ab12cd34", "changed": true, "truncated": false}`.
+Hold on to `token` if you plan to call `snapshot_diff` later.
+
+`mode=scrollback` is bounded at **5000 lines by default** so a long-lived
+session does not return tens of MB of JSON in a single response. Pass
+`max_lines` to override (any positive integer; pass a small value to
+keep responses tight, or a larger one when you need deeper history).
+For `mode=visible`, the default `max_lines: 0` means "no cap" — the
+visible region is already bounded by the terminal size, so behaviour is
+unchanged from earlier releases. When the snapshot is truncated, the
+oldest (top) lines are dropped so the most recent activity is preserved
+and `truncated: true` appears in the response.
 
 ### `wait_for_stable`
 
