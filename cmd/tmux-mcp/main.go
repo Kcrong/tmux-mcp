@@ -113,7 +113,12 @@ Flags:
                           or ":9090"). The exporter publishes
                           tmuxmcp_tools_call_total,
                           tmuxmcp_tools_call_duration_seconds, and
-                          tmuxmcp_sessions_active at /metrics.
+                          tmuxmcp_sessions_active at /metrics. The same
+                          listener also serves GET /healthz (200 "ok"
+                          once the startup tmux probe succeeds, 503
+                          "unhealthy" before; 405 on non-GET) so k8s
+                          liveness/readiness and load balancers can
+                          reuse the port.
                           Default: "" (exporter disabled, no HTTP
                           listener opened).
 
@@ -368,12 +373,32 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		reg.MustRegister(collectors.NewGoCollector())
 		reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 		metrics = server.NewMetrics(reg)
-		metricsServer, err = server.NewMetricsServer(*metricsAddr, reg)
+		metricsServer, err = server.NewMetricsServer(*metricsAddr, reg, metrics)
 		if err != nil {
 			return fmt.Errorf("metrics listener %q: %w", *metricsAddr, err)
 		}
 		slog.Info("metrics exporter listening", "addr", metricsServer.Addr())
 		go metrics.RunSessionsPoller(ctx, ctl, 5*time.Second)
+		// Drive a one-shot startup probe in the background so /healthz
+		// flips to 200 once tmux is reachable. We do this in a
+		// goroutine (not inline) because the listener is already up: a
+		// k8s readiness probe hitting /healthz during a slow probe
+		// should see 503, not block on us. The probe shares the parent
+		// ctx so a SIGTERM during a wedged tmux start cancels it
+		// cleanly. Failure leaves Healthy() false forever — if tmux
+		// can't be reached at startup the server is genuinely not
+		// ready, and the rest of the binary will fail loudly the
+		// first time a tools/call hits it.
+		go func() {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer probeCancel()
+			if _, perr := tmuxctl.ProbeVersion(probeCtx); perr != nil {
+				slog.Warn("startup probe failed; /healthz stays 503",
+					"err", perr)
+				return
+			}
+			metrics.MarkHealthy()
+		}()
 		defer func() {
 			// Shutdown is best-effort with a short deadline so we
 			// don't hang the process on a slow client. http.Server
