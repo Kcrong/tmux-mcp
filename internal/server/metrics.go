@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	nethttppprof "net/http/pprof"
+	runtimepprof "runtime/pprof"
 	"sync/atomic"
 	"time"
 
@@ -250,7 +252,15 @@ type MetricsServer struct {
 // 503 forever (since there is no flag to flip). main() always passes
 // the same *Metrics it constructed for the dispatcher hooks, so the
 // production path always has a real readiness signal.
-func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics) (*MetricsServer, error) {
+//
+// enablePprof opts in to the runtime profiling endpoints under
+// /debug/pprof/* on this same listener. It is wired to the operator's
+// -pprof flag and defaults to disabled because heap / goroutine
+// profiles can leak sensitive in-memory state. The handlers are
+// registered explicitly on the private mux so the operator's
+// -metrics-addr is the only network surface that ever exposes them;
+// see [mountPprof] for the security rationale.
+func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics, enablePprof bool) (*MetricsServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -263,6 +273,9 @@ func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics) (*M
 		EnableOpenMetrics: true,
 	}))
 	mux.Handle("/healthz", healthzHandler(m))
+	if enablePprof {
+		mountPprof(mux)
+	}
 	srv := &http.Server{
 		Handler: mux,
 		// ReadHeaderTimeout protects the exporter from slowloris-style
@@ -279,6 +292,60 @@ func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics) (*M
 		}
 	}()
 	return &MetricsServer{addr: ln.Addr().String(), server: srv}, nil
+}
+
+// mountPprof registers the net/http/pprof handlers explicitly on the
+// supplied private mux. The verbose enumeration is the operative
+// security choice: it scopes the routes to the metrics listener (the
+// only network surface the operator opted in to via -metrics-addr) so
+// a future contributor adding a second http.Server with Handler nil
+// cannot accidentally inherit /debug/pprof/* via http.DefaultServeMux.
+//
+// Caveat about net/http/pprof: importing the package — in any form,
+// including aliased — runs its init() which unconditionally registers
+// pprof handlers on http.DefaultServeMux. There is no Go-level
+// workaround. The pollution is harmless in tmux-mcp because every
+// http.Server we construct sets Handler explicitly, so the fallback
+// to DefaultServeMux never fires. The regression test
+// TestPprof_MetricsListenerNotPollutedWhenDisabled pins that property
+// by issuing a real GET against the metrics listener with pprof off
+// and asserting 404 — that is the actual security invariant
+// (DefaultServeMux pollution doesn't matter as long as nothing serves
+// it).
+//
+// The set mirrors what net/http/pprof installs on its own:
+//   - /debug/pprof/         (Index — the HTML browser)
+//   - /debug/pprof/cmdline  (process command line)
+//   - /debug/pprof/profile  (CPU profile, default 30s sample)
+//   - /debug/pprof/symbol   (symbol resolver)
+//   - /debug/pprof/trace    (execution tracer)
+//   - /debug/pprof/<name>   (one entry per [runtime/pprof.Lookup]
+//     profile: goroutine, heap, allocs, block, mutex, threadcreate)
+//
+// The runtime-profile loop calls [runtime/pprof.Lookup] before
+// mounting so a typo or a name dropped in a future Go release
+// surfaces as "route not registered" rather than serving a 200 with
+// an empty body.
+func mountPprof(mux *http.ServeMux) {
+	mux.HandleFunc("/debug/pprof/", nethttppprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", nethttppprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", nethttppprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", nethttppprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", nethttppprof.Trace)
+	for _, name := range []string{
+		"goroutine", "heap", "allocs", "block", "mutex", "threadcreate",
+	} {
+		// Lookup before mount: nethttppprof.Handler(name) is willing
+		// to register a handler for any string and 404 at request
+		// time. Failing fast here keeps the surface honest — if a
+		// future Go release renames or drops a profile, /debug/pprof/
+		// just won't list it instead of serving it as a broken
+		// endpoint.
+		if runtimepprof.Lookup(name) == nil {
+			continue
+		}
+		mux.Handle("/debug/pprof/"+name, nethttppprof.Handler(name))
+	}
 }
 
 // healthzHandler returns the readiness handler installed at /healthz.
