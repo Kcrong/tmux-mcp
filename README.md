@@ -422,6 +422,7 @@ caps to taste before installing.
 | `session_list` | List sessions managed by this server. |
 | `session_kill` | Kill a session by name. |
 | `kill_all_sessions` | Kill every session this server manages and clear all snapshot history. |
+| `session_describe` | Return structured metadata for one session (windows, panes, size, creation time). |
 | `send_keys` | Type into a session. Accepts literal text or named keys (`C-c`, `Up`, `Enter`, …). |
 | `capture` | Read the visible pane (or scrollback) as text, optionally with ANSI escapes. |
 | `wait_for_stable` | Block until the screen has not changed for `quiet_ms`, then return the snapshot. |
@@ -483,6 +484,19 @@ and returns `{"killed": ["demo", …], "count": 2}`. The tmux server
 itself stays running so the next `session_create` does not pay the
 re-spawn cost. Best-effort: a single broken session does not strand
 the rest.
+
+### `session_describe`
+
+```jsonc
+{ "name": "demo" }   // len 1-64, [A-Za-z0-9_-]
+```
+
+Returns
+`{"name": "demo", "windows": 1, "panes": 1, "width": 120, "height": 40, "created_at": "2025-01-02T03:04:05Z"}`.
+`width` / `height` are the most-recent window size (works for the
+detached sessions tmux-mcp owns; `client_*` variables would be empty).
+Unknown session names yield JSON-RPC code `-32000`
+(`CodeSessionNotFound`).
 
 ### `send_keys`
 
