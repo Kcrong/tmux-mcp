@@ -23,6 +23,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -33,6 +34,14 @@ archives:
       - tmux-mcp
     formats:
       - tar.gz
+    # Windows users expect .zip; everyone else gets the default tar.gz.
+    # Note: tmux itself does not run on Windows — these binaries are
+    # provided for Go-toolchain-on-Windows users who ssh to a Linux/macOS
+    # host or run via WSL.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_

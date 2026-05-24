@@ -98,6 +98,32 @@ jobs:
           # the CODECOV_TOKEN repo secret to lift that.
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  windows-build:
+    # Cross-compile smoke test. tmux does not run on Windows, but we
+    # ship Windows binaries in releases so users with a Go toolchain on
+    # Windows (and a Linux/macOS host via ssh or WSL) can grab one.
+    # Catches accidental Linux-only imports before they hit a release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: cross-compile windows/amd64
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: go build -trimpath -o tmux-mcp.exe ./cmd/tmux-mcp
+
+      - name: cross-compile windows/arm64
+        env:
+          GOOS: windows
+          GOARCH: arm64
+        run: go build -trimpath -o tmux-mcp-arm64.exe ./cmd/tmux-mcp
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
