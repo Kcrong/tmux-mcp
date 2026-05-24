@@ -768,7 +768,10 @@ corrupt the protocol stream.
 A: No. Snapshots are kept in memory per session, and only the two most
 recent are retained. The token is good for short-lived comparisons
 between consecutive calls; older tokens fall back to a full reset where
-every line is reported as new.
+every line is reported as new. Sessions that go idle longer than
+`-snapshot-ttl` (default `1h`) are pruned in the background to bound
+memory growth on long-running servers — set `-snapshot-ttl=0` to keep
+history until the session is killed explicitly.
 
 ## Performance & tuning
 
