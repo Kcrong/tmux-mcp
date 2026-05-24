@@ -64,7 +64,7 @@ func (t *Tools) clearHistory(ctx context.Context, raw json.RawMessage) (any, *rp
 	if rerr := validatePaneTarget(args.Target); rerr != nil {
 		return nil, invalidParams("clear_history: %s", rerr.Message)
 	}
-	if err := t.Ctl.ClearHistory(ctx, args.Target); err != nil {
+	if err := t.Ctl.ClearHistory(ctx, t.resolvePaneTarget(args.Target)); err != nil {
 		return nil, internalError(fmt.Errorf("clear_history: %w", err))
 	}
 	return jsonBlock(map[string]any{"cleared": true})

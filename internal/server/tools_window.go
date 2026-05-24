@@ -317,7 +317,7 @@ func (t *Tools) windowCreate(ctx context.Context, raw json.RawMessage) (any, *rp
 		sel = *args.Select
 	}
 	res, err := t.Ctl.CreateWindow(ctx, tmuxctl.WindowSpec{
-		Session: args.Session,
+		Session: t.resolveSessionRef(args.Session),
 		Name:    args.Name,
 		Command: args.Command,
 		Select:  sel,
@@ -328,12 +328,14 @@ func (t *Tools) windowCreate(ctx context.Context, raw json.RawMessage) (any, *rp
 	// Prefer the human-readable name when one is set; fall back to the
 	// numeric index for windows tmux auto-named (no -n was passed) so
 	// the response always carries something the caller can target with
-	// a follow-up window_kill.
+	// a follow-up window_kill. Echo the logical session name (what the
+	// client passed) instead of res.Session, so a -session-prefix
+	// deployment doesn't leak the prefixed identity back to the caller.
 	label := res.Name
 	if label == "" {
 		label = res.Index
 	}
-	return textBlock(fmt.Sprintf("window %q created in %q", label, res.Session)), nil
+	return textBlock(fmt.Sprintf("window %q created in %q", label, args.Session)), nil
 }
 
 // windowKill drives tmuxctl.Controller.KillWindow. Up-front it
@@ -359,7 +361,8 @@ func (t *Tools) windowKill(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	// would otherwise tear down the session itself, which agents would
 	// find surprising — and which session_kill is the explicit way to
 	// request anyway.
-	count, err := t.Ctl.CountWindows(ctx, args.Session)
+	resolved := t.resolveSessionRef(args.Session)
+	count, err := t.Ctl.CountWindows(ctx, resolved)
 	if err != nil {
 		return nil, internalError(err)
 	}
@@ -368,9 +371,11 @@ func (t *Tools) windowKill(ctx context.Context, raw json.RawMessage) (any, *rpcE
 			"cannot kill the only remaining window; use session_kill instead",
 		)
 	}
-	if err := t.Ctl.KillWindow(ctx, args.Session, args.Window); err != nil {
+	if err := t.Ctl.KillWindow(ctx, resolved, args.Window); err != nil {
 		return nil, internalError(err)
 	}
+	// Echo the logical session name in the response so a -session-prefix
+	// deployment never leaks the prefixed identity to the caller.
 	return textBlock(fmt.Sprintf("window %q killed", args.Session+":"+args.Window)), nil
 }
 
@@ -403,7 +408,10 @@ func (t *Tools) listWindows(ctx context.Context, raw json.RawMessage) (any, *rpc
 			return nil, rerr
 		}
 	}
-	wins, err := t.Ctl.ListWindows(ctx, args.Session)
+	// Apply -session-prefix when scoping to a single session so we hit
+	// the actual tmux session the rest of the surface addresses. Empty
+	// session preserves the unscoped (-a) listing path.
+	wins, err := t.Ctl.ListWindows(ctx, t.resolveSessionRef(args.Session))
 	if err != nil {
 		return nil, internalError(err)
 	}
@@ -439,7 +447,7 @@ func (t *Tools) windowSelect(ctx context.Context, raw json.RawMessage) (any, *rp
 	if rerr := validateWindowTarget(args.Target); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.SelectWindow(ctx, args.Session, args.Target); err != nil {
+	if err := t.Ctl.SelectWindow(ctx, t.resolveSessionRef(args.Session), args.Target); err != nil {
 		return nil, internalError(err)
 	}
 	return textBlock("ok"), nil
@@ -468,9 +476,11 @@ func (t *Tools) windowRename(ctx context.Context, raw json.RawMessage) (any, *rp
 	if rerr := validateRequiredWindowName(args.Name); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.RenameWindow(ctx, args.Session, args.Target, args.Name); err != nil {
+	if err := t.Ctl.RenameWindow(ctx, t.resolveSessionRef(args.Session), args.Target, args.Name); err != nil {
 		return nil, internalError(err)
 	}
+	// Echo the logical session name so a -session-prefix deployment
+	// never leaks the prefixed identity to the caller.
 	return textBlock(fmt.Sprintf("window %q renamed to %q", args.Session+":"+args.Target, args.Name)), nil
 }
 
@@ -496,8 +506,13 @@ func (t *Tools) windowMove(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if rerr := validateWindowMoveDst(args.Dst); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.MoveWindow(ctx, args.Src, args.Dst); err != nil {
+	if err := t.Ctl.MoveWindow(ctx,
+		t.resolveWindowMoveTarget(args.Src),
+		t.resolveWindowMoveTarget(args.Dst),
+	); err != nil {
 		return nil, internalError(err)
 	}
+	// Echo the logical (un-prefixed) src/dst the caller passed so a
+	// -session-prefix deployment never leaks the prefixed identity.
 	return textBlock(fmt.Sprintf("window %q moved to %q", args.Src, args.Dst)), nil
 }

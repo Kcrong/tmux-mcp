@@ -170,6 +170,17 @@ type Tools struct {
 	// (ldflags-injected) at construction time. Empty/zero values fall
 	// back to "dev" so the field always carries a sensible string.
 	Version string
+	// SessionPrefix, when non-empty, is prepended to every session name
+	// the tool surface forwards to tmux. Created sessions land on tmux
+	// under `<prefix><user-name>`, and references on every other session-
+	// bearing tool (capture, send_keys, session_kill, …) are resolved the
+	// same way before the call hits tmuxctl. session_list /
+	// kill_all_sessions filter the controller's view to the prefix and
+	// strip it from the response so the client always sees logical names.
+	// Empty keeps the historical "no prefix" behaviour for back-compat.
+	// Set from the operator-supplied -session-prefix CLI flag and
+	// validated at startup against the same regex used for session names.
+	SessionPrefix string
 
 	// mu guards defs, dyn, and notify.
 	//
@@ -504,6 +515,101 @@ func (t *Tools) serverVersion() string {
 	return t.Version
 }
 
+// resolveSessionRef rewrites a user-supplied session reference into the
+// actual tmux session name. When SessionPrefix is empty (the historical
+// default) the input is returned unchanged so existing deployments see
+// no behaviour change. When SessionPrefix is set, the prefix is glued
+// onto the front so every tmuxctl call lands on the prefixed session.
+//
+// The empty-string case is preserved verbatim: handlers still call this
+// before validating, and an empty input produces an empty output so the
+// downstream validate*() helpers can keep emitting their existing
+// "session required" errors instead of complaining about a stray prefix
+// the caller never typed.
+func (t *Tools) resolveSessionRef(name string) string {
+	if t == nil || t.SessionPrefix == "" || name == "" {
+		return name
+	}
+	return t.SessionPrefix + name
+}
+
+// stripSessionPrefix is the inverse of resolveSessionRef: it converts an
+// actual tmux session name back into the logical name a client supplied.
+// Used by session_list and kill_all_sessions so the JSON payload carries
+// the names the caller can use as-is on follow-up tool calls. When the
+// prefix is empty the input is returned unchanged. Names that do not
+// carry the prefix are left as-is too — those entries are filtered out
+// by the caller, but returning them verbatim keeps this helper
+// side-effect-free and easy to test in isolation.
+func (t *Tools) stripSessionPrefix(name string) string {
+	if t == nil || t.SessionPrefix == "" {
+		return name
+	}
+	if !strings.HasPrefix(name, t.SessionPrefix) {
+		return name
+	}
+	return name[len(t.SessionPrefix):]
+}
+
+// hasSessionPrefix reports whether name belongs to this server's prefix
+// namespace. Always true when no prefix is configured (every session is
+// "ours"), which keeps the kill_all_sessions / session_list filtering
+// path branch-free for the back-compat default.
+func (t *Tools) hasSessionPrefix(name string) bool {
+	if t == nil || t.SessionPrefix == "" {
+		return true
+	}
+	return strings.HasPrefix(name, t.SessionPrefix)
+}
+
+// resolvePaneTarget rewrites a pane-target string (the kind accepted by
+// pane_select / pane_kill / pane_swap / pane_resize / clear_history) so
+// the session component picks up the configured prefix. tmux pane
+// targets come in three shapes:
+//
+//   - "%N"                    — pane id; carries no session reference,
+//     returned unchanged.
+//   - "session"               — bare session name; prefix it.
+//   - "session:window[.pane]" — qualified target; prefix the session
+//     half, leave window/pane untouched.
+//
+// Empty input is returned unchanged so the downstream validator can
+// still emit "target required" without seeing a stray prefix.
+func (t *Tools) resolvePaneTarget(target string) string {
+	if t == nil || t.SessionPrefix == "" || target == "" {
+		return target
+	}
+	if strings.HasPrefix(target, "%") {
+		return target
+	}
+	idx := strings.Index(target, ":")
+	if idx < 0 {
+		return t.SessionPrefix + target
+	}
+	return t.SessionPrefix + target[:idx] + target[idx:]
+}
+
+// resolveWindowMoveTarget rewrites a window_move src/dst string. The
+// shape is `<session>:<window>` where `<window>` may be empty (dst
+// only). We split on the first colon, prefix the session half, and
+// rejoin so tmux sees the actual prefixed session name. Empty input is
+// returned unchanged so the downstream validator emits the standard
+// "src required" / "dst required" errors instead of complaining about a
+// stray prefix.
+func (t *Tools) resolveWindowMoveTarget(target string) string {
+	if t == nil || t.SessionPrefix == "" || target == "" {
+		return target
+	}
+	idx := strings.Index(target, ":")
+	if idx < 0 {
+		// No separator: the validator will reject this anyway, but
+		// passing it through unchanged keeps the error message about
+		// the missing colon intact.
+		return target
+	}
+	return t.SessionPrefix + target[:idx] + target[idx:]
+}
+
 // Handle is the dispatcher passed to server.Serve. It implements MCP's
 // initialize / tools/list / tools/call surface.
 //
@@ -612,6 +718,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sessionRename(ctx, call.Arguments)
 	case "session_inspect":
 		return t.sessionInspect(ctx, call.Arguments)
+	case "display_message":
+		return t.displayMessage(ctx, call.Arguments)
 	case "send_signal":
 		return t.sendSignal(ctx, call.Arguments)
 	case "window_create":
@@ -670,6 +778,9 @@ func (t *Tools) sessionCreate(ctx context.Context, raw json.RawMessage) (any, *r
 	if rerr := validateSessionName(args.Name); rerr != nil {
 		return nil, rerr
 	}
+	if rerr := validateCombinedSessionName(t.SessionPrefix, args.Name); rerr != nil {
+		return nil, rerr
+	}
 	if rerr := validateWidth(args.Width); rerr != nil {
 		return nil, rerr
 	}
@@ -679,8 +790,11 @@ func (t *Tools) sessionCreate(ctx context.Context, raw json.RawMessage) (any, *r
 	if rerr := validateCwd(args.Cwd); rerr != nil {
 		return nil, rerr
 	}
+	// resolved is the actual tmux session name; the user keeps seeing
+	// args.Name in the response so logical references stay stable.
+	resolved := t.resolveSessionRef(args.Name)
 	spec := tmuxctl.SessionSpec{
-		Name: args.Name, Command: args.Command, Cwd: args.Cwd,
+		Name: resolved, Command: args.Command, Cwd: args.Cwd,
 		Width: args.Width, Height: args.Height, Env: args.Env,
 	}
 	if err := t.Ctl.CreateSession(ctx, spec); err != nil {
@@ -693,6 +807,19 @@ func (t *Tools) sessionList(ctx context.Context) (any, *rpcError) {
 	names, err := t.Ctl.ListSessions(ctx)
 	if err != nil {
 		return nil, internalError(err)
+	}
+	// When -session-prefix is set, filter to sessions in our namespace
+	// and strip the prefix so the client sees the same logical names it
+	// passed to session_create. Cross-prefix isolation: a session
+	// created outside our prefix never appears in the listing.
+	if t.SessionPrefix != "" {
+		out := make([]string, 0, len(names))
+		for _, n := range names {
+			if t.hasSessionPrefix(n) {
+				out = append(out, t.stripSessionPrefix(n))
+			}
+		}
+		names = out
 	}
 	return jsonBlock(map[string]any{"sessions": names})
 }
@@ -707,12 +834,14 @@ func (t *Tools) sessionKill(ctx context.Context, raw json.RawMessage) (any, *rpc
 	if rerr := validateSessionName(args.Name); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.KillSession(ctx, args.Name); err != nil {
+	resolved := t.resolveSessionRef(args.Name)
+	if err := t.Ctl.KillSession(ctx, resolved); err != nil {
 		return nil, internalError(err)
 	}
 	// Drop snapshot history for the dead session so we don't leak
-	// per-session entries across many create/kill cycles.
-	t.Snap.Forget(args.Name)
+	// per-session entries across many create/kill cycles. Snapshot keys
+	// are the actual tmux names, so use the resolved (prefixed) value.
+	t.Snap.Forget(resolved)
 	return textBlock(fmt.Sprintf("session %q killed", args.Name)), nil
 }
 
@@ -731,7 +860,7 @@ func (t *Tools) sendKeys(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if len(args.Keys) == 0 {
 		return nil, invalidParams("send_keys: keys array must be non-empty")
 	}
-	if err := t.Ctl.SendKeys(ctx, args.Session, args.Keys, args.Literal); err != nil {
+	if err := t.Ctl.SendKeys(ctx, t.resolveSessionRef(args.Session), args.Keys, args.Literal); err != nil {
 		return nil, internalError(err)
 	}
 	return textBlock("ok"), nil
@@ -759,14 +888,17 @@ func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcErro
 	default:
 		return nil, invalidParams("capture mode %q must be \"visible\" or \"scrollback\"", args.Mode)
 	}
-	body, err := t.Ctl.Capture(ctx, args.Session, mode, args.ANSI)
+	resolved := t.resolveSessionRef(args.Session)
+	body, err := t.Ctl.Capture(ctx, resolved, mode, args.ANSI)
 	if err != nil {
 		return nil, internalError(err)
 	}
 	body, truncated := capCaptureBody(body, mode, args.MaxLines)
 	// Snapshot/diff machinery sees the truncated body so subsequent
 	// snapshot_diff calls stay consistent with what the client received.
-	snap := t.Snap.Record(args.Session, body)
+	// Key by the resolved tmux name so capture/snapshot_diff stay
+	// consistent under -session-prefix.
+	snap := t.Snap.Record(resolved, body)
 	return jsonBlock(map[string]any{
 		"snapshot":  body,
 		"token":     snap.Token,
@@ -837,8 +969,9 @@ func (t *Tools) waitStable(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if args.TimeoutMs <= 0 {
 		args.TimeoutMs = 10000
 	}
+	resolved := t.resolveSessionRef(args.Session)
 	body, err := t.Ctl.WaitForStable(
-		ctx, args.Session,
+		ctx, resolved,
 		time.Duration(args.QuietMs)*time.Millisecond,
 		time.Duration(args.StepMs)*time.Millisecond,
 		time.Duration(args.TimeoutMs)*time.Millisecond,
@@ -846,7 +979,7 @@ func (t *Tools) waitStable(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if err != nil {
 		return nil, internalError(err)
 	}
-	snap := t.Snap.Record(args.Session, body)
+	snap := t.Snap.Record(resolved, body)
 	return jsonBlock(map[string]any{
 		"snapshot": body,
 		"token":    snap.Token,
@@ -878,15 +1011,16 @@ func (t *Tools) waitText(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if args.TimeoutMs <= 0 {
 		args.TimeoutMs = 10000
 	}
+	resolved := t.resolveSessionRef(args.Session)
 	m, err := t.Ctl.WaitForText(
-		ctx, args.Session, args.Pattern,
+		ctx, resolved, args.Pattern,
 		time.Duration(args.StepMs)*time.Millisecond,
 		time.Duration(args.TimeoutMs)*time.Millisecond,
 	)
 	if err != nil {
 		return nil, internalError(err)
 	}
-	snap := t.Snap.Record(args.Session, m.Snapshot)
+	snap := t.Snap.Record(resolved, m.Snapshot)
 	return jsonBlock(map[string]any{
 		"match":    m.Match,
 		"snapshot": m.Snapshot,
@@ -905,11 +1039,12 @@ func (t *Tools) snapshotDiff(ctx context.Context, raw json.RawMessage) (any, *rp
 	if rerr := validateSessionRef(args.Session); rerr != nil {
 		return nil, rerr
 	}
-	body, err := t.Ctl.Capture(ctx, args.Session, tmuxctl.CaptureVisible, false)
+	resolved := t.resolveSessionRef(args.Session)
+	body, err := t.Ctl.Capture(ctx, resolved, tmuxctl.CaptureVisible, false)
 	if err != nil {
 		return nil, internalError(err)
 	}
-	snap, diffs := t.Snap.DiffSince(args.Session, args.PriorToken, body)
+	snap, diffs := t.Snap.DiffSince(resolved, args.PriorToken, body)
 	out := make([]map[string]any, 0, len(diffs))
 	for _, d := range diffs {
 		out = append(out, map[string]any{
@@ -941,7 +1076,7 @@ func (t *Tools) resize(ctx context.Context, raw json.RawMessage) (any, *rpcError
 	if rerr := validateResizeDims(args.Width, args.Height); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.Resize(ctx, args.Session, args.Width, args.Height); err != nil {
+	if err := t.Ctl.Resize(ctx, t.resolveSessionRef(args.Session), args.Width, args.Height); err != nil {
 		return nil, internalError(err)
 	}
 	return textBlock(fmt.Sprintf("resized %s to %dx%d", args.Session, args.Width, args.Height)), nil
