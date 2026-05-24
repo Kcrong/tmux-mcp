@@ -11,3 +11,30 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+    - revive
+    - gocritic
+    - unconvert
+    - bodyclose
+    - errorlint
+    - copyloopvar
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unreachable-code
+        - name: indent-error-flow
+    gocritic:
+      disabled-checks:
+        - ifElseChain
