@@ -2,6 +2,8 @@ module github.com/Kcrong/tmux-mcp
 
 go 1.24.6
 
+toolchain go1.25.10
+
 require github.com/prometheus/client_golang v1.23.2
 
 require (
