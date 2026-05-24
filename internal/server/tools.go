@@ -232,6 +232,18 @@ func (t *Tools) sessionCreate(ctx context.Context, raw json.RawMessage) (any, *r
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("session_create: %v", err)
 	}
+	if rerr := validateSessionName(args.Name); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateWidth(args.Width); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateHeight(args.Height); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateCwd(args.Cwd); rerr != nil {
+		return nil, rerr
+	}
 	spec := tmuxctl.SessionSpec{
 		Name: args.Name, Command: args.Command, Cwd: args.Cwd,
 		Width: args.Width, Height: args.Height, Env: args.Env,
@@ -257,8 +269,8 @@ func (t *Tools) sessionKill(ctx context.Context, raw json.RawMessage) (any, *rpc
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("session_kill: %v", err)
 	}
-	if args.Name == "" {
-		return nil, invalidParams("session_kill: name required")
+	if rerr := validateSessionName(args.Name); rerr != nil {
+		return nil, rerr
 	}
 	if err := t.Ctl.KillSession(ctx, args.Name); err != nil {
 		return nil, internalError(err)
@@ -278,6 +290,12 @@ func (t *Tools) sendKeys(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("send_keys: %v", err)
 	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if len(args.Keys) == 0 {
+		return nil, invalidParams("send_keys: keys array must be non-empty")
+	}
 	if err := t.Ctl.SendKeys(ctx, args.Session, args.Keys, args.Literal); err != nil {
 		return nil, internalError(err)
 	}
@@ -294,9 +312,17 @@ func (t *Tools) capture(ctx context.Context, raw json.RawMessage) (any, *rpcErro
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("capture: %v", err)
 	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
 	mode := tmuxctl.CaptureVisible
-	if args.Mode == "scrollback" {
+	switch args.Mode {
+	case "", "visible":
+		mode = tmuxctl.CaptureVisible
+	case "scrollback":
 		mode = tmuxctl.CaptureScrollback
+	default:
+		return nil, invalidParams("capture mode %q must be \"visible\" or \"scrollback\"", args.Mode)
 	}
 	body, err := t.Ctl.Capture(ctx, args.Session, mode, args.ANSI)
 	if err != nil {
@@ -355,6 +381,18 @@ func (t *Tools) waitStable(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("wait_for_stable: %v", err)
 	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateDurationMs("quiet_ms", args.QuietMs); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateDurationMs("step_ms", args.StepMs); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateDurationMs("timeout_ms", args.TimeoutMs); rerr != nil {
+		return nil, rerr
+	}
 	if args.QuietMs <= 0 {
 		args.QuietMs = 400
 	}
@@ -389,6 +427,15 @@ func (t *Tools) waitText(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("wait_for_text: %v", err)
 	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateDurationMs("step_ms", args.StepMs); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateDurationMs("timeout_ms", args.TimeoutMs); rerr != nil {
+		return nil, rerr
+	}
 	if args.StepMs <= 0 {
 		args.StepMs = 100
 	}
@@ -417,6 +464,9 @@ func (t *Tools) snapshotDiff(ctx context.Context, raw json.RawMessage) (any, *rp
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("snapshot_diff: %v", err)
+	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
 	}
 	body, err := t.Ctl.Capture(ctx, args.Session, tmuxctl.CaptureVisible, false)
 	if err != nil {
@@ -447,6 +497,12 @@ func (t *Tools) resize(ctx context.Context, raw json.RawMessage) (any, *rpcError
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams("resize: %v", err)
+	}
+	if rerr := validateSessionRef(args.Session); rerr != nil {
+		return nil, rerr
+	}
+	if rerr := validateResizeDims(args.Width, args.Height); rerr != nil {
+		return nil, rerr
 	}
 	if err := t.Ctl.Resize(ctx, args.Session, args.Width, args.Height); err != nil {
 		return nil, internalError(err)
