@@ -260,7 +260,7 @@ func TestProbeFlag(t *testing.T) {
 func TestRunProbeFailure(t *testing.T) {
 	t.Setenv("PATH", "/nonexistent-empty-dir-for-probe-test")
 	var stdout, stderr bytes.Buffer
-	err := runProbe(&stdout, &stderr)
+	err := runProbe(&stdout, &stderr, "")
 	if err == nil {
 		t.Fatal("expected error when tmux is not on PATH")
 	}
@@ -284,7 +284,7 @@ func TestRunProbeSuccess(t *testing.T) {
 		t.Skip("tmux not on PATH")
 	}
 	var stdout, stderr bytes.Buffer
-	if err := runProbe(&stdout, &stderr); err != nil {
+	if err := runProbe(&stdout, &stderr, ""); err != nil {
 		t.Fatalf("runProbe: %v (stderr=%q)", err, stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -351,6 +351,20 @@ func TestShutdownTimeoutInUsage(t *testing.T) {
 	_ = run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "-shutdown-timeout") {
 		t.Fatalf("expected -shutdown-timeout in usage block, got %q", stderr.String())
+	}
+}
+
+// TestMaxResponseBytesInUsage guards the help text: -max-response-bytes
+// must be documented in the usage block so operators discover the
+// response-size ceiling via `tmux-mcp -help`. Behavioural coverage for
+// the wire-side replacement lives in
+// internal/server/jsonrpc_test.go (TestOversizedResponse).
+func TestMaxResponseBytesInUsage(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "-max-response-bytes") {
+		t.Fatalf("expected -max-response-bytes in usage block, got %q", stderr.String())
 	}
 }
 
@@ -886,5 +900,223 @@ func TestAllowlistFlag_AcceptedAndDocumented(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "-allowlist") {
 		t.Fatalf("expected -allowlist in usage block, got %q", stderr.String())
+	}
+}
+
+// TestTmuxBinFlag_AcceptedAndDocumented guards the CLI surface for
+// -tmux-bin: the flag must appear in the -help usage block so
+// operators discover it without reading the source. Behavioural
+// coverage for the underlying validation lives in
+// internal/tmuxctl/tmuxctl_test.go (TestWithBinary_*).
+func TestTmuxBinFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-tmux-bin") {
+		t.Fatalf("expected -tmux-bin in usage block, got %q", stderr.String())
+	}
+}
+
+// TestTmuxBinFlag_RejectsRelative pins the operator-facing contract:
+// a relative -tmux-bin value is refused at startup, so a typo in a
+// systemd unit or container env var surfaces as a clean diagnostic
+// instead of an obscure "fork/exec" failure once the working
+// directory shifts. We skip when tmux is not on PATH because the
+// validation runs after the version gate would otherwise resolve a
+// real binary.
+func TestTmuxBinFlag_RejectsRelative(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-tmux-bin=relative/tmux"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative -tmux-bin, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("expected 'must be absolute' phrase, got %v", err)
+	}
+}
+
+// TestTmuxBinFlag_RejectsNonexistent confirms the validation rejects
+// a non-existent path with the documented "tmux binary %q not
+// executable" diagnostic. Without this, an operator who fat-fingered
+// the path would only discover the mistake once the first tmux
+// invocation failed at runtime.
+func TestTmuxBinFlag_RejectsNonexistent(t *testing.T) {
+	t.Parallel()
+	bogus := "/nonexistent-tmux-binary-path-for-flag-test"
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-tmux-bin=" + bogus}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for nonexistent -tmux-bin, got nil")
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("expected 'not executable' phrase, got %v", err)
+	}
+	if !strings.Contains(err.Error(), bogus) {
+		t.Fatalf("expected error to quote the path %q, got %v", bogus, err)
+	}
+}
+
+// TestTmuxBinFlag_EmptyKeepsPathBehaviour confirms that the default
+// -tmux-bin="" preserves the legacy "resolve tmux from $PATH"
+// behaviour. -dry-run takes the same code path as serving stdio
+// short of opening the JSON-RPC loop, so a successful dry-run with
+// no override is the cleanest end-to-end signal that the empty
+// default did not regress.
+func TestTmuxBinFlag_EmptyKeepsPathBehaviour(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestTmuxBinEnvFallback covers the env-var path: when -tmux-bin is
+// not passed but TMUX_MCP_TMUX_BIN is set to a relative value, run()
+// must surface the same validation error rather than silently fall
+// through to PATH. Mirrors TestSocketEnvFallback for -socket.
+func TestTmuxBinEnvFallback(t *testing.T) {
+	t.Setenv("TMUX_MCP_TMUX_BIN", "relative/tmux-from-env")
+	var stdout, stderr bytes.Buffer
+	err := run(nil, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative tmux bin from env")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestTmuxBinFlag_WinsOverEnv pins the documented precedence: the
+// flag overrides the env var. We seed a bogus env value (would fail
+// validation if used) and pass an explicit empty flag value — the
+// flag's empty string must take effect, falling back to PATH. With
+// tmux on PATH and -dry-run, that combination should succeed.
+func TestTmuxBinFlag_WinsOverEnv(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	t.Setenv("TMUX_MCP_TMUX_BIN", "/nonexistent/tmux-from-env")
+	var stdout, stderr bytes.Buffer
+	err := run(
+		[]string{"-tmux-bin=", "-dry-run"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if err != nil {
+		t.Fatalf("expected -tmux-bin= to override env var, got: %v stderr=%q",
+			err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestSessionPrefixFlag_RejectsInvalid pins the operator-facing contract
+// for -session-prefix: the validator must run before any tmux state is
+// created, and any value the [server.ValidateSessionPrefix] function
+// rejects (bad regex, trailing dash, no room for a session name) must
+// surface as a clean startup error wrapping [errInvalidSessionPrefix].
+// Stdout must stay clean on the failure path so a shell wrapper relying
+// on stdout being either empty or a clean line never sees diagnostic
+// noise. The table covers the documented rules so a future regression
+// in either the validator or its wiring trips a single test.
+func TestSessionPrefixFlag_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		flag string
+	}{
+		{"trailing-dash", "-session-prefix=agent-"},
+		{"whitespace", "-session-prefix=agent name_"},
+		{"shell-meta", "-session-prefix=agent$_"},
+		{"colon", "-session-prefix=agent:_"},
+		{"slash", "-session-prefix=agent/_"},
+		{"too-long", "-session-prefix=" + strings.Repeat("a", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			err := run([]string{tc.flag}, strings.NewReader(""), &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.flag)
+			}
+			if !errors.Is(err, errInvalidSessionPrefix) {
+				t.Fatalf("expected errInvalidSessionPrefix for %s, got %v", tc.flag, err)
+			}
+			if !strings.Contains(stderr.String(), "tmux-mcp: ") {
+				t.Fatalf("expected stderr to carry diagnostic for %s, got %q", tc.flag, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected stdout untouched for %s, got %q", tc.flag, stdout.String())
+			}
+		})
+	}
+}
+
+// TestSessionPrefixFlag_AcceptedAndDocumented confirms -session-prefix
+// is wired through to the parser (i.e. registered with FlagSet) and
+// that its help line ships in the -help usage block. Behavioural
+// coverage for the runtime path lives in
+// internal/server/tools_session_prefix_test.go; here we just guard the
+// CLI surface so a future rename trips a test.
+func TestSessionPrefixFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-session-prefix") {
+		t.Fatalf("expected -session-prefix in usage block, got %q", stderr.String())
+	}
+}
+
+// TestSessionPrefixFlag_EmptyAcceptedAtDryRun pins the back-compat
+// contract: the empty default must NOT trip the validator, and a
+// -dry-run with no -session-prefix must succeed end-to-end so existing
+// deployments see no behaviour change.
+func TestSessionPrefixFlag_EmptyAcceptedAtDryRun(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestSessionPrefixFlag_ValidAcceptedAtDryRun confirms a valid
+// -session-prefix value walks the entire bootstrap successfully, so
+// the validator does not over-reject conventional separators
+// ("agent_alice_", "agent_alice"). The dry-run path covers every
+// startup hook the prefix depends on (tmux init, audit open, tool
+// surface build) without committing to the JSON-RPC loop.
+func TestSessionPrefixFlag_ValidAcceptedAtDryRun(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	for _, p := range []string{"agent_alice_", "agent_alice", "Agent42_", "a"} {
+		t.Run(p, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"-dry-run", "-session-prefix=" + p}, strings.NewReader(""), &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("run(-dry-run -session-prefix=%q): %v (stderr=%q)", p, err, stderr.String())
+			}
+			if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+				t.Fatalf("expected dry-run ok line for prefix %q, got %q", p, stdout.String())
+			}
+		})
 	}
 }

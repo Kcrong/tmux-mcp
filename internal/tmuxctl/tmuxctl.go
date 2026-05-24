@@ -31,11 +31,48 @@ type Controller struct {
 	ownsDir bool
 }
 
+// Option configures a [Controller] at construction time. The set is
+// kept small on purpose — each option must justify itself by mapping
+// onto an operator-visible CLI knob, not by exposing internal knobs
+// for their own sake.
+type Option func(*controllerOpts)
+
+// controllerOpts is the mutable bag the option closures write into. It
+// stays unexported so the option API is the only way to set a knob.
+type controllerOpts struct {
+	// bin overrides the tmux binary path. Empty = resolve "tmux" via
+	// exec.LookPath (the historical behaviour). When non-empty it must
+	// be an absolute path to an existing executable; validation happens
+	// in [NewWithSocket] / [New] before any tmux command is dispatched.
+	bin string
+}
+
+// WithBinary pins the tmux executable the controller will invoke for
+// every command. Pass an absolute path. Empty values are ignored so
+// callers can forward a possibly-empty CLI flag without an extra
+// branch — the controller falls back to [exec.LookPath]("tmux") in
+// that case.
+//
+// The path is validated at construction time:
+//   - must be absolute (relative paths are rejected up front for the
+//     same reason the -socket flag rejects them — they hide where the
+//     binary actually lives once the working directory shifts);
+//   - must resolve to an existing executable file ([os.Stat] succeeds
+//     and any of the executable bits is set);
+//   - must satisfy the same minimum-version gate as the default path.
+//
+// A failed validation surfaces the path verbatim so the operator
+// immediately sees which binary tmux-mcp tried to use.
+func WithBinary(path string) Option {
+	return func(o *controllerOpts) { o.bin = path }
+}
+
 // New creates a Controller with a private tmux socket under a fresh
 // MkdirTemp directory. The tmux server itself is started lazily by the
-// first command.
-func New() (*Controller, error) {
-	return NewWithSocket("")
+// first command. Variadic options apply on top of the defaults — the
+// only one currently supported is [WithBinary].
+func New(opts ...Option) (*Controller, error) {
+	return NewWithSocket("", opts...)
 }
 
 // NewWithSocket creates a Controller. When socket is empty the
@@ -46,14 +83,19 @@ func New() (*Controller, error) {
 // must be absolute and its parent directory must already exist — this
 // keeps systemd / container deployments explicit and refuses to
 // silently create directories on behalf of the operator.
-func NewWithSocket(socket string) (*Controller, error) {
-	bin, err := exec.LookPath("tmux")
+//
+// Variadic options ([WithBinary], …) override the defaults derived
+// from the environment.
+func NewWithSocket(socket string, opts ...Option) (*Controller, error) {
+	cfg := controllerOpts{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	bin, err := resolveTmuxBin(cfg.bin)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"tmux not found on PATH — install it first "+
-				"(e.g. `apt-get install tmux`, `brew install tmux`): %w",
-			err,
-		)
+		return nil, err
 	}
 	// Verify the tmux on PATH is new enough before doing any other work.
 	// Older tmux silently rejects flags this package relies on.
@@ -97,6 +139,59 @@ func NewWithSocket(socket string) (*Controller, error) {
 		socket:  filepath.Join(dir, "sock"),
 		ownsDir: true,
 	}, nil
+}
+
+// resolveTmuxBin picks the tmux binary the controller will drive.
+// override is the value coming from [WithBinary] / the -tmux-bin CLI
+// flag; an empty string means "no operator override, use PATH".
+//
+// When override is empty the function preserves the historical
+// behaviour: [exec.LookPath]("tmux") with the standard "install it
+// first" diagnostic on failure.
+//
+// When override is non-empty the function runs the operator-facing
+// validation contract documented on [WithBinary]: absolute path, file
+// exists, file is executable. Failure surfaces the supplied path
+// verbatim ("tmux binary %q ...") so the diagnostic immediately points
+// at the wrong knob — there's no point hiding which path tmux-mcp
+// actually tried to use.
+func resolveTmuxBin(override string) (string, error) {
+	if override == "" {
+		bin, err := exec.LookPath("tmux")
+		if err != nil {
+			return "", fmt.Errorf(
+				"tmux not found on PATH — install it first "+
+					"(e.g. `apt-get install tmux`, `brew install tmux`): %w",
+				err,
+			)
+		}
+		return bin, nil
+	}
+	if !filepath.IsAbs(override) {
+		return "", fmt.Errorf(
+			"tmux binary %q must be absolute "+
+				"(e.g. /usr/local/bin/tmux)",
+			override,
+		)
+	}
+	info, err := os.Stat(override)
+	if err != nil {
+		return "", fmt.Errorf("tmux binary %q not executable: %w", override, err)
+	}
+	// Reject a directory at the supplied path early — Stat would
+	// otherwise succeed and the operator would only see the failure
+	// when exec'ing the path returns an obscure permission error.
+	if info.IsDir() {
+		return "", fmt.Errorf("tmux binary %q not executable: is a directory", override)
+	}
+	// Any executable bit (owner / group / world) is enough — we don't
+	// know which uid will run the binary, only that it must be
+	// executable for someone. Mirrors the spirit of os.Stat-based
+	// "is this a runnable file" checks throughout stdlib.
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("tmux binary %q not executable: mode %s", override, info.Mode().Perm())
+	}
+	return override, nil
 }
 
 // Socket returns the absolute path tmux is talking to via `-S`. Useful

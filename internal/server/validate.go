@@ -1,8 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // Bounds applied to tool arguments. These are intentionally liberal:
@@ -124,6 +126,64 @@ func validateCwd(cwd string) *rpcError {
 func validateDurationMs(name string, ms int) *rpcError {
 	if ms < 0 || ms > maxDurationMs {
 		return invalidParams("%s %d out of range [0..%d]", name, ms, maxDurationMs)
+	}
+	return nil
+}
+
+// ValidateSessionPrefix is the startup-time check for the
+// -session-prefix CLI flag. The empty value disables prefixing and is
+// always accepted; otherwise the prefix must satisfy the same
+// conservative regex used for session names (no whitespace, no shell
+// metachars, no colons or dots that would let a malicious caller break
+// out of the prefix into a sibling session). A trailing dash is
+// rejected so a name like "agent_alice_-build" can't appear; the
+// idiomatic separator is "_".
+//
+// We also bound the prefix length to leave room for at least a 1-byte
+// user-supplied name within the per-session 64-byte ceiling, so the
+// runtime-time path (session_create combining prefix+name) cannot
+// surprise an operator with rejections their flag value implied.
+//
+// Returns a fully-formed error suitable for emitting on stderr; main()
+// wraps it in a sentinel so the exit code stays 2 ("CLI usage error").
+func ValidateSessionPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if len(prefix) >= maxSessionNameLen {
+		return fmt.Errorf("session prefix length %d leaves no room for a session name (max %d)",
+			len(prefix), maxSessionNameLen-1)
+	}
+	if !sessionNameRE.MatchString(prefix) {
+		return fmt.Errorf("session prefix %q must match %s",
+			prefix, sessionNameRE.String())
+	}
+	if strings.HasSuffix(prefix, "-") {
+		// A trailing dash is regex-legal but creates surprising names
+		// like "agent--build" when the user-supplied name itself has a
+		// leading dash; rejecting it up-front nudges operators toward
+		// the conventional "_" separator.
+		return fmt.Errorf("session prefix %q must not end with '-'", prefix)
+	}
+	return nil
+}
+
+// validateCombinedSessionName is the per-call check that the prefix +
+// user-supplied name still fits within the session-name length budget.
+// Without it, an operator picking a long prefix and a client picking a
+// long name would silently produce a session that tmux misbehaves on.
+// The check fires only when a prefix is configured — the prefix-less
+// path keeps the legacy single-name validation unchanged.
+func validateCombinedSessionName(prefix, name string) *rpcError {
+	if prefix == "" {
+		return nil
+	}
+	total := len(prefix) + len(name)
+	if total > maxSessionNameLen {
+		return invalidParams(
+			"prefixed session name length %d (prefix %q + name %q) exceeds %d",
+			total, prefix, name, maxSessionNameLen,
+		)
 	}
 	return nil
 }

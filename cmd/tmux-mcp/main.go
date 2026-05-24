@@ -79,10 +79,34 @@ Flags:
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
+  -tmux-bin PATH          absolute path to the tmux executable to invoke
+                          (also TMUX_MCP_TMUX_BIN env var; flag wins).
+                          Empty default = resolve tmux from $PATH (the
+                          historical behaviour). When set the path must
+                          be absolute and point at an existing executable
+                          file, otherwise startup fails with "tmux binary
+                          PATH not executable: ...". Useful for pinning
+                          a specific tmux version on Nix / Homebrew /
+                          static builds, sandboxes, and containers where
+                          multiple tmux versions live side-by-side.
   -max-concurrent-calls N cap simultaneously-executing tools/call frames
                           (default 64). Excess callers wait — back-pressure
                           rather than failure. 0 disables the cap (unbounded
                           goroutines, original behaviour).
+  -max-response-bytes N   hard ceiling on the marshalled JSON-RPC response
+                          body (in bytes) before it is written to stdout
+                          (default 0 = disabled, original behaviour). When
+                          a reply exceeds the cap, the server replaces it
+                          with a typed JSON-RPC error (code -32010, message
+                          "response body N bytes exceeds max-response-bytes
+                          M") so a misbehaving tool (capture_pane on a 10MB
+                          scrollback, etc.) cannot dump a multi-megabyte
+                          frame onto an MCP client whose reader can't
+                          tolerate it. Clients see the error — not a
+                          truncated payload. The underlying tools/call still
+                          ran (its audit + metrics records fire with the
+                          oversize sentinel) so operators can distinguish
+                          "the tool failed" from "the answer was too big".
   -audit-log PATH         when set, write one JSONL audit record per
                           tools/call. Use "stderr" to share the slog
                           stream, or any other value as a file path
@@ -156,6 +180,23 @@ Flags:
                           tools (kill_all_sessions, pane_kill,
                           session_kill, send_signal) for untrusted
                           contexts.
+  -session-prefix STRING  when set, every session this server creates
+                          lands on tmux as "<prefix><name>", and every
+                          session-bearing tool (capture, send_keys,
+                          session_kill, …) resolves the bare name back
+                          to the prefixed identity transparently.
+                          session_list and kill_all_sessions are
+                          scoped to the prefix and strip it from the
+                          response, so a co-tenant agent's sessions
+                          (created with a different prefix or none)
+                          stay invisible to this instance. The prefix
+                          must match [A-Za-z0-9_-]+, may not end with
+                          '-', and must leave at least one byte for a
+                          user-supplied session name (combined length
+                          ≤ 64). Default: "" (no prefix — the
+                          original single-tenant behaviour). Useful
+                          when several agents share one tmux-mcp
+                          server and need disjoint session namespaces.
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -181,6 +222,12 @@ func main() {
 	if errors.Is(err, errInvalidIdleTimeout) {
 		os.Exit(2)
 	}
+	// Same convention for an invalid -session-prefix (bad regex, trailing
+	// dash, or no room left for a session name). The validator already
+	// wrote a single-line diagnostic to stderr.
+	if errors.Is(err, errInvalidSessionPrefix) {
+		os.Exit(2)
+	}
 	// The -probe path has already written a "probe failed: …" line to
 	// stderr; logging the error again via slog would just duplicate it.
 	// Every other failure mode goes through slog so it shows up in the
@@ -199,6 +246,15 @@ func main() {
 // negative duration). main() recognises it via [errors.Is] and maps it
 // to exit code 2 — the conventional "CLI usage error" status.
 var errInvalidIdleTimeout = errors.New("invalid -session-idle-timeout")
+
+// errInvalidSessionPrefix is the sentinel returned when -session-prefix
+// receives a value [server.ValidateSessionPrefix] rejects: anything
+// outside the [A-Za-z0-9_-]+ regex, a value ending in '-', or a prefix
+// long enough to leave no room for a user-supplied session name within
+// the 64-byte tmux session-name budget. main() recognises it via
+// [errors.Is] and maps it to exit code 2 — the conventional "CLI usage
+// error" status used by stdlib `flag` and most Unix utilities.
+var errInvalidSessionPrefix = errors.New("invalid -session-prefix")
 
 // errPprofRequiresMetricsAddr is the sentinel returned when -pprof is
 // enabled without -metrics-addr. The pprof handlers are co-located on
@@ -250,6 +306,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	socket := fs.String("socket", os.Getenv("TMUX_MCP_SOCKET"),
 		"absolute path for the private tmux socket "+
 			"(env TMUX_MCP_SOCKET; default: fresh tempdir)")
+	// Same env-var-falls-through pattern as -socket: operators on Nix /
+	// Homebrew / static builds want to pin a specific tmux binary
+	// instead of relying on PATH (e.g. testing against a known tmux
+	// version, sandboxing, or container deployments where multiple
+	// tmux versions live side-by-side). Empty default preserves the
+	// historical "resolve `tmux` from PATH" behaviour for everyone
+	// else. Validation lives inside tmuxctl.WithBinary so a bogus path
+	// surfaces a single, consistent diagnostic regardless of whether
+	// the value came from the flag or the env var.
+	tmuxBin := fs.String("tmux-bin", os.Getenv("TMUX_MCP_TMUX_BIN"),
+		"absolute path to the tmux executable "+
+			"(env TMUX_MCP_TMUX_BIN; default: resolve `tmux` from PATH)")
 	// 64 is a generous default for an interactive single-agent client
 	// (Claude Desktop typically runs 1–4 tools in parallel) while still
 	// putting a ceiling on goroutines a misbehaving / flooding client
@@ -257,6 +325,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// pass -max-concurrent-calls=0.
 	maxConcurrentCalls := fs.Int("max-concurrent-calls", 64,
 		"cap simultaneously-executing tools/call frames; 0 disables")
+	// Default 0 = disabled, preserving the historical "stream whatever
+	// the handler produced" behaviour. A positive value caps the
+	// marshalled JSON-RPC response body so a misbehaving tool (e.g.
+	// capture_pane on a 10MB scrollback) cannot dump a multi-megabyte
+	// frame onto an MCP client whose reader can't tolerate it. Int64 so
+	// the flag can name multi-GB ceilings on 32-bit hosts without
+	// overflow; negative values are treated as 0 by the server.
+	var maxResponseBytes int64
+	fs.Int64Var(&maxResponseBytes, "max-response-bytes", 0,
+		"cap marshalled JSON-RPC response body in bytes; 0 disables")
 	// Empty default keeps the audit log opt-in: existing deployments
 	// see no behaviour change. "stderr" is a magic path that shares
 	// the slog stream; any other value is a filesystem path.
@@ -316,6 +394,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// touching this flag.
 	allowlist := fs.String("allowlist", "",
 		"comma-separated list of tool names to expose; empty = no filter (default)")
+	// Empty default keeps the prefix feature opt-in: existing
+	// deployments see no behaviour change. When set, every session
+	// session_create lands on tmux as "<prefix><name>" and every other
+	// session-bearing tool resolves the bare name back to the prefixed
+	// identity transparently. session_list/kill_all_sessions filter the
+	// view to entries inside the prefix so co-tenant agents stay
+	// isolated.
+	sessionPrefix := fs.String("session-prefix", "",
+		"when set, prepend this string to every session name created on tmux (regex [A-Za-z0-9_-]+, no trailing '-')")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -341,6 +428,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stderr, "tmux-mcp: -pprof requires -metrics-addr to be set")
 		return errPprofRequiresMetricsAddr
 	}
+	// Validate -session-prefix at startup — a malformed value must abort
+	// before any tmux state is created so the operator never half-runs
+	// with a prefix that would hit tmux as a name no other tool can
+	// validly reference. The empty default is always accepted (no
+	// prefixing). Diagnostics go to stderr; main() maps the sentinel to
+	// exit code 2.
+	if perr := server.ValidateSessionPrefix(*sessionPrefix); perr != nil {
+		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", perr)
+		return fmt.Errorf("%w: %w", errInvalidSessionPrefix, perr)
+	}
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
 		return nil
@@ -349,7 +446,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return emitVersionJSON(stdout, version, runtime.Version())
 	}
 	if *probe {
-		return runProbe(stdout, stderr)
+		return runProbe(stdout, stderr, *tmuxBin)
 	}
 
 	lvl, err := parseLogLevel(*logLevel)
@@ -417,7 +514,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}()
 	}
 
-	ctl, err := tmuxctl.NewWithSocket(*socket)
+	ctl, err := tmuxctl.NewWithSocket(*socket, tmuxctl.WithBinary(*tmuxBin))
 	if err != nil {
 		return err
 	}
@@ -502,7 +599,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		go func() {
 			probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
 			defer probeCancel()
-			if _, perr := tmuxctl.ProbeVersion(probeCtx); perr != nil {
+			// Probe through the same binary the controller is driving so
+			// /healthz reflects the runtime path, not whatever happens to
+			// be on PATH. tmuxctl.ProbeVersionWithBinary("") is identical
+			// to the legacy ProbeVersion(ctx) so the unset case is
+			// byte-compatible with pre-flag deployments.
+			if _, perr := tmuxctl.ProbeVersionWithBinary(probeCtx, *tmuxBin); perr != nil {
 				slog.Warn("startup probe failed; /healthz stays 503",
 					"err", perr)
 				return
@@ -525,6 +627,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
+	// Hand the (already-validated) -session-prefix value to the tool
+	// surface. Empty keeps the historical no-prefix behaviour; non-empty
+	// arms resolveSessionRef / resolvePaneTarget / resolveWindowMoveTarget
+	// across every session-bearing tool so the JSON-RPC client sees its
+	// logical names and tmux sees the prefixed ones.
+	tools.SessionPrefix = *sessionPrefix
 	// Install the operator-supplied allowlist (if any) before any
 	// tools/list / tools/call frame can reach the dispatcher. Validation
 	// runs against the live registry now that every init()-time
@@ -548,7 +656,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// ctl.Shutdown + audit.Close, so resources acquired by the
 	// bootstrap are released before exit.
 	if *dryRun {
-		tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+		// Probe through the same binary the controller is driving so the
+		// "dry-run ok" line names the binary the runtime would actually
+		// invoke — not whatever else happens to be on PATH.
+		tmuxVer, err := tmuxctl.ProbeVersionWithBinary(ctx, *tmuxBin)
 		if err != nil {
 			return err
 		}
@@ -558,6 +669,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	serr := server.Serve(ctx, stdin, stdout, tools.Handle,
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
+		server.WithMaxResponseBytes(maxResponseBytes),
 		server.WithAudit(audit),
 		server.WithShutdownTimeout(*shutdownTimeout),
 		// Pass the controller's KillSession as the reaper's kill hook so
@@ -572,6 +684,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		// without main needing to know about the notification shape.
 		server.WithToolsListChangedNotifier(tools.SetNotifier),
 		server.WithMetrics(metrics),
+		// Mirror the prefix into the dispatcher so the [IdleReaper]'s
+		// activity table keys on the same tmux-real names the controller
+		// kills against. *Tools.SessionPrefix already takes care of the
+		// handler side; this option is the dispatcher-side counterpart.
+		server.WithSessionPrefix(*sessionPrefix),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can
@@ -741,9 +858,11 @@ func writePIDFile(path string) error {
 // surface the same failure twice.
 var errProbeFailed = errors.New("probe failed")
 
-// runProbe is the body of the -probe flag. It probes tmux on PATH (looks
-// it up, runs `tmux -V`, checks the minimum version) and writes a single
-// tab-delimited "ok" line to stdout when everything is healthy:
+// runProbe is the body of the -probe flag. It probes the configured
+// tmux binary (an explicit path passed via -tmux-bin / TMUX_MCP_TMUX_BIN
+// when non-empty, otherwise tmux looked up on PATH), runs `tmux -V`,
+// checks the minimum version, and writes a single tab-delimited "ok"
+// line to stdout when everything is healthy:
 //
 //	ok\ttmux=<tmux-version>\ttmux-mcp=<binary-version>\n
 //
@@ -751,13 +870,17 @@ var errProbeFailed = errors.New("probe failed")
 // returns an error wrapping [errProbeFailed] so the caller can map it
 // to a non-zero exit code. Stdout is left untouched on the failure path
 // so orchestrators can rely on stdout being empty when probing failed.
-func runProbe(stdout, stderr io.Writer) error {
+//
+// tmuxBin is the operator-supplied override (empty = legacy PATH
+// resolution). Threading it through here keeps the -probe path
+// honouring the same binary the runtime would actually drive.
+func runProbe(stdout, stderr io.Writer, tmuxBin string) error {
 	// 5s is generous: `tmux -V` is essentially instant. A timeout
 	// keeps a wedged binary on a misconfigured PATH from hanging the
 	// liveness check forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+	tmuxVer, err := tmuxctl.ProbeVersionWithBinary(ctx, tmuxBin)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "probe failed: %s\n", err)
 		return fmt.Errorf("%w: %w", errProbeFailed, err)
