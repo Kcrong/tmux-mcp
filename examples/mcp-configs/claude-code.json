@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "/usr/local/bin/tmux-mcp"
+    }
+  }
+}
