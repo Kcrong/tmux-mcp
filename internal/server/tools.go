@@ -317,7 +317,8 @@ func (t *Tools) waitStable(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if args.TimeoutMs <= 0 {
 		args.TimeoutMs = 10000
 	}
-	body, err := t.Ctl.WaitForStable(ctx, args.Session,
+	body, err := t.Ctl.WaitForStable(
+		ctx, args.Session,
 		time.Duration(args.QuietMs)*time.Millisecond,
 		time.Duration(args.StepMs)*time.Millisecond,
 		time.Duration(args.TimeoutMs)*time.Millisecond,
@@ -348,7 +349,8 @@ func (t *Tools) waitText(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if args.TimeoutMs <= 0 {
 		args.TimeoutMs = 10000
 	}
-	m, err := t.Ctl.WaitForText(ctx, args.Session, args.Pattern,
+	m, err := t.Ctl.WaitForText(
+		ctx, args.Session, args.Pattern,
 		time.Duration(args.StepMs)*time.Millisecond,
 		time.Duration(args.TimeoutMs)*time.Millisecond,
 	)
