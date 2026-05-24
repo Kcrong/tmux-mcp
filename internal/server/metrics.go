@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,6 +42,13 @@ type Metrics struct {
 	callTotal      *prometheus.CounterVec
 	callDuration   *prometheus.HistogramVec
 	sessionsActive prometheus.Gauge
+	// healthy flips to true exactly once, when main() finishes its
+	// one-shot startup probe ([Metrics.MarkHealthy]). The /healthz
+	// handler reads it on every request so a slow tmux env shows up as
+	// 503 Service Unavailable until the probe completes — k8s readiness
+	// gates and load balancers can wait on that signal instead of
+	// declaring the pod ready the moment the listener binds.
+	healthy atomic.Bool
 }
 
 // NewMetrics constructs a [*Metrics] and registers its collectors against
@@ -114,6 +122,32 @@ func (m *Metrics) SetSessionsActive(n int) {
 		return
 	}
 	m.sessionsActive.Set(float64(n))
+}
+
+// MarkHealthy flips the readiness flag observed by the /healthz handler.
+// main() calls this exactly once after its one-shot startup probe
+// ([tmuxctl.ProbeVersion]) succeeds, so a slow tmux env keeps /healthz at
+// 503 until the binary has actually proven it can talk to tmux. There is
+// no inverse — once a process is healthy we stay healthy for the
+// lifetime of the listener; per-request liveness checks belong on a
+// different surface. Safe on a nil receiver.
+func (m *Metrics) MarkHealthy() {
+	if m == nil {
+		return
+	}
+	m.healthy.Store(true)
+}
+
+// Healthy reports whether [Metrics.MarkHealthy] has fired. The /healthz
+// handler is the production caller; tests use it to assert the
+// before/after transition without poking the atomic directly. A nil
+// receiver reports false so callers can use the same handle in the
+// metrics-disabled fast path.
+func (m *Metrics) Healthy() bool {
+	if m == nil {
+		return false
+	}
+	return m.healthy.Load()
 }
 
 // SessionLister narrows the [tmuxctl.Controller] surface used by the
@@ -192,10 +226,16 @@ type MetricsServer struct {
 }
 
 // NewMetricsServer binds a TCP listener on addr, mounts the supplied
-// [prometheus.Gatherer] at /metrics, and starts serving on a private
-// goroutine. The actual bound address is exposed via [MetricsServer.Addr]
-// so tests can use ":0" / "127.0.0.1:0" and discover the kernel-chosen
-// port.
+// [prometheus.Gatherer] at /metrics plus a /healthz handler driven by
+// the supplied [*Metrics] readiness flag, and starts serving on a
+// private goroutine. The actual bound address is exposed via
+// [MetricsServer.Addr] so tests can use ":0" / "127.0.0.1:0" and
+// discover the kernel-chosen port.
+//
+// Co-locating /metrics and /healthz on the same listener avoids opening
+// a second port for k8s liveness/readiness or load balancer health
+// checks while keeping both observability surfaces under a single
+// shutdown handle.
 //
 // Two non-obvious choices:
 //   - We bind eagerly (net.Listen) before returning so configuration
@@ -205,7 +245,12 @@ type MetricsServer struct {
 //   - The handler is constructed against the supplied gatherer, not
 //     prometheus.DefaultGatherer, so callers can inject a private
 //     registry for tests without leaking metrics into the global default.
-func NewMetricsServer(addr string, gatherer prometheus.Gatherer) (*MetricsServer, error) {
+//
+// m may be nil — the /healthz handler is still mounted, but it stays at
+// 503 forever (since there is no flag to flip). main() always passes
+// the same *Metrics it constructed for the dispatcher hooks, so the
+// production path always has a real readiness signal.
+func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics) (*MetricsServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -217,6 +262,7 @@ func NewMetricsServer(addr string, gatherer prometheus.Gatherer) (*MetricsServer
 		// classic text format on operators who don't ask for it.
 		EnableOpenMetrics: true,
 	}))
+	mux.Handle("/healthz", healthzHandler(m))
 	srv := &http.Server{
 		Handler: mux,
 		// ReadHeaderTimeout protects the exporter from slowloris-style
@@ -233,6 +279,41 @@ func NewMetricsServer(addr string, gatherer prometheus.Gatherer) (*MetricsServer
 		}
 	}()
 	return &MetricsServer{addr: ln.Addr().String(), server: srv}, nil
+}
+
+// healthzHandler returns the readiness handler installed at /healthz.
+// It is intentionally tiny so it stays cheap on every k8s probe tick:
+// no allocations beyond the constant body slice, no logging, no
+// dependency on the slog handler. Behaviour:
+//
+//   - method != GET → 405 Method Not Allowed (with an Allow: GET hint
+//     so a curious operator running `curl -X POST` sees the contract).
+//   - GET before [Metrics.MarkHealthy] → 503 Service Unavailable +
+//     "unhealthy\n", so a slow tmux env doesn't trick a load balancer
+//     into routing traffic to a not-yet-ready pod.
+//   - GET after MarkHealthy → 200 OK + "ok\n".
+//
+// The bodies are deliberately short, plain-text, and trailed with a
+// newline so `curl -s host/healthz` looks right when piped into a shell
+// test. No JSON envelope — k8s liveness/readiness probes only inspect
+// the status code, and a human eyeballing the endpoint gets a clean
+// one-word answer.
+func healthzHandler(m *Metrics) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if m.Healthy() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("unhealthy\n"))
+	})
 }
 
 // Addr returns the actual address the listener is bound to. Useful for
