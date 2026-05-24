@@ -532,6 +532,7 @@ embedded secrets stay out of the audit trail.
 | `resize` | Resize the pane (cols × rows). |
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
+| `pane_split` | Split a pane horizontally or vertically; optionally run a command in the new pane. |
 | `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 | `window_create` | Add a new window to an existing session (optional name / command, focus toggle). |
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
@@ -716,6 +717,23 @@ Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
 Switches the active pane of the named window so subsequent `send_keys`
 and `capture` calls that name `demo` act on the new pane. Useful for
 multi-pane TUIs (vim+terminal split, zellij-style layouts).
+
+### `pane_split`
+
+```jsonc
+{
+  "session":     "demo",        // required; len 1-64, [A-Za-z0-9_-]
+  "target_pane": "demo:0.0",    // optional; tmux target form, defaults to active pane
+  "direction":   "vertical",    // required; "horizontal" (-h) or "vertical" (-v)
+  "command":     "/bin/sh",     // optional; defaults to user's shell, max 4096 chars
+  "detach":      true            // optional; true = stay focused on original pane (-d)
+}
+```
+
+Returns `{"id": "%5", "index": 1}` — the new pane's tmux id and 0-based
+index. Combine those with the original session/window to address the
+new pane in follow-up `pane_select` / `send_keys` calls (e.g. write
+`demo:0.1` to drive what `pane_split` just created).
 
 ### `send_signal`
 
