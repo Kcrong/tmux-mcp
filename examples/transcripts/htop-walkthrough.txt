@@ -1,0 +1,18 @@
+CLIENT: {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"example-client","version":"0.1.0"}}}
+SERVER: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"tmux-mcp","version":"0.2.0"}}}
+CLIENT: {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+SERVER: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"session_create"},{"name":"session_list"},{"name":"session_kill"},{"name":"send_keys"},{"name":"capture"},{"name":"wait_for_stable"},{"name":"wait_for_text"},{"name":"snapshot_diff"},{"name":"resize"}]}}
+CLIENT: {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"session_create","arguments":{"name":"top","command":"/bin/sh","width":100,"height":30}}}
+SERVER: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"name\":\"top\",\"width\":100,\"height\":30}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_keys","arguments":{"session":"top","keys":["htop","Enter"]}}}
+SERVER: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wait_for_stable","arguments":{"session":"top","quiet_ms":500,"timeout_ms":5000}}}
+SERVER: {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"snapshot\":\"  PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command\\n    1 root       20   0  170M  12M   8M  S  0.0  0.1  0:00.05 /sbin/init\\nF1Help  F2Setup  F3Search F4Filter F5Tree   F6SortBy F7Nice - F8Nice + F9Kill   F10Quit\",\"token\":\"a1\",\"changed\":true,\"truncated\":false}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"wait_for_text","arguments":{"session":"top","pattern":"F10\\s*Quit","timeout_ms":3000}}}
+SERVER: {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"{\"match\":\"F10Quit\",\"snapshot\":\"  PID USER ... F10Quit\",\"token\":\"a2\"}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"capture","arguments":{"session":"top","mode":"visible"}}}
+SERVER: {"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\"snapshot\":\"  PID USER ... F10Quit\",\"token\":\"a3\",\"changed\":false,\"truncated\":false}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"send_keys","arguments":{"session":"top","keys":["F10"]}}}
+SERVER: {"jsonrpc":"2.0","id":8,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}
+CLIENT: {"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"session_kill","arguments":{"name":"top"}}}
+SERVER: {"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}

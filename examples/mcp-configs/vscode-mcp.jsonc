@@ -1,0 +1,12 @@
+// Drop this block into your VS Code settings.json (User or Workspace).
+// Reload the window after saving. Tools will appear under the
+// `tmux__` prefix once the MCP extension picks them up.
+{
+  "mcp.servers": {
+    "tmux": {
+      // Use an absolute path. Run `which tmux-mcp` after install
+      // to find the right one for your machine.
+      "command": "/usr/local/bin/tmux-mcp"
+    }
+  }
+}
