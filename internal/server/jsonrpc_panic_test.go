@@ -17,6 +17,7 @@ import (
 // JSON-RPC error response with code -32603 ("internal server error").
 // The panic value/stack must not leak to the client.
 func TestServe_RecoversFromHandlerPanic(t *testing.T) {
+	t.Parallel()
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
 	outMu := &sync.Mutex{}
@@ -136,6 +137,7 @@ func TestServe_RecoversFromHandlerPanic(t *testing.T) {
 // response — JSON-RPC notifications must never produce a reply, even
 // for errors.
 func TestServe_PanicInNotificationDoesNotReply(t *testing.T) {
+	t.Parallel()
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
 	outMu := &sync.Mutex{}
