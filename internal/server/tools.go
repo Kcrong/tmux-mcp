@@ -144,8 +144,8 @@ var toolDefs = []map[string]any{
 
 // Tools holds the dispatch state shared across calls.
 type Tools struct {
-	Ctl  *tmuxctl.Controller
-	Snap *snapshot.Store
+	Ctl  *tmuxctl.Controller // controller backing every tmux operation the tools issue.
+	Snap *snapshot.Store     // per-session capture history powering snapshot_diff.
 	// Version is the binary version reported in the MCP initialize
 	// response's serverInfo.version. It is populated from main.version
 	// (ldflags-injected) at construction time. Empty/zero values fall
