@@ -67,3 +67,81 @@ program actually exited:
 { "name": "send_signal",      "arguments": { "session": "demo", "signal": "TERM" } }
 { "name": "wait_for_stable",  "arguments": { "session": "demo", "quiet_ms": 200, "timeout_ms": 3000 } }
 ```
+
+## `window_create`
+
+Add a new window to an existing session via `tmux new-window`.
+Useful for splitting work across logical contexts (build / test / repl)
+inside a single session without spawning extra tmux sessions.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                              |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string  | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `name`    | string  | no       | optional window label (`-n`); len 1-64, regex `^[A-Za-z0-9_-]+$`. Tmux auto-names when omitted. |
+| `command` | string  | no       | optional initial command. Defaults to the session's shell when blank.              |
+| `select`  | boolean | no       | when `true` (default) tmux focuses the new window; `false` creates it in the background (`-d`). |
+
+### Output
+
+Plain text block: `window "<name-or-index>" created in "<session>"`.
+The label is the explicit `name` when one was supplied, otherwise the
+numeric tmux index — both forms are valid targets for follow-up
+`window_kill` calls.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, or `name` outside the regex/length policy. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused to create the window (e.g. command not found in PATH). |
+
+### Example
+
+```jsonc
+{ "session": "demo", "name": "build", "command": "make watch", "select": false }
+```
+
+Chain a follow-up `wait_for_text` against the new window's session if
+you need to know when the spawned command settled.
+
+## `window_kill`
+
+Destroy a single window via `tmux kill-window -t <session>:<window>`.
+Use when an agent is done with a transient build/test pane and wants
+to free up the slot without tearing down its sibling work.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `window`  | string | yes      | window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric tmux index (`\d+`)               |
+
+### Output
+
+Plain text block: `window "<session>:<window>" killed`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session` or `window`, or the targeted window is the **only** window left in the session — use `session_kill` for that case to keep the boundary between window and session lifecycles distinct. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the kill (e.g. window not found in the session).      |
+
+### Example
+
+```jsonc
+{ "session": "demo", "window": "build" }
+```
+
+For agents that don't track the window inventory locally, pair the
+call with the at-a-glance check first:
+
+```jsonc
+{ "name": "window_create", "arguments": { "session": "demo", "name": "scratch", "select": false } }
+{ "name": "window_kill",   "arguments": { "session": "demo", "window": "scratch" } }
+```
