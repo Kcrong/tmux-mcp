@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -116,7 +117,39 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler) error {
 		// doesn't block other traffic on the same stdio pipe.
 		wg.Add(1)
 		go func(req rpcRequest, reqCtx context.Context, reqLogger *slog.Logger) {
+			// wg.Done is registered first so that, in defer-LIFO order,
+			// the recovery defer below executes *before* wg.Done — i.e.
+			// recover() runs, the error reply is written, and only then
+			// is the WaitGroup released. This guarantees Shutdown's
+			// wg.Wait() observes a fully-handled request even when the
+			// handler panics.
 			defer wg.Done()
+			// Recover from any panic raised inside the user-supplied
+			// Handler. Without this, a panic would (a) skip wg.Done and
+			// hang Shutdown, and (b) deny the client any response.
+			// We log the panic + stack to stderr at error level for
+			// operators and reply with a generic "internal server error"
+			// so we never leak Go internals (stack frames, panic value)
+			// to the JSON-RPC client.
+			defer func() {
+				r := recover()
+				if r == nil {
+					return
+				}
+				reqLogger.Error("handler panic",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				// Notifications (no id) don't expect a response, even
+				// on panic.
+				if len(req.ID) == 0 {
+					return
+				}
+				send(rpcResponse{
+					ID:    req.ID,
+					Error: &rpcError{Code: codeInternalError, Message: "internal server error"},
+				})
+			}()
 			started := time.Now()
 			result, rerr := h(reqCtx, req.Method, req.Params)
 			durMs := time.Since(started).Milliseconds()
