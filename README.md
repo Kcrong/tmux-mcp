@@ -1,6 +1,7 @@
 # tmux-mcp
 
 [![CI](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -17,8 +18,33 @@ waits the way you would wait.
 
 ---
 
+## Quickstart (60 seconds)
+
+```sh
+# 1. install (Linux/macOS, amd64/arm64)
+curl -fsSL https://github.com/Kcrong/tmux-mcp/releases/latest/download/tmux-mcp_$(uname -s)_$(uname -m).tar.gz \
+  | sudo tar -xz -C /usr/local/bin tmux-mcp
+tmux-mcp -version
+
+# 2. wire it into your MCP client
+cat > ~/.config/your-mcp-client/mcp.json <<'JSON'
+{ "mcpServers": { "tmux": { "command": "/usr/local/bin/tmux-mcp" } } }
+JSON
+
+# 3. ask the agent to drive a terminal — it will call session_create,
+#    send_keys, wait_for_stable, capture, …
+```
+
+If `tmux` is not installed, the server tells you exactly what to run
+(`apt-get install tmux` / `brew install tmux`). For other ways to install,
+see [Install](#install). For the full tool reference, jump to
+[Tool surface](#tool-surface).
+
+---
+
 ## Contents
 
+- [Quickstart](#quickstart-60-seconds)
 - [Why tmux](#why-tmux)
 - [Requirements](#requirements)
 - [Install](#install)
