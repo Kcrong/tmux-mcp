@@ -277,6 +277,56 @@ func (c *Controller) SwapWindow(ctx context.Context, session, src, dst string, n
 	return nil
 }
 
+// LinkWindow shares the window addressed by src onto the dst slot via
+// `tmux link-window -s <src> -t <dst>` (with `-k` when kill is true).
+// Unlike MoveWindow, link-window leaves the source intact: the same
+// `#{window_id}` is now reachable from both sessions, so a long-running
+// build window can be exposed in a "monitor" session without losing the
+// foreground in the working session. Both src and dst use tmux's standard
+// `<session>:<window>` target form; the boundary is responsible for the
+// regex/length validation of each half.
+//
+// kill maps to tmux's `-k` flag: when true, an existing window already
+// occupying the dst slot is destroyed before the link is established;
+// when false (the default), tmux refuses with "index in use" rather than
+// silently overwriting. Pairs with [Controller.SwapWindow] (in-place
+// trade) and [Controller.MoveWindow] (cross-session relocation that
+// removes the source).
+//
+// A missing session/window surfaces as a wrapped errs.ErrSessionNotFound
+// for the same reason described on SelectWindow: tmux's link-window
+// emits "can't find window" when a target half doesn't exist, which run()
+// does not translate by itself, so we fold it into the typed sentinel
+// here so the JSON-RPC dispatcher maps the failure to CodeSessionNotFound.
+//
+// Other failures (destination index already in use without kill, malformed
+// target) pass through as-is so the JSON-RPC layer surfaces them via
+// CodeInternal — the caller can read the wrapped tmux stderr to tell the
+// cases apart.
+func (c *Controller) LinkWindow(ctx context.Context, src, dst string, kill bool) error {
+	if src == "" {
+		return errors.New("src required")
+	}
+	if dst == "" {
+		return errors.New("dst required")
+	}
+	args := []string{"link-window", "-s", src, "-t", dst}
+	if kill {
+		// -k means "kill the destination window if it already exists".
+		// Append at the end so the argv order stays easy to diff against
+		// tmux's man page (`link-window -s … -t … [-k]`).
+		args = append(args, "-k")
+	}
+	if _, err := c.run(ctx, args...); err != nil {
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // MoveWindow relocates the window addressed by src onto the dst slot via
 // `tmux move-window -s <src> -t <dst>`. Both src and dst use tmux's
 // standard `<session>:<window>` target form; dst may carry an empty
