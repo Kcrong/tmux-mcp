@@ -136,12 +136,12 @@ func (c *Controller) run(ctx context.Context, args ...string) (string, error) {
 
 // SessionSpec describes a session to create.
 type SessionSpec struct {
-	Name    string
-	Command string
-	Cwd     string
-	Width   int
-	Height  int
-	Env     map[string]string
+	Name    string            // tmux session name; required.
+	Command string            // initial command to run; empty starts the user's default shell.
+	Cwd     string            // working directory for the new session.
+	Width   int               // pane width in columns; 0 falls back to a sensible default.
+	Height  int               // pane height in rows; 0 falls back to a sensible default.
+	Env     map[string]string // extra environment variables passed to tmux via -e.
 }
 
 // CreateSession starts a new detached session.
