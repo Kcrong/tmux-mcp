@@ -84,20 +84,30 @@ solves this with a stable CLI:
 - Linux or macOS
 - Go 1.24+ (only when building from source)
 
+> Windows binaries cross-compile and ship in releases, but `tmux` runs
+> on Linux/macOS only — to actually use the server on Windows you need
+> WSL or to ssh to a Linux/macOS host.
+
 ## Install
 
 ### Prebuilt binary
 
 Pick the asset for your OS / architecture from the
 [latest release](https://github.com/Kcrong/tmux-mcp/releases/latest)
-(Linux and macOS, `amd64` and `arm64`). Each archive contains a single
-`tmux-mcp` binary — drop it on `$PATH`:
+(Linux, macOS, and Windows — `amd64` and `arm64`). Linux/macOS archives
+ship as `.tar.gz`, Windows ships as `.zip`. Each archive contains a
+single `tmux-mcp` binary — drop it on `$PATH`:
 
 ```sh
 curl -fsSL https://github.com/Kcrong/tmux-mcp/releases/latest/download/tmux-mcp_$(uname -s)_$(uname -m).tar.gz \
   | tar -xz -C /usr/local/bin tmux-mcp
 tmux-mcp -version
 ```
+
+Windows binaries are provided for completeness (e.g. you build on
+Windows but ssh to a Linux host, or you run via WSL), but the runtime
+still requires `tmux`, which is Linux/macOS only — see
+[Requirements](#requirements).
 
 Releases are signed with checksums (`checksums.txt` next to the
 archives) — see [Verifying a release](#verifying-a-release).
