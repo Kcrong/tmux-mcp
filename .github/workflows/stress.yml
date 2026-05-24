@@ -1,0 +1,92 @@
+name: stress
+on:
+  # Manual trigger so anyone with write access can spot-check the
+  # stress suite before/after a risky change. The schedule below also
+  # runs it once a week so leaks cannot accumulate undetected between
+  # human-driven runs.
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 06:00 UTC. Cron timing matches CodeQL's slot, but
+    # this workflow runs on a separate runner so they don't contend.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install tmux
+        run: |
+          set -eux
+          if command -v tmux >/dev/null 2>&1; then
+            tmux -V
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux
+          tmux -V
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: build (sanity)
+        run: go build -trimpath ./...
+
+      - name: stress (build tag)
+        env:
+          # Tunables for the stress harness; defaults sized for a
+          # ~2-3 minute CI run on a GHA ubuntu-latest box.
+          STRESS_CREATE_KILL_ITERS: '200'
+          STRESS_CONCURRENT_WORKERS: '50'
+          STRESS_CONCURRENT_PER_WORKER: '50'
+          STRESS_LONG_SCROLLBACK_SEQ: '5000'
+          STRESS_GOROUTINE_SLACK: '5'
+        run: |
+          set -eux
+          mkdir -p stress-artifacts
+          go test \
+            -tags=stress \
+            -timeout=15m \
+            -count=1 \
+            -race \
+            -memprofile=stress-artifacts/mem.pprof \
+            -cpuprofile=stress-artifacts/cpu.pprof \
+            -trace=stress-artifacts/trace.out \
+            ./internal/server/... \
+            -run='^TestStress' \
+            -v 2>&1 | tee stress-artifacts/stress.log
+
+      - name: post-run goroutine sample
+        if: always()
+        run: |
+          set -eux
+          # Lightweight summary the artifact viewer can grep without
+          # downloading the full log.
+          {
+            echo "## stress run summary"
+            echo "ref: ${GITHUB_REF}"
+            echo "sha: ${GITHUB_SHA}"
+            echo "tmux: $(tmux -V)"
+            echo "go: $(go version)"
+            echo
+            echo "### last 50 lines of stress.log"
+            tail -n 50 stress-artifacts/stress.log || true
+          } > stress-artifacts/summary.md
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: stress-artifacts
+          path: stress-artifacts/
+          retention-days: 30
