@@ -73,9 +73,23 @@ Flags:
                           "stdout" (DANGER — corrupts JSON-RPC frames; only
                           useful with -dry-run / -version), or a file path
                           (opened append-only at mode 0600). The file is
-                          closed cleanly on shutdown. tmux-mcp does not
-                          rotate the file — pair it with logrotate(8) or
-                          equivalent.
+                          closed cleanly on shutdown. By default tmux-mcp
+                          does not rotate the file — pair it with
+                          logrotate(8) or pass -log-rotate-size for an
+                          in-process size-based rotator.
+  -log-rotate-size N      enable size-based rotation on -log-output. When
+                          the next Write would push the file past N bytes,
+                          tmux-mcp renames the live file to
+                          <path>.<unix-ns> and reopens a fresh <path> in
+                          place. Default: 0 (disabled — preserves the
+                          legacy "open once, never rotate" behaviour for
+                          deployments that pair with logrotate(8)).
+                          Counted in bytes — e.g. 10485760 for 10MB.
+  -log-rotate-keep K      maximum count of rotated archive files to keep
+                          on disk alongside -log-output (default 5). After
+                          a rollover, the oldest archives (by mtime) are
+                          deleted once the count exceeds K. Ignored when
+                          -log-rotate-size=0.
   -socket PATH            absolute path for the private tmux socket
                           (also TMUX_MCP_SOCKET env var; flag wins).
                           Default: a fresh directory under $TMPDIR.
@@ -268,6 +282,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// file — operators pair it with logrotate(8) on long-lived hosts.
 	logOutput := fs.String("log-output", LogOutputStderr,
 		"slog destination: \"stderr\" (default), \"stdout\" (DANGER), or a file path (append-only, mode 0600)")
+	// Size-based rotation for -log-output. Default 0 = disabled, which
+	// preserves the legacy "open once, never rotate" behaviour
+	// byte-for-byte for deployments paired with logrotate(8). When
+	// positive, the rotator renames the live file to
+	// "<path>.<unix-ns>" and reopens a fresh <path> whenever a Write
+	// would push the file past the cap. Int64 so multi-GB caps stay
+	// representable on 32-bit hosts; negative values are folded into
+	// the disabled case by openLogOutput.
+	var logRotateSize int64
+	fs.Int64Var(&logRotateSize, "log-rotate-size", 0,
+		"size-based rotation cap for -log-output in bytes; 0 disables")
+	// Maximum archive count retained on disk after a rollover. The
+	// oldest (by mtime) are removed once the directory holds more than
+	// this many "<path>.<stamp>" files. Default 5 mirrors logrotate(8)'s
+	// `rotate` default so operators get a familiar number; ignored when
+	// -log-rotate-size=0 because no archives are ever produced.
+	logRotateKeep := fs.Int("log-rotate-keep", 5,
+		"maximum rotated archive files to retain when -log-rotate-size>0 (default 5)")
 	// Default to the env var so systemd / container deployments can
 	// pin a known socket path without rewriting argv. The flag, when
 	// passed, wins.
@@ -428,8 +460,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// behaviour of routing structured logs to the supplied stderr
 	// writer; stdout is a magic value for ad-hoc debugging in tandem
 	// with -dry-run / -version, and any other value is a filesystem
-	// path opened append-only at mode 0600.
-	logWriter, closeLogOutput, err := openLogOutput(*logOutput, stderr, stdout)
+	// path opened append-only at mode 0600. -log-rotate-size and
+	// -log-rotate-keep wire the in-process size-based rotator on top
+	// of the file path; rotateSize<=0 keeps the legacy "open once,
+	// never rotate" behaviour byte-for-byte for deployments paired
+	// with logrotate(8).
+	logWriter, closeLogOutput, err := openLogOutput(*logOutput, stderr, stdout, logRotateSize, *logRotateKeep)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "tmux-mcp: %s\n", err)
 		return err

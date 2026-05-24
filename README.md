@@ -69,15 +69,22 @@ file is opened append-only at mode `0600` and closed cleanly on
 shutdown. **DANGER:** `-log-output=stdout` is honoured for ad-hoc
 debugging in tandem with `-dry-run` / `-version`, but using it while
 the server is actually serving stdio interleaves slog records with
-JSON-RPC frames and corrupts the protocol. tmux-mcp does not rotate
-the log — pair the file with `logrotate(8)` on long-lived hosts.
+JSON-RPC frames and corrupts the protocol. By default tmux-mcp does
+not rotate the log — pair the file with `logrotate(8)` on long-lived
+hosts, or pass `-log-rotate-size=N` (in bytes) to enable the
+in-process size-based rotator. Once enabled, every `Write` that would
+push the file past N bytes renames the live file to `<path>.<unix-ns>`
+and reopens a fresh `<path>`; `-log-rotate-keep K` (default `5`)
+bounds the number of archive files retained on disk.
 
-| Flag             | Default  | Notes                                               |
-| ---------------- | -------- | --------------------------------------------------- |
-| `-log-level`     | `info`   | `error\|warn\|info\|debug`                          |
-| `-log-format`    | `text`   | `text\|json`; `debug` auto-promotes to `json` when unset |
-| `-log-source`    | `false`  | include `file:line` of each call site (slight perf cost) |
-| `-log-output`    | `stderr` | `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (append-only, mode `0600`) |
+| Flag                | Default       | Notes                                               |
+| ------------------- | ------------- | --------------------------------------------------- |
+| `-log-level`        | `info`        | `error\|warn\|info\|debug`                          |
+| `-log-format`       | `text`        | `text\|json`; `debug` auto-promotes to `json` when unset |
+| `-log-source`       | `false`       | include `file:line` of each call site (slight perf cost) |
+| `-log-output`       | `stderr`      | `stderr` (default), `stdout` (DANGER — corrupts JSON-RPC frames if combined with serving), or a file path (append-only, mode `0600`) |
+| `-log-rotate-size`  | `0` (off)     | enable in-process size-based rotation on `-log-output` (bytes); `0` keeps the legacy "open once, never rotate" behaviour |
+| `-log-rotate-keep`  | `5`           | maximum rotated archive files retained when `-log-rotate-size>0` |
 
 ---
 
