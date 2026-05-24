@@ -779,6 +779,55 @@ target it via `pane_select`:
 
 ---
 
+## `pane_kill`
+
+Destroy a single pane via `tmux kill-pane -t <target_pane>`. Useful
+for tearing down a side-car pane (build/test/log tail) created with
+`pane_split` once the agent is done with it. The natural tmux
+semantics flow through untouched: killing the only remaining pane of
+a window also reaps the window, and if it was the only window of the
+session the session itself is destroyed — pre-check with `list_panes`
+or `list_windows` when the caller needs to guard against that.
+
+### Input
+
+| Field         | Type   | Required | Notes                                                                              |
+| ------------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session`     | string | no       | optional, informational; len 1-64, regex `^[A-Za-z0-9_-]+$`. The pane target alone already pins the pane, so an agent that built a fully-qualified `target_pane` doesn't have to repeat it. |
+| `target_pane` | string | yes      | tmux target form (`session`, `session:window`, or `session:window.pane`)            |
+
+### Output
+
+JSON block: `{"killed": true}`. The boundary deliberately does not
+expose whether the kill collapsed the surrounding window or session —
+that information is one `list_panes` / `list_windows` call away if
+the caller actually needs it.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/empty `target_pane`, malformed `target_pane`, or invalid `session` if supplied. |
+| `-32000` | `target_pane` does not resolve on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the kill for any other reason (e.g. permission, internal tmux failure). |
+
+### Example
+
+```jsonc
+{ "target_pane": "demo:0.1" }
+```
+
+Pair with `pane_split` and `list_panes` to wind a side-car pane up
+and back down again:
+
+```jsonc
+{ "name": "pane_split", "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
+{ "name": "list_panes", "arguments": { "session": "demo" } }
+{ "name": "pane_kill",  "arguments": { "target_pane": "demo:0.1" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
