@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Kcrong/tmux-mcp/internal/server"
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
@@ -36,6 +38,11 @@ in a terminal is only useful for smoke tests.
 Flags:
   -version          print version and exit
   -help             print this message and exit
+  -probe            run a startup health check (verify tmux + version)
+                    and exit. Prints "ok\ttmux=<v>\ttmux-mcp=<v>" on
+                    success; non-zero exit + stderr diagnostic on
+                    failure. Useful for k8s liveness, systemd
+                    ExecStartPre, Docker HEALTHCHECK.
   -log-level LEVEL  log verbosity: error|warn|info|debug (default "info")
   -socket PATH      absolute path for the private tmux socket
                     (also TMUX_MCP_SOCKET env var; flag wins).
@@ -48,13 +55,21 @@ Docs:  https://github.com/Kcrong/tmux-mcp
 `
 
 func main() {
-	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+	err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	if err == nil {
+		return
+	}
+	// The -probe path has already written a "probe failed: …" line to
+	// stderr; logging the error again via slog would just duplicate it.
+	// Every other failure mode goes through slog so it shows up in the
+	// structured log stream a supervisor is likely scraping.
+	if !errors.Is(err, errProbeFailed) {
 		// Logger may or may not be initialised yet (e.g. flag parsing
 		// failed). slog falls back to a default text handler on stderr,
 		// which is fine — stdout is reserved for JSON-RPC frames.
 		slog.Error("startup failed", "err", err)
-		os.Exit(1)
 	}
+	os.Exit(1)
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -62,6 +77,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	showVersion := fs.Bool("version", false, "print version and exit")
+	probe := fs.Bool("probe", false,
+		"run a startup health check (verify tmux + version) and exit")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
 	// Default to the env var so systemd / container deployments can
 	// pin a known socket path without rewriting argv. The flag, when
@@ -78,6 +95,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, versionString())
 		return nil
+	}
+	if *probe {
+		return runProbe(stdout, stderr)
 	}
 
 	lvl, err := parseLogLevel(*logLevel)
@@ -123,11 +143,51 @@ func parseLogLevel(s string) (slog.Level, error) {
 // ldflags-injected version when set, otherwise falls back to the module
 // version embedded by `go install` / module-aware builds.
 func versionString() string {
+	return "tmux-mcp " + binaryVersion()
+}
+
+// binaryVersion returns the bare version string (no leading "tmux-mcp ")
+// so callers like the -probe path can embed it in machine-readable
+// output. Same precedence as [versionString]: ldflags wins, then
+// debug.ReadBuildInfo, then "dev".
+func binaryVersion() string {
 	if version != "" && version != "dev" {
-		return "tmux-mcp " + version
+		return version
 	}
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return "tmux-mcp " + info.Main.Version
+		return info.Main.Version
 	}
-	return "tmux-mcp dev"
+	return "dev"
+}
+
+// errProbeFailed is the sentinel returned from [runProbe] when the
+// startup health check fails. main() uses [errors.Is] to recognise it
+// and skip the structured-log error message — the probe path already
+// wrote a "probe failed: …" diagnostic to stderr and we don't want to
+// surface the same failure twice.
+var errProbeFailed = errors.New("probe failed")
+
+// runProbe is the body of the -probe flag. It probes tmux on PATH (looks
+// it up, runs `tmux -V`, checks the minimum version) and writes a single
+// tab-delimited "ok" line to stdout when everything is healthy:
+//
+//	ok\ttmux=<tmux-version>\ttmux-mcp=<binary-version>\n
+//
+// On failure it writes a "probe failed: …" diagnostic to stderr and
+// returns an error wrapping [errProbeFailed] so the caller can map it
+// to a non-zero exit code. Stdout is left untouched on the failure path
+// so orchestrators can rely on stdout being empty when probing failed.
+func runProbe(stdout, stderr io.Writer) error {
+	// 5s is generous: `tmux -V` is essentially instant. A timeout
+	// keeps a wedged binary on a misconfigured PATH from hanging the
+	// liveness check forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "probe failed: %s\n", err)
+		return fmt.Errorf("%w: %w", errProbeFailed, err)
+	}
+	_, _ = fmt.Fprintf(stdout, "ok\ttmux=%s\ttmux-mcp=%s\n", tmuxVer, binaryVersion())
+	return nil
 }
