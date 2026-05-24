@@ -697,6 +697,89 @@ window, drive it.
 
 ---
 
+## `list_clients`
+
+Enumerate clients (attached terminals) visible to this server via
+`tmux list-clients`. Useful for an agent that needs to know whether a
+human is currently watching a session before driving it, or to
+sanity-check that a headless tmux server it owns has nothing
+attached. The boundary returns each client's controlling TTY, the
+session it is bound to, the TERM string it advertised, the current
+size, the read-only flag, and an RFC3339 attachment timestamp.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string | no       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to list every client on the server. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"sesion"` fails fast instead of silently
+behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `clients`:
+
+```jsonc
+{
+  "clients": [
+    {
+      "tty":           "/dev/pts/3",
+      "session":       "demo",
+      "term":          "xterm-256color",
+      "size":          { "cols": 120, "rows": 40 },
+      "readonly":      false,
+      "creation_time": "2025-01-02T03:04:05Z"
+    }
+  ]
+}
+```
+
+| Field           | Type    | Notes                                                                           |
+| --------------- | ------- | ------------------------------------------------------------------------------- |
+| `tty`           | string  | Absolute path of the client's controlling terminal device.                      |
+| `session`       | string  | Name of the session the client is currently attached to.                        |
+| `term`          | string  | TERM value the client advertised when it attached (`#{client_termname}`).       |
+| `size.cols`     | integer | Client terminal width in columns at the moment of the listing.                  |
+| `size.rows`     | integer | Client terminal height in rows at the moment of the listing.                    |
+| `readonly`      | boolean | True when the client attached read-only (`tmux attach -r`).                     |
+| `creation_time` | string  | RFC3339 attachment timestamp parsed from `#{client_created}`.                   |
+
+A server with nothing attached returns `{"clients": []}` — a clean
+empty list rather than an error — so callers can iterate the response
+without a separate "is this an error" branch. This is the load-bearing
+case for the headless tmux servers tmux-mcp owns.
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `session` present but malformed, or an unknown field was sent.       |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// scope to a single session
+{ "session": "demo" }
+
+// list every client on the server
+{}
+```
+
+Pair with `session_list` to find the live sessions, then ask which
+ones have a human watching them:
+
+```jsonc
+{ "name": "session_list",  "arguments": {} }
+{ "name": "list_clients",  "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
