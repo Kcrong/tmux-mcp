@@ -18,7 +18,11 @@ linters:
     - bodyclose
     - errorlint
     - copyloopvar
+    - nilerr
   settings:
+    govet:
+      enable:
+        - shadow
     revive:
       rules:
         - name: var-naming
@@ -36,5 +40,14 @@ linters:
         - name: unreachable-code
         - name: indent-error-flow
     gocritic:
-      disabled-checks:
-        - ifElseChain
+      disable-all: true
+      enabled-checks:
+        - badCall
+        - badCond
+        - dupArg
+        - exitAfterDefer
+        - sloppyLen
+
+formatters:
+  enable:
+    - gofumpt
