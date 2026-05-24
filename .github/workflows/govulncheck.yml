@@ -1,0 +1,35 @@
+name: govulncheck
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly run so CVE drops surface even without a PR open.
+    # Cron: 06:30 UTC every Wednesday — offset from CodeQL (Mon 06:00)
+    # so we don't pile both scans into the same day/hour.
+    - cron: '30 6 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: govulncheck-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: govulncheck
+        run: |
+          set -eux
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
