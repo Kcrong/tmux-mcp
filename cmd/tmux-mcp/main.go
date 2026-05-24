@@ -88,6 +88,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer ctl.Shutdown(context.Background())
 
 	tools := server.NewTools(ctl)
+	// Propagate the ldflags-injected binary version so MCP clients see
+	// the same value the -version flag prints, instead of a hardcoded
+	// constant inside the server package.
+	tools.Version = version
 	return server.Serve(ctx, stdin, stdout, tools.Handle)
 }
 

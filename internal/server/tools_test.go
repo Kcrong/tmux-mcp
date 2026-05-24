@@ -218,3 +218,48 @@ func TestHandle_ToolCallUnknown(t *testing.T) {
 		t.Fatalf("unexpected error code: %d", rerr.Code)
 	}
 }
+
+// initializeServerInfo runs the initialize handler and pulls out the
+// serverInfo map so individual tests can assert on its fields without
+// duplicating the type assertions.
+func initializeServerInfo(t *testing.T, tools *Tools) map[string]any {
+	t.Helper()
+	res, rerr := tools.Handle(context.Background(), "initialize", nil)
+	if rerr != nil {
+		t.Fatalf("initialize: %v", rerr)
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result not a map: %#v", res)
+	}
+	info, ok := m["serverInfo"].(map[string]any)
+	if !ok {
+		t.Fatalf("serverInfo not a map: %#v", m["serverInfo"])
+	}
+	return info
+}
+
+// TestInitialize_VersionFromField pins the contract between main.version
+// (ldflags) and the MCP initialize response: whatever the binary's
+// version variable holds is what the server advertises.
+func TestInitialize_VersionFromField(t *testing.T) {
+	tools := &Tools{Version: "1.2.3"}
+	info := initializeServerInfo(t, tools)
+	if got := info["version"]; got != "1.2.3" {
+		t.Fatalf("serverInfo.version = %v, want 1.2.3", got)
+	}
+	if got := info["name"]; got != "tmux-mcp" {
+		t.Fatalf("serverInfo.name = %v, want tmux-mcp", got)
+	}
+}
+
+// TestInitialize_VersionDefaultsToDev locks in the empty-Version
+// fallback. main.version defaults to "dev" too, so an unversioned build
+// keeps that string end-to-end.
+func TestInitialize_VersionDefaultsToDev(t *testing.T) {
+	tools := &Tools{}
+	info := initializeServerInfo(t, tools)
+	if got := info["version"]; got != "dev" {
+		t.Fatalf("serverInfo.version = %v, want dev", got)
+	}
+}
