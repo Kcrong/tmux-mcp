@@ -336,6 +336,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		// returns a no-op option, so the goroutine cost is paid only
 		// when the operator explicitly opted in.
 		server.WithSessionIdleTimeout(*sessionIdleTimeout, ctl.KillSession),
+		// Hand the writeMu-bound list-change emitter to *Tools so a
+		// runtime RegisterTool / UnregisterTool call pushes a
+		// spec-compliant notifications/tools/list_changed frame
+		// without main needing to know about the notification shape.
+		server.WithToolsListChangedNotifier(tools.SetNotifier),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can
