@@ -392,6 +392,35 @@ RuntimeDirectory=tmux-mcp
 ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
 ```
 
+### Graceful shutdown (`-shutdown-timeout`)
+
+When a supervisor sends `SIGTERM` (or you hit `Ctrl+C`), `tmux-mcp` stops
+dispatching new `tools/call` frames and waits for any in-flight
+handlers to finish writing their JSON-RPC responses before exiting.
+That window is bounded by `-shutdown-timeout` (default `5s`):
+
+```sh
+# Wait up to 30s for slow `wait_for_text` calls to land their response.
+tmux-mcp -shutdown-timeout=30s
+
+# Disable the drain — useful for tests and short-lived scripts that
+# don't care about partial responses.
+tmux-mcp -shutdown-timeout=0
+```
+
+Behaviour:
+
+- New requests arriving after the signal get a JSON-RPC error
+  (`code: -32603`, `message: "shutting down"`) instead of being
+  dispatched, so a flooding client can't extend the drain window.
+- If the drain finishes inside the budget the process exits **0**.
+- If the budget elapses with handlers still running, `tmux-mcp` logs
+  `shutdown drain timed out` at `WARN` and exits **non-zero** so
+  supervisors flag the forced teardown. In-flight goroutines are
+  abandoned mid-write — pair this with a slightly larger
+  `TimeoutStopSec=` in your unit file when you bump the timeout above
+  systemd's default.
+
 ## Deploy
 
 ### Run as a systemd service

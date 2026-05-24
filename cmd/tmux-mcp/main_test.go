@@ -254,6 +254,34 @@ func TestAuditLogBadPathFailsStartup(t *testing.T) {
 	}
 }
 
+// TestInvalidShutdownTimeoutRejected covers the -shutdown-timeout flag
+// being rejected at parse time when the duration is malformed. Going
+// through run() (rather than parseLogLevel-style helpers) makes sure
+// the flag actually got registered with FlagSet.
+func TestInvalidShutdownTimeoutRejected(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-shutdown-timeout=banana"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for malformed -shutdown-timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "shutdown-timeout") {
+		t.Fatalf("expected shutdown-timeout flag error, got %v", err)
+	}
+}
+
+// TestShutdownTimeoutInUsage guards the help text: -shutdown-timeout
+// must be documented in the usage block so operators discover the
+// drain knob via `tmux-mcp -help`.
+func TestShutdownTimeoutInUsage(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "-shutdown-timeout") {
+		t.Fatalf("expected -shutdown-timeout in usage block, got %q", stderr.String())
+	}
+}
+
 // TestDebugLevelEmitsJSONLogs is a smoke test: with -log-level=debug
 // (and no -log-format) the legacy auto-promotion kicks in and a
 // malformed request line on stdin must produce a JSON-formatted slog
