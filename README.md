@@ -444,6 +444,7 @@ embedded secrets stay out of the audit trail.
 | `resize` | Resize the pane (cols × rows). |
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
+| `send_signal` | Send a POSIX signal (TERM, HUP, INT, ...) to the session's active pane PID. |
 
 The full schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
@@ -625,6 +626,27 @@ Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
 Switches the active pane of the named window so subsequent `send_keys`
 and `capture` calls that name `demo` act on the new pane. Useful for
 multi-pane TUIs (vim+terminal split, zellij-style layouts).
+
+### `send_signal`
+
+```jsonc
+{
+  "session": "demo",   // len 1-64, [A-Za-z0-9_-]
+  "signal":  "TERM"    // one of: TERM, HUP, INT, QUIT, USR1, USR2, KILL
+}
+```
+
+Resolves the session's active pane PID via `tmux display-message
+'#{pane_pid}'` and delivers the signal directly to that process.
+Returns `"ok"` on success.
+
+More precise than `send_keys "C-c"` because the signal targets the
+foreground program rather than whatever is currently interpreting the
+keystroke — works even when the program has stolen the keyboard
+(raw-mode TUIs, daemons that swallow `Ctrl-C`). Anything outside the
+whitelist is rejected with `-32602` (invalid params) before tmux is
+consulted; an unknown session surfaces as `-32000`
+(`CodeSessionNotFound`).
 
 ## End-to-end example
 
