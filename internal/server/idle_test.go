@@ -352,6 +352,7 @@ func TestSessionFromArgs(t *testing.T) {
 		{"session_create uses name", "session_create", `{"name":"demo"}`, "demo"},
 		{"session_kill uses name", "session_kill", `{"name":"demo"}`, "demo"},
 		{"session_describe uses name", "session_describe", `{"name":"demo"}`, "demo"},
+		{"session_rename uses name (old)", "session_rename", `{"name":"demo","new_name":"shiny"}`, "demo"},
 
 		{"pane_select extracts session from target", "pane_select", `{"target":"demo:0.1"}`, "demo"},
 		{"pane_select with bare session", "pane_select", `{"target":"demo"}`, "demo"},
