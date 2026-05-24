@@ -1,0 +1,83 @@
+# GoReleaser config for tmux-mcp.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: tmux-mcp
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./... -count=1
+
+builds:
+  - id: tmux-mcp
+    main: ./cmd/tmux-mcp
+    binary: tmux-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    ids:
+      - tmux-mcp
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  prerelease: auto
+  draft: false
+  name_template: 'v{{ .Version }}'
+  footer: |
+    ---
+    **Full Changelog**: https://github.com/Kcrong/tmux-mcp/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    Verify the archive you downloaded:
+    ```sh
+    sha256sum -c checksums.txt --ignore-missing
+    ```
