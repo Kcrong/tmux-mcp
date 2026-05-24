@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath -ldflags='$(LDFLAGS)'
 
-.PHONY: help build test test-race cover lint fmt vet tidy clean version release-snapshot
+.PHONY: help build test test-fast test-race cover lint fmt vet tidy clean version release-snapshot
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -12,7 +12,10 @@ help: ## Show this help
 build: ## Build the binary into ./$(BIN)
 	go build $(GOFLAGS) -o $(BIN) $(PKG)
 
-test: ## Run unit + integration tests
+test: ## Run all tests with the race detector
+	go test ./... -count=1 -race
+
+test-fast: ## Quick test loop — no race detector, no coverage
 	go test ./... -count=1
 
 test-race: ## Run tests under the race detector
