@@ -718,6 +718,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sessionRename(ctx, call.Arguments)
 	case "session_inspect":
 		return t.sessionInspect(ctx, call.Arguments)
+	case "display_message":
+		return t.displayMessage(ctx, call.Arguments)
 	case "send_signal":
 		return t.sendSignal(ctx, call.Arguments)
 	case "window_create":
