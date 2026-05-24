@@ -60,6 +60,7 @@ see [Install](#install). For the full tool reference, jump to
 - [Patterns](#patterns)
 - [Design notes](#design-notes)
 - [Troubleshooting](#troubleshooting)
+- [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
 
 ---
@@ -553,6 +554,26 @@ wait_for_stable session=demo  quiet_ms=200
 - **`wait_for_text` always times out** — remember the pattern is a Go
   regex, not a shell glob. Escape `.`, `+`, `?`, `*`, `(`, `)`, `[`,
   `]`, `{`, `}`, `^`, `$`, `|`, `\` if you mean them literally.
+
+## Releases
+
+Releases are cut automatically by
+[release-please](https://github.com/googleapis/release-please) from
+[Conventional Commits](https://www.conventionalcommits.org/) on `main`:
+
+- Every push to `main` updates a long-lived "release PR" that accumulates
+  the pending changelog and bumps the next semver based on the commit
+  types it sees (`feat:` → minor, `fix:`/`perf:` → patch, anything with
+  `!` or a `BREAKING CHANGE:` footer → major).
+- Merging that release PR tags the new version and publishes a GitHub
+  Release. The existing release workflow then triggers off the tag and
+  builds binaries, signatures, and SBOMs (see
+  [Verifying a release](#verifying-a-release)).
+
+Contributors should write commits in Conventional Commits style
+(`feat:`, `fix:`, `perf:`, `ci:`, `docs:`, `test:`, `refactor:`,
+`chore:`) so release-please can categorise them. `chore:` is hidden
+from the changelog. Manual `git tag` is no longer needed.
 
 ## Verifying a release
 
