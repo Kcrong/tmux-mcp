@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1118,5 +1120,146 @@ func TestSessionPrefixFlag_ValidAcceptedAtDryRun(t *testing.T) {
 				t.Fatalf("expected dry-run ok line for prefix %q, got %q", p, stdout.String())
 			}
 		})
+	}
+}
+
+// TestTmuxConfigPathFlag_AcceptedAndDocumented guards the CLI surface
+// for -tmux-config-path: the flag must appear in the -help usage
+// block so operators discover it without reading the source.
+// Behavioural coverage for the underlying validation lives in
+// internal/tmuxctl/tmuxctl_test.go (TestWithConfigPath_*).
+func TestTmuxConfigPathFlag_AcceptedAndDocumented(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-tmux-config-path") {
+		t.Fatalf("expected -tmux-config-path in usage block, got %q", stderr.String())
+	}
+}
+
+// TestTmuxConfigPathFlag_RejectsRelative pins the operator-facing
+// contract: a relative -tmux-config-path value is refused at startup
+// before any tmux state is created, so a typo in a systemd unit or
+// container env var surfaces as a clean diagnostic instead of "no
+// such file" once the working directory shifts.
+func TestTmuxConfigPathFlag_RejectsRelative(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-tmux-config-path=relative/tmux.conf"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative -tmux-config-path, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("expected 'must be absolute' phrase, got %v", err)
+	}
+}
+
+// TestTmuxConfigPathFlag_RejectsNonexistent confirms validation
+// rejects a non-existent path with the documented "tmux config path
+// %q ..." diagnostic. Without this, an operator who fat-fingered the
+// path would only discover the mistake once tmux failed at command
+// time per session.
+func TestTmuxConfigPathFlag_RejectsNonexistent(t *testing.T) {
+	t.Parallel()
+	bogus := "/nonexistent-tmux-config-path-for-flag-test.conf"
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-tmux-config-path=" + bogus}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for nonexistent -tmux-config-path, got nil")
+	}
+	if !strings.Contains(err.Error(), bogus) {
+		t.Fatalf("expected error to quote the path %q, got %v", bogus, err)
+	}
+}
+
+// TestTmuxConfigPathFlag_EmptyKeepsLegacyBehaviour confirms the
+// default -tmux-config-path="" preserves the legacy "tmux uses its
+// built-in defaults / ~/.tmux.conf" behaviour. -dry-run takes the
+// same code path as serving stdio short of opening the JSON-RPC
+// loop, so a successful dry-run with no override is the cleanest
+// end-to-end signal that the empty default did not regress.
+func TestTmuxConfigPathFlag_EmptyKeepsLegacyBehaviour(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-dry-run"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-dry-run): %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestTmuxConfigPathEnvFallback covers the env-var path: when
+// -tmux-config-path is not passed but TMUX_MCP_TMUX_CONFIG_PATH is
+// set to a relative value, run() must surface the same validation
+// error rather than silently fall through to tmux's defaults.
+// Mirrors TestTmuxBinEnvFallback for -tmux-bin.
+func TestTmuxConfigPathEnvFallback(t *testing.T) {
+	t.Setenv("TMUX_MCP_TMUX_CONFIG_PATH", "relative/tmux.conf-from-env")
+	var stdout, stderr bytes.Buffer
+	err := run(nil, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for relative tmux config path from env")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestTmuxConfigPathFlag_WinsOverEnv pins the documented precedence:
+// the flag overrides the env var. We seed a bogus env value (would
+// fail validation if used) and pass an explicit empty flag value —
+// the flag's empty string must take effect, falling back to tmux's
+// defaults. With tmux on PATH and -dry-run, that combination should
+// succeed.
+func TestTmuxConfigPathFlag_WinsOverEnv(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	t.Setenv("TMUX_MCP_TMUX_CONFIG_PATH", "/nonexistent/tmux.conf-from-env")
+	var stdout, stderr bytes.Buffer
+	err := run(
+		[]string{"-tmux-config-path=", "-dry-run"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if err != nil {
+		t.Fatalf("expected -tmux-config-path= to override env var, got: %v stderr=%q",
+			err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
+	}
+}
+
+// TestTmuxConfigPathFlag_ValidPathAcceptedAtDryRun confirms a real
+// tmux.conf file is accepted by the validator, threads through
+// tmuxctl.NewWithSocket, and the dry-run completes successfully. This
+// is the happy-path complement of the rejection tests above; without
+// it a regression that always rejects (or always accepts) the flag
+// would only surface in the package-level tmuxctl tests.
+func TestTmuxConfigPathFlag_ValidPathAcceptedAtDryRun(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte("set -g escape-time 17\n"), 0o600); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(
+		[]string{"-dry-run", "-tmux-config-path=" + conf},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if err != nil {
+		t.Fatalf("run(-dry-run -tmux-config-path=%q): %v (stderr=%q)", conf, err, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "dry-run ok\t") {
+		t.Fatalf("expected dry-run ok line, got %q", stdout.String())
 	}
 }
