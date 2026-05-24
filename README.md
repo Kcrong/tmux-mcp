@@ -43,8 +43,9 @@ JSON
 
 If `tmux` is not installed, the server tells you exactly what to run
 (`apt-get install tmux` / `brew install tmux`). For other ways to install,
-see [Install](#install). For the full tool reference, jump to
-[Tool surface](#tool-surface).
+see [Install](#install). For the full per-tool reference, see
+[`docs/tools.md`](docs/tools.md); for every CLI flag and env var, see
+[`docs/flags.md`](docs/flags.md).
 
 ### Log output format
 
@@ -79,7 +80,6 @@ back to the exact `slog.Info` call that produced it.
 - [Wire it up](#wire-it-up)
 - [Deploy](#deploy)
 - [Tool surface](#tool-surface)
-- [Tool reference](#tool-reference)
 - [End-to-end example](#end-to-end-example)
 - [Patterns](#patterns)
 - [Architecture](#architecture)
@@ -164,6 +164,8 @@ object (`version`, `go`, `commit`, `date`) on stdout and exits 0:
 `./tmux-mcp -version-json | jq`.
 
 Pass `-log-level=debug` for verbose JSON logs to stderr (stdout stays JSON-RPC).
+Every flag and environment variable the binary accepts is catalogued in
+[`docs/flags.md`](docs/flags.md).
 
 `make help` lists every available target.
 
@@ -560,257 +562,9 @@ embedded secrets stay out of the audit trail.
 | `window_kill` | Destroy a single window of a session; refuses the last remaining window. |
 | `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
 
-The full schemas live in
+Per-tool reference (inputs, outputs, error codes, examples) lives in
+[`docs/tools.md`](docs/tools.md). The canonical schemas live in
 [`internal/server/tools.go`](internal/server/tools.go).
-
-## Tool reference
-
-All tools share the same envelope: a JSON-RPC `tools/call` with
-`{ "name": "<tool>", "arguments": { … } }`. Examples below show only the
-`arguments` body for brevity.
-
-### `session_create`
-
-```jsonc
-{
-  "name":    "demo",            // required; len 1-64, [A-Za-z0-9_-]
-  "command": "/bin/sh",         // optional; defaults to the user's shell
-  "cwd":     "/tmp",            // optional; must be absolute if set
-  "width":   120,               // optional, default 120; range 20-1000
-  "height":  40,                // optional, default 40;  range 5-500
-  "env":     { "PS1": "$ " }    // optional
-}
-```
-
-Inputs outside these bounds are rejected with JSON-RPC code `-32602`
-(invalid params) before any tmux call is made — the bounds keep a
-buggy or hostile caller from forcing tmux to allocate huge pty buffers
-on absurd terminal sizes.
-
-### `session_list`
-
-```jsonc
-{}
-```
-
-Returns `{"sessions": ["demo", …]}`.
-
-### `session_kill`
-
-```jsonc
-{ "name": "demo" }   // len 1-64, [A-Za-z0-9_-]
-```
-
-### `kill_all_sessions`
-
-```jsonc
-{}
-```
-
-Kills every session this server manages, forgets all snapshot history,
-and returns `{"killed": ["demo", …], "count": 2}`. The tmux server
-itself stays running so the next `session_create` does not pay the
-re-spawn cost. Best-effort: a single broken session does not strand
-the rest.
-
-### `session_describe`
-
-```jsonc
-{ "name": "demo" }   // len 1-64, [A-Za-z0-9_-]
-```
-
-Returns
-`{"name": "demo", "windows": 1, "panes": 1, "width": 120, "height": 40, "created_at": "2025-01-02T03:04:05Z"}`.
-`width` / `height` are the most-recent window size (works for the
-detached sessions tmux-mcp owns; `client_*` variables would be empty).
-Unknown session names yield JSON-RPC code `-32000`
-(`CodeSessionNotFound`).
-
-### `send_keys`
-
-```jsonc
-{
-  "session": "demo",                    // len 1-64, [A-Za-z0-9_-]
-  "keys":    ["echo hello", "Enter"],   // non-empty; tmux key names recognised
-  "literal": false                       // true → bypass key-name parsing
-}
-```
-
-`tmux` recognises named keys verbatim — common ones include `Enter`,
-`Tab`, `Escape`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
-`PageUp`, `PageDown`, `BSpace`, `DC` (delete), `C-c`, `C-d`, `C-z`,
-`M-x` (Meta/Alt), `F1`–`F12`.
-
-Use `literal: true` when you want the raw text including characters that
-would otherwise look like key names.
-
-### `capture`
-
-```jsonc
-{
-  "session":   "demo",      // len 1-64, [A-Za-z0-9_-]
-  "mode":      "visible",   // "visible" or "scrollback"
-  "ansi":      false,       // true keeps colour escape sequences
-  "max_lines": 0            // 0 = no cap for visible, default 5000-line cap for scrollback
-}
-```
-
-Returns
-`{"snapshot": "...", "token": "ab12cd34", "changed": true, "truncated": false}`.
-Hold on to `token` if you plan to call `snapshot_diff` later.
-
-`mode=scrollback` is bounded at **5000 lines by default** so a long-lived
-session does not return tens of MB of JSON in a single response. Pass
-`max_lines` to override (any positive integer; pass a small value to
-keep responses tight, or a larger one when you need deeper history).
-For `mode=visible`, the default `max_lines: 0` means "no cap" — the
-visible region is already bounded by the terminal size, so behaviour is
-unchanged from earlier releases. When the snapshot is truncated, the
-oldest (top) lines are dropped so the most recent activity is preserved
-and `truncated: true` appears in the response.
-
-### `wait_for_stable`
-
-Block until the visible pane has been unchanged for `quiet_ms`, then
-return the snapshot.
-
-```jsonc
-{
-  "session":    "demo",  // len 1-64, [A-Za-z0-9_-]
-  "quiet_ms":   400,     // default; range 0-600000
-  "step_ms":    100,     // poll interval; range 0-600000
-  "timeout_ms": 10000    // range 0-600000 (10 min cap)
-}
-```
-
-### `wait_for_text`
-
-Block until a Go-regex pattern matches the visible pane.
-
-```jsonc
-{
-  "session":    "demo",        // len 1-64, [A-Za-z0-9_-]
-  "pattern":    "READY-\\d+",
-  "step_ms":    100,           // range 0-600000
-  "timeout_ms": 10000          // range 0-600000 (10 min cap)
-}
-```
-
-Returns `{"match": "READY-42", "snapshot": "...", "token": "..."}`.
-
-### `snapshot_diff`
-
-Capture and return only the lines that changed since `prior_token`. Use
-an empty string on the first call.
-
-```jsonc
-{ "session": "demo", "prior_token": "" }   // session: len 1-64, [A-Za-z0-9_-]
-```
-
-Returns
-`{"token": "...", "changed": true, "diff": [{"line": 3, "old": "...", "new": "..."}, …]}`.
-History keeps only the two most recent captures per session — if your
-token is older than that you'll get a full reset (every line marked as
-new).
-
-### `resize`
-
-```jsonc
-{ "session": "demo", "width": 100, "height": 30 }
-// session: len 1-64, [A-Za-z0-9_-]; width: 20-1000; height: 5-500
-```
-
-### `list_panes`
-
-```jsonc
-{ "session": "demo" }   // omit `session` to list every pane on the server
-```
-
-Returns
-`{"panes": [{"id": "%0", "title": "vim", "session_win": "demo:0", "index": 0, "active": true, "width": 120, "height": 40}, …]}`.
-Combine `session_win` with `index` (e.g. `demo:0.1`) to build the
-`target` argument expected by `pane_select`.
-
-### `list_windows`
-
-```jsonc
-{ "session": "demo" }   // omit `session` to list every window on the server
-```
-
-Returns
-`{"windows": [{"index": 0, "name": "bash", "active": true, "panes": 1}, …]}`.
-Combine the session name with `index` (e.g. `demo:0`) to build a
-window target string for follow-up `window_kill` / `send_keys` calls.
-Unknown session names yield JSON-RPC code `-32000`
-(`CodeSessionNotFound`); the schema rejects unknown fields up front
-(`additionalProperties: false`) so a typo in the argument name fails
-fast with `-32602` (invalid params).
-
-### `pane_select`
-
-```jsonc
-{ "target": "demo:0.1" }
-```
-
-Switches the active pane of the named window so subsequent `send_keys`
-and `capture` calls that name `demo` act on the new pane. Useful for
-multi-pane TUIs (vim+terminal split, zellij-style layouts).
-
-### `pane_split`
-
-```jsonc
-{
-  "session":     "demo",        // required; len 1-64, [A-Za-z0-9_-]
-  "target_pane": "demo:0.0",    // optional; tmux target form, defaults to active pane
-  "direction":   "vertical",    // required; "horizontal" (-h) or "vertical" (-v)
-  "command":     "/bin/sh",     // optional; defaults to user's shell, max 4096 chars
-  "detach":      true            // optional; true = stay focused on original pane (-d)
-}
-```
-
-Returns `{"id": "%5", "index": 1}` — the new pane's tmux id and 0-based
-index. Combine those with the original session/window to address the
-new pane in follow-up `pane_select` / `send_keys` calls (e.g. write
-`demo:0.1` to drive what `pane_split` just created).
-
-### `session_inspect`
-
-```jsonc
-{ "session": "demo" }   // len 1-64, [A-Za-z0-9_-]
-```
-
-Returns `{"name": "demo", "pid": 12345, "cwd": "/home/user/repo", "command": "bash"}`
-— the foreground process state of the session's active pane. Useful
-for debugging a stuck shell, asserting a specific tool is running
-before sending more keys, or routing follow-up commands based on the
-current cwd.
-
-Distinct from `session_describe`-style layout queries: `session_inspect`
-reports the active pane's process-level state (pid / cwd / command),
-not session-wide layout metadata. Environment variables are
-intentionally NOT exposed because they routinely carry tokens and
-other secrets.
-
-### `send_signal`
-
-```jsonc
-{
-  "session": "demo",   // len 1-64, [A-Za-z0-9_-]
-  "signal":  "TERM"    // one of: TERM, HUP, INT, QUIT, USR1, USR2, KILL
-}
-```
-
-Resolves the session's active pane PID via `tmux display-message
-'#{pane_pid}'` and delivers the signal directly to that process.
-Returns `"ok"` on success.
-
-More precise than `send_keys "C-c"` because the signal targets the
-foreground program rather than whatever is currently interpreting the
-keystroke — works even when the program has stolen the keyboard
-(raw-mode TUIs, daemons that swallow `Ctrl-C`). Anything outside the
-whitelist is rejected with `-32602` (invalid params) before tmux is
-consulted; an unknown session surfaces as `-32000`
-(`CodeSessionNotFound`).
 
 ## End-to-end example
 

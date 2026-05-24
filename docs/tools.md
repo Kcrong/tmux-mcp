@@ -5,9 +5,560 @@ Schemas are the canonical source of truth and live in
 [`internal/server/tools.go`](../internal/server/tools.go); this page is
 the human-readable companion.
 
-Right now the page documents only the per-tool details that don't fit
-into the at-a-glance table in [`README.md`](../README.md). Additional
-tool sections will be added here as their schemas become public.
+Every tool is invoked via JSON-RPC 2.0:
+
+```jsonc
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "<tool>", "arguments": { /* tool args */ } } }
+```
+
+Successful responses return a `content` array with a single text block
+whose `text` field is a JSON string (for tools that return structured
+data) or a plain status string (for tools that return only "ok"). All
+examples below show only the `arguments` object for brevity.
+
+## Error codes
+
+Tool calls fail with a JSON-RPC `error` object. Codes are stable:
+
+| Code     | Sentinel                       | Meaning                                                                          |
+| -------- | ------------------------------ | -------------------------------------------------------------------------------- |
+| `-32602` | (JSON-RPC standard)            | Malformed `arguments`, bound violation, or invalid enum value.                   |
+| `-32603` | (JSON-RPC standard)            | Generic server failure not matched by any sentinel below.                        |
+| `-32000` | `errs.ErrSessionNotFound`      | Tool referenced a session this server does not know about.                       |
+| `-32001` | `errs.ErrTmuxVersionUnsupported` | tmux on `$PATH` is older than the supported floor.                             |
+| `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
+| `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
+
+Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
+mapping is performed by `errs.CodeOf`.
+
+## Common bounds
+
+These bounds apply across every tool that takes a session reference,
+terminal size, or timing argument. Out-of-range inputs are rejected with
+`-32602` before any tmux call is issued.
+
+| Field                         | Range / rule                                |
+| ----------------------------- | ------------------------------------------- |
+| `name` / `session`            | length 1-64, regex `^[A-Za-z0-9_-]+$`       |
+| `width`                       | 20-1000 (or 0 to accept the default)        |
+| `height`                      | 5-500 (or 0 to accept the default)          |
+| `cwd`                         | empty or absolute path                      |
+| `*_ms` (`quiet_ms`, `step_ms`, `timeout_ms`) | 0-600000 (10 minute ceiling) |
+
+---
+
+## `session_create`
+
+Start a new detached tmux session running a command at a given
+terminal size.
+
+### Input
+
+| Field     | Type     | Required | Default            | Notes                                              |
+| --------- | -------- | -------- | ------------------ | -------------------------------------------------- |
+| `name`    | string   | yes      | —                  | session id; len 1-64, `[A-Za-z0-9_-]+`             |
+| `command` | string   | no       | user's login shell | program to run inside the new session              |
+| `cwd`     | string   | no       | server's cwd       | must be absolute when set                          |
+| `width`   | integer  | no       | 120                | columns; 20-1000                                   |
+| `height`  | integer  | no       | 40                 | rows; 5-500                                        |
+| `env`     | object   | no       | `{}`               | extra env vars (string→string)                     |
+
+### Output
+
+A status text block: `session "<name>" created`.
+
+### Errors
+
+- `-32602` — name missing/invalid, dimensions out of range, `cwd` not absolute.
+- `-32603` — tmux failed to start the session.
+
+### Example
+
+```jsonc
+{ "name": "demo", "command": "/bin/sh", "width": 100, "height": 30 }
+```
+
+---
+
+## `session_list`
+
+List the names of every session this server currently manages.
+
+### Input
+
+No fields. Pass `{}`.
+
+### Output
+
+JSON text block: `{"sessions": ["demo", "build", ...]}`. Returns
+`{"sessions": []}` when no sessions exist.
+
+### Errors
+
+- `-32603` — tmux failed to enumerate sessions.
+
+### Example
+
+```jsonc
+{}
+```
+
+---
+
+## `session_kill`
+
+Kill the named session and drop any snapshot history kept for it.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, `[A-Za-z0-9_-]+`               |
+
+### Output
+
+Status text block: `session "<name>" killed`.
+
+### Errors
+
+- `-32602` — invalid name.
+- `-32000` — session does not exist.
+- `-32603` — tmux refused to kill.
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+---
+
+## `kill_all_sessions`
+
+Kill every session this server manages and forget all snapshot history
+in one shot. The tmux server itself stays running, so the next
+`session_create` does not pay the re-spawn cost. Best-effort: a single
+broken session does not strand the rest. Useful for agent
+error-recovery loops that want a clean slate without restarting the
+server process.
+
+### Input
+
+No fields. Pass `{}`.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "killed": ["demo", "build"], "count": 2 }
+```
+
+`killed` is the list of sessions that were torn down successfully.
+`count` is `len(killed)` for callers that just want the headline
+number.
+
+### Errors
+
+- `-32603` — tmux failed to enumerate sessions before the loop began.
+
+### Example
+
+```jsonc
+{}
+```
+
+---
+
+## `session_describe`
+
+Return structured metadata for a single session: window count, total
+pane count, current width/height (cols × rows), and the creation
+timestamp as RFC3339. Useful when an agent needs to confirm a session
+layout or correlate logs by creation time.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, `[A-Za-z0-9_-]+`               |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "name":       "demo",
+  "windows":    1,
+  "panes":      1,
+  "width":      120,
+  "height":     40,
+  "created_at": "2025-01-02T03:04:05Z"
+}
+```
+
+`width` / `height` are the most-recent window size — accurate for the
+detached sessions tmux-mcp owns (where tmux's `client_*` variables
+would be empty).
+
+### Errors
+
+- `-32602` — invalid `name`.
+- `-32000` — session does not exist.
+- `-32603` — tmux failed to describe the session.
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+---
+
+## `session_inspect`
+
+Return process-level metadata for the active pane of a session: the
+foreground PID, current working directory, and command name. Useful
+for debugging a stuck shell, asserting that the expected program is
+still running before sending more keys, or routing follow-up commands
+based on the current cwd.
+
+Distinct from a layout-style describe: `session_inspect` reports the
+active pane's process state (pid / cwd / command), not session-wide
+window/pane geometry. Environment variables are intentionally NOT
+exposed because they routinely carry tokens, API keys, or other
+secrets that have no business crossing the JSON-RPC boundary.
+
+### Input
+
+| Field     | Type   | Required | Notes                                            |
+| --------- | ------ | -------- | ------------------------------------------------ |
+| `session` | string | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`   |
+
+### Output
+
+JSON block:
+
+```jsonc
+{ "name": "demo", "pid": 12345, "cwd": "/home/user/repo", "command": "bash" }
+```
+
+Fields come straight from a single `tmux display-message` against
+`#{pane_pid}` / `#{pane_current_path}` / `#{pane_current_command}`,
+so the data is exactly what tmux itself sees. No `/proc` reads, which
+keeps the implementation portable to macOS.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`.                                          |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux returned an unparseable response (e.g. `pane_pid` blank).      |
+
+### Example
+
+```jsonc
+{ "session": "demo" }
+```
+
+Pair with `send_signal` to drive a stuck program: inspect first to
+confirm the foreground PID, then signal it directly.
+
+```jsonc
+{ "name": "session_inspect", "arguments": { "session": "demo" } }
+{ "name": "send_signal",     "arguments": { "session": "demo", "signal": "TERM" } }
+```
+
+---
+
+## `send_keys`
+
+Type into a session. Each entry of `keys` is interpreted by tmux: bare
+text is sent literally, named keys (`Up`, `Enter`, `Tab`, `C-c`,
+`F1`-`F12`, `BSpace`, …) emit the corresponding key event. Set
+`literal: true` to disable key-name interpretation and send the raw
+characters instead.
+
+### Input
+
+| Field     | Type             | Required | Default | Notes                                |
+| --------- | ---------------- | -------- | ------- | ------------------------------------ |
+| `session` | string           | yes      | —       | existing session name                |
+| `keys`    | array of strings | yes      | —       | non-empty                            |
+| `literal` | boolean          | no       | `false` | `true` bypasses tmux key-name parser |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+- `-32602` — invalid session, empty `keys` array.
+- `-32000` — session does not exist.
+- `-32603` — tmux send-keys failed.
+
+### Example
+
+```jsonc
+{ "session": "demo", "keys": ["echo hello", "Enter"] }
+```
+
+---
+
+## `capture`
+
+Read the visible pane (or full scrollback) as text. With `ansi: true`
+the result includes terminal escape sequences so the caller can render
+colours; otherwise the body is plain text.
+
+### Input
+
+| Field       | Type    | Required | Default     | Notes                                                       |
+| ----------- | ------- | -------- | ----------- | ----------------------------------------------------------- |
+| `session`   | string  | yes      | —           | existing session name                                       |
+| `mode`      | string  | no       | `"visible"` | `"visible"` or `"scrollback"`                               |
+| `ansi`      | boolean | no       | `false`     | keep ANSI escape sequences in the body                      |
+| `max_lines` | integer | no       | `0`         | `>0` caps to last N lines; `0` = no cap (visible) / 5000 (scrollback) |
+
+`mode=scrollback` defaults to a 5000-line cap so a long-lived shell
+cannot return tens of MB through the JSON-RPC frame. When the snapshot
+is truncated the *oldest* lines are dropped so the most recent activity
+is preserved.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "snapshot":  "...",      // captured pane body
+  "token":     "ab12cd34", // hand to snapshot_diff later
+  "changed":   true,       // body differs from the previous capture for this session
+  "truncated": false       // true when max_lines clipped the body
+}
+```
+
+### Errors
+
+- `-32602` — invalid session, unknown mode, negative `max_lines`.
+- `-32000` — session does not exist.
+- `-32603` — tmux capture-pane failed.
+
+### Example
+
+```jsonc
+{ "session": "demo", "mode": "scrollback", "max_lines": 200 }
+```
+
+---
+
+## `wait_for_stable`
+
+Block until the visible pane has been unchanged for `quiet_ms`, then
+return the snapshot. Useful for waiting out a TUI redraw before
+capturing.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                          |
+| ------------ | ------- | -------- | ------- | ------------------------------ |
+| `session`    | string  | yes      | —       | existing session name          |
+| `quiet_ms`   | integer | no       | 400     | 0-600000; idle window required |
+| `step_ms`    | integer | no       | 100     | 0-600000; poll interval        |
+| `timeout_ms` | integer | no       | 10000   | 0-600000 (10 min ceiling)      |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "snapshot": "...", "token": "ab12cd34" }
+```
+
+### Errors
+
+- `-32602` — invalid session, durations out of range.
+- `-32000` — session does not exist.
+- `-32002` — pane never settled before `timeout_ms`.
+- `-32003` — caller cancelled context.
+- `-32603` — tmux capture failed mid-poll.
+
+### Example
+
+```jsonc
+{ "session": "demo", "quiet_ms": 500, "timeout_ms": 5000 }
+```
+
+---
+
+## `wait_for_text`
+
+Block until a Go [RE2](https://pkg.go.dev/regexp/syntax) regex matches
+the visible pane. Returns the matched substring plus the snapshot at
+match time.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                       |
+| ------------ | ------- | -------- | ------- | --------------------------- |
+| `session`    | string  | yes      | —       | existing session name       |
+| `pattern`    | string  | yes      | —       | Go regex (RE2)              |
+| `step_ms`    | integer | no       | 100     | 0-600000; poll interval     |
+| `timeout_ms` | integer | no       | 10000   | 0-600000 (10 min ceiling)   |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "match":    "READY-42", // first regex match in the pane body
+  "snapshot": "...",      // pane body at match time
+  "token":    "ab12cd34"  // snapshot token for snapshot_diff
+}
+```
+
+### Errors
+
+- `-32602` — invalid session, missing/malformed `pattern`, durations out of range.
+- `-32000` — session does not exist.
+- `-32002` — pattern never matched before `timeout_ms`.
+- `-32003` — caller cancelled context.
+- `-32603` — tmux capture failed mid-poll.
+
+### Example
+
+```jsonc
+{ "session": "demo", "pattern": "READY-\\d+", "timeout_ms": 30000 }
+```
+
+---
+
+## `snapshot_diff`
+
+Capture the visible pane and return only the lines that differ from a
+prior capture. Pass an empty `prior_token` on the first call; on
+subsequent calls pass the `token` from the previous response.
+
+### Input
+
+| Field         | Type   | Required | Notes                                         |
+| ------------- | ------ | -------- | --------------------------------------------- |
+| `session`     | string | yes      | existing session name                         |
+| `prior_token` | string | no       | empty on first call; reset if older than 2 captures |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "token":   "cd34ef56",   // token for the new capture
+  "changed": true,         // true when body differs from the previous capture
+  "diff": [
+    { "line": 3, "old": "before", "new": "after",  "removed": false },
+    { "line": 7, "old": "gone",   "new": "",       "removed": true  }
+  ]
+}
+```
+
+History keeps only the **two most recent** captures per session — older
+tokens trigger a full reset (every line reported as new).
+
+### Errors
+
+- `-32602` — invalid session.
+- `-32000` — session does not exist.
+- `-32603` — tmux capture failed.
+
+### Example
+
+```jsonc
+{ "session": "demo", "prior_token": "ab12cd34" }
+```
+
+---
+
+## `resize`
+
+Resize the session window to the given column × row dimensions.
+
+### Input
+
+| Field     | Type    | Required | Notes               |
+| --------- | ------- | -------- | ------------------- |
+| `session` | string  | yes      | existing session    |
+| `width`   | integer | yes      | columns; 20-1000    |
+| `height`  | integer | yes      | rows; 5-500         |
+
+### Output
+
+Status text block: `resized <session> to <width>x<height>`.
+
+### Errors
+
+- `-32602` — invalid session, dimensions out of range.
+- `-32000` — session does not exist.
+- `-32603` — tmux refresh-client failed.
+
+### Example
+
+```jsonc
+{ "session": "demo", "width": 100, "height": 30 }
+```
+
+---
+
+## `list_panes`
+
+Enumerate panes visible to this server. Pass `session` to scope the
+listing to a single tmux session; omit it to list every pane on the
+server. Each entry includes the `session:window` pair plus the pane
+index, so callers can build a `session:window.pane` target for
+`pane_select` / `send_keys` / `capture`.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                   |
+| --------- | ------ | -------- | ------------------------------------------------------- |
+| `session` | string | no       | when set, list only panes inside that session           |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "panes": [
+    {
+      "id":          "%0",       // stable tmux #{pane_id}
+      "title":       "vim",      // current #{pane_title}
+      "session_win": "demo:0",   // build "<session_win>.<index>" for tmux targets
+      "index":       0,          // 0-based #{pane_index} within the window
+      "active":      true,       // true when this is the active pane of its window
+      "width":       120,
+      "height":      40
+    }
+  ]
+}
+```
+
+### Errors
+
+- `-32602` — `session` provided but malformed.
+- `-32603` — tmux list-panes failed.
+
+### Example
+
+```jsonc
+{ "session": "demo" }
+```
+
+---
 
 The server supports dynamic tool registration: `tools/list` reflects
 the live surface, and the server emits
@@ -80,12 +631,98 @@ window, drive it.
 { "name": "capture",      "arguments": { "session": "demo" } }
 ```
 
+---
+
+## `pane_select`
+
+Make `target` the active pane of its window. Subsequent `send_keys` /
+`capture` calls that name the surrounding session will then act on the
+newly selected pane. Useful for multi-pane TUIs (vim+terminal split,
+zellij-style layouts) where the agent needs to flip focus between
+panes between commands.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                |
+| -------- | ------ | -------- | ---------------------------------------------------- |
+| `target` | string | yes      | tmux `session:window.pane` form (e.g. `demo:0.1`)    |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+- `-32602` — missing/empty `target`.
+- `-32603` — tmux select-pane failed (target malformed or pane gone).
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1" }
+```
+
+---
+
+## `pane_split`
+
+Split a pane in two via `tmux split-window`. Useful when an agent
+wants a side car (build/test/log tail) running next to the main pane
+without spawning a new session or window. Pairs with `list_panes` (to
+discover the just-created pane) and `pane_select` / `send_keys` (to
+drive it).
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                              |
+| ------------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session`     | string  | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `target_pane` | string  | no       | tmux target form (`session`, `session:window`, or `session:window.pane`); defaults to the active pane of `session` |
+| `direction`   | string  | yes      | `"horizontal"` (-h, side-by-side) or `"vertical"` (-v, stacked)                    |
+| `command`     | string  | no       | optional initial command, max 4096 chars; defaults to the user's shell              |
+| `detach`      | boolean | no       | when `true`, focus stays on the original pane (-d); default `false`                |
+
+### Output
+
+JSON block: `{"id": "%5", "index": 1}`. `id` is the tmux `#{pane_id}`
+(stable for the pane's lifetime); `index` is the 0-based
+`#{pane_index}` within the window. Combine with the surrounding
+session/window pair to build a `session:window.pane` target for
+follow-up tools.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, missing/invalid `direction`, malformed `target_pane`, or `command` longer than 4096 chars. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the split (e.g. window already at maximum pane count, command not found in PATH). |
+
+### Example
+
+```jsonc
+{ "session": "demo", "direction": "vertical", "command": "tail -f app.log", "detach": true }
+```
+
+Pair the call with `list_panes` to confirm the new pane shape, then
+target it via `pane_select`:
+
+```jsonc
+{ "name": "pane_split",  "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
+{ "name": "list_panes",  "arguments": { "session": "demo" } }
+{ "name": "pane_select", "arguments": { "target": "demo:0.1" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
-pane. More precise than `send_keys "C-c"` because the signal targets
-the foreground program directly — it works even when the program has
-stolen the keyboard (raw-mode TUIs, daemons that swallow `Ctrl-C`).
+pane. tmux-mcp resolves the PID via `tmux display-message
+'#{pane_pid}'` and signals the process directly. More precise than
+`send_keys "C-c"` because the signal targets the foreground program
+directly — it works even when the program has stolen the keyboard
+(raw-mode TUIs, daemons that swallow `Ctrl-C`).
 
 ### Input
 
@@ -139,54 +776,7 @@ program actually exited:
 { "name": "wait_for_stable",  "arguments": { "session": "demo", "quiet_ms": 200, "timeout_ms": 3000 } }
 ```
 
-## `pane_split`
-
-Split a pane in two via `tmux split-window`. Useful when an agent
-wants a side car (build/test/log tail) running next to the main pane
-without spawning a new session or window. Pairs with `list_panes` (to
-discover the just-created pane) and `pane_select` / `send_keys` (to
-drive it).
-
-### Input
-
-| Field         | Type    | Required | Notes                                                                              |
-| ------------- | ------- | -------- | ---------------------------------------------------------------------------------- |
-| `session`     | string  | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
-| `target_pane` | string  | no       | tmux target form (`session`, `session:window`, or `session:window.pane`); defaults to the active pane of `session` |
-| `direction`   | string  | yes      | `"horizontal"` (-h, side-by-side) or `"vertical"` (-v, stacked)                    |
-| `command`     | string  | no       | optional initial command, max 4096 chars; defaults to the user's shell              |
-| `detach`      | boolean | no       | when `true`, focus stays on the original pane (-d); default `false`                |
-
-### Output
-
-JSON block: `{"id": "%5", "index": 1}`. `id` is the tmux `#{pane_id}`
-(stable for the pane's lifetime); `index` is the 0-based
-`#{pane_index}` within the window. Combine with the surrounding
-session/window pair to build a `session:window.pane` target for
-follow-up tools.
-
-### Errors
-
-| Code     | Cause                                                              |
-| -------- | ------------------------------------------------------------------ |
-| `-32602` | Missing/invalid `session`, missing/invalid `direction`, malformed `target_pane`, or `command` longer than 4096 chars. |
-| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
-| `-32603` | tmux refused the split (e.g. window already at maximum pane count, command not found in PATH). |
-
-### Example
-
-```jsonc
-{ "session": "demo", "direction": "vertical", "command": "tail -f app.log", "detach": true }
-```
-
-Pair the call with `list_panes` to confirm the new pane shape, then
-target it via `pane_select`:
-
-```jsonc
-{ "name": "pane_split",  "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
-{ "name": "list_panes",  "arguments": { "session": "demo" } }
-{ "name": "pane_select", "arguments": { "target": "demo:0.1" } }
-```
+---
 
 ## `window_create`
 
@@ -227,6 +817,8 @@ numeric tmux index — both forms are valid targets for follow-up
 Chain a follow-up `wait_for_text` against the new window's session if
 you need to know when the spawned command settled.
 
+---
+
 ## `window_kill`
 
 Destroy a single window via `tmux kill-window -t <session>:<window>`.
@@ -266,57 +858,3 @@ call with the at-a-glance check first:
 { "name": "window_kill",   "arguments": { "session": "demo", "window": "scratch" } }
 ```
 
-## `session_inspect`
-
-Return process-level metadata for the active pane of a session: the
-foreground PID, current working directory, and command name. Useful
-for debugging a stuck shell, asserting that the expected program is
-still running before sending more keys, or routing follow-up commands
-based on the current cwd.
-
-Distinct from a layout-style describe: `session_inspect` reports the
-active pane's process state (pid / cwd / command), not session-wide
-window/pane geometry. Environment variables are intentionally NOT
-exposed because they routinely carry tokens, API keys, or other
-secrets that have no business crossing the JSON-RPC boundary.
-
-### Input
-
-| Field     | Type   | Required | Notes                                            |
-| --------- | ------ | -------- | ------------------------------------------------ |
-| `session` | string | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`   |
-
-### Output
-
-JSON block:
-
-```jsonc
-{ "name": "demo", "pid": 12345, "cwd": "/home/user/repo", "command": "bash" }
-```
-
-Fields come straight from a single `tmux display-message` against
-`#{pane_pid}` / `#{pane_current_path}` / `#{pane_current_command}`,
-so the data is exactly what tmux itself sees. No `/proc` reads, which
-keeps the implementation portable to macOS.
-
-### Errors
-
-| Code     | Cause                                                              |
-| -------- | ------------------------------------------------------------------ |
-| `-32602` | Missing/invalid `session`.                                          |
-| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
-| `-32603` | tmux returned an unparseable response (e.g. `pane_pid` blank).      |
-
-### Example
-
-```jsonc
-{ "session": "demo" }
-```
-
-Pair with `send_signal` to drive a stuck program: inspect first to
-confirm the foreground PID, then signal it directly.
-
-```jsonc
-{ "name": "session_inspect", "arguments": { "session": "demo" } }
-{ "name": "send_signal",     "arguments": { "session": "demo", "signal": "TERM" } }
-```
