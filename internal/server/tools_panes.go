@@ -243,7 +243,13 @@ func (t *Tools) listPanes(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 			return nil, invalidParams("list_panes: %v", err)
 		}
 	}
-	panes, err := t.Ctl.ListPanes(ctx, args.Session)
+	// Apply -session-prefix when scoping to a single session so the
+	// listing lands on the prefixed tmux session the rest of the surface
+	// addresses. Empty session keeps the unscoped (-a) listing path
+	// intact; cross-prefix entries are not filtered here because the
+	// pane list itself carries session:window pairs the caller may need
+	// to see verbatim for diagnostics.
+	panes, err := t.Ctl.ListPanes(ctx, t.resolveSessionRef(args.Session))
 	if err != nil {
 		return nil, internalError(err)
 	}
@@ -283,7 +289,10 @@ func (t *Tools) paneSelect(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if args.Target == "" {
 		return nil, invalidParams("pane_select: target required")
 	}
-	if err := t.Ctl.SelectPane(ctx, args.Target); err != nil {
+	if rerr := validatePaneTarget(args.Target); rerr != nil {
+		return nil, invalidParams("pane_select: %s", rerr.Message)
+	}
+	if err := t.Ctl.SelectPane(ctx, t.resolvePaneTarget(args.Target)); err != nil {
 		return nil, internalError(err)
 	}
 	return textBlock("ok"), nil
@@ -342,8 +351,8 @@ func (t *Tools) paneSplit(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return nil, invalidParams("pane_split: command length %d exceeds %d", len(args.Command), maxPaneCommandLen)
 	}
 	res, err := t.Ctl.SplitPane(ctx, tmuxctl.SplitOptions{
-		Session:    args.Session,
-		TargetPane: args.TargetPane,
+		Session:    t.resolveSessionRef(args.Session),
+		TargetPane: t.resolvePaneTarget(args.TargetPane),
 		Direction:  args.Direction,
 		Command:    args.Command,
 		Detach:     args.Detach,
@@ -388,7 +397,7 @@ func (t *Tools) paneKill(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if rerr := validatePaneTarget(args.TargetPane); rerr != nil {
 		return nil, rerr
 	}
-	if err := t.Ctl.KillPane(ctx, args.TargetPane); err != nil {
+	if err := t.Ctl.KillPane(ctx, t.resolvePaneTarget(args.TargetPane)); err != nil {
 		return nil, internalError(fmt.Errorf("pane_kill: %w", err))
 	}
 	return jsonBlock(map[string]any{"killed": true})
@@ -420,7 +429,10 @@ func (t *Tools) paneSwap(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 	if rerr := validatePaneTarget(args.Dst); rerr != nil {
 		return nil, invalidParams("pane_swap: dst: %s", rerr.Message)
 	}
-	if err := t.Ctl.SwapPane(ctx, args.Src, args.Dst); err != nil {
+	if err := t.Ctl.SwapPane(ctx,
+		t.resolvePaneTarget(args.Src),
+		t.resolvePaneTarget(args.Dst),
+	); err != nil {
 		return nil, internalError(fmt.Errorf("pane_swap: %w", err))
 	}
 	return textBlock("ok"), nil
@@ -495,7 +507,7 @@ func (t *Tools) paneResize(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	if args.Amount < 1 || args.Amount > maxPaneResizeAmount {
 		return nil, invalidParams("pane_resize: amount %d out of range [1..%d]", args.Amount, maxPaneResizeAmount)
 	}
-	if err := t.Ctl.ResizePane(ctx, args.Target, args.Direction, args.Amount); err != nil {
+	if err := t.Ctl.ResizePane(ctx, t.resolvePaneTarget(args.Target), args.Direction, args.Amount); err != nil {
 		return nil, internalError(fmt.Errorf("pane_resize: %w", err))
 	}
 	return textBlock("ok"), nil
