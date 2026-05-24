@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/Kcrong/tmux-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/Kcrong/tmux-mcp)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -153,6 +154,77 @@ If your client expects a flat `{ name: spec }` map instead of an
 Restart your client after editing the config. On launch the server's
 tools usually appear under a namespaced prefix (e.g. `tmux__send_keys`)
 so they don't collide with tools from other servers.
+
+### Client examples
+
+Concrete, copy-paste configs for the clients people ask about most.
+Always use an **absolute** path to the binary — `which tmux-mcp` after
+install gives you the right one.
+
+#### Claude Desktop
+
+Edit `claude_desktop_config.json`:
+
+| OS      | Path                                                       |
+| ------- | ---------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux   | `~/.config/Claude/claude_desktop_config.json`              |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json`              |
+
+```json
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "/usr/local/bin/tmux-mcp",
+      "args": ["-log-level=info"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The tools will show up as `tmux__session_create`,
+`tmux__send_keys`, etc.
+
+#### Claude Code (CLI / IDE extensions)
+
+`~/.claude/mcp.json` (user-wide) or `<repo>/.claude/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "/usr/local/bin/tmux-mcp"
+    }
+  }
+}
+```
+
+Or use the helper:
+
+```sh
+claude mcp add tmux /usr/local/bin/tmux-mcp
+```
+
+#### VS Code (MCP extension)
+
+In `settings.json` (User or Workspace):
+
+```jsonc
+"mcp.servers": {
+  "tmux": {
+    "command": "/usr/local/bin/tmux-mcp"
+  }
+}
+```
+
+Reload the window after saving.
+
+#### Cursor / Windsurf / other agent frameworks
+
+Most follow the same `{ "mcpServers": { "<name>": { "command": "..." } } }`
+shape. Some expect a flat `{ "<name>": { "command": "..." } }` map — drop
+the `mcpServers` wrapper if your client's docs say so. Always use an
+absolute path to the binary.
 
 ### Smoke test by hand
 
@@ -412,15 +484,64 @@ wait_for_stable session=demo  quiet_ms=200
 
 ## Verifying a release
 
-Each release publishes a `checksums.txt` next to the archive. Verify
-the file you downloaded:
+Each release ships three layers of provenance:
+
+1. **`checksums.txt`** — SHA-256 of every archive.
+2. **Cosign keyless signatures** — every archive, `checksums.txt`, and
+   every SBOM is signed via GitHub Actions OIDC (no long-lived key) and
+   the signing event is recorded in the public
+   [Rekor transparency log](https://docs.sigstore.dev/logging/overview/).
+   Each artifact has a sibling `<artifact>.sig` (signature) and
+   `<artifact>.pem` (signing certificate).
+3. **SPDX SBOMs** — one
+   [SPDX 2.3 JSON](https://spdx.dev/use/specifications/) document per
+   archive, named `<archive>.sbom.json`, listing every Go module that
+   went into the binary.
+
+### Step 1 — checksums
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
 ```
 
-`checksums.txt` itself is built by GoReleaser inside the release
-workflow — the [release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
+### Step 2 — cosign signatures
+
+Install [cosign](https://docs.sigstore.dev/cosign/installation/) (e.g.
+`brew install cosign`), then verify any artifact against the GitHub
+Actions OIDC identity that produced the release:
+
+```sh
+# Replace <tag> with the release tag (e.g. v0.2.0) and <archive> with
+# the file you downloaded (e.g. tmux-mcp_Linux_x86_64.tar.gz).
+TAG=<tag>
+ARCHIVE=<archive>
+
+cosign verify-blob \
+  --certificate "${ARCHIVE}.pem" \
+  --signature   "${ARCHIVE}.sig" \
+  --certificate-identity-regexp \
+    "https://github.com/Kcrong/tmux-mcp/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "${ARCHIVE}"
+```
+
+The same command verifies `checksums.txt` and any
+`*.sbom.json` — just point `ARCHIVE` at that file. A successful verify
+prints `Verified OK` and confirms the artifact came from this repo's
+release workflow at the given tag, with the event logged to Rekor.
+
+### Step 3 — SBOM
+
+Each `<archive>.sbom.json` is an SPDX 2.3 document. Inspect it with
+[`syft`](https://github.com/anchore/syft), `jq`, or any SPDX-aware tool:
+
+```sh
+syft convert tmux-mcp_Linux_x86_64.tar.gz.sbom.json -o table
+```
+
+`checksums.txt`, signatures, certificates, and SBOMs are all built by
+GoReleaser inside the release workflow — the
+[release run](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
 in GitHub Actions is the authoritative provenance.
 
 ## License
