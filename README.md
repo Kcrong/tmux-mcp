@@ -60,6 +60,7 @@ see [Install](#install). For the full tool reference, jump to
 - [Patterns](#patterns)
 - [Design notes](#design-notes)
 - [Troubleshooting](#troubleshooting)
+- [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
 
 ---
@@ -83,20 +84,30 @@ solves this with a stable CLI:
 - Linux or macOS
 - Go 1.24+ (only when building from source)
 
+> Windows binaries cross-compile and ship in releases, but `tmux` runs
+> on Linux/macOS only — to actually use the server on Windows you need
+> WSL or to ssh to a Linux/macOS host.
+
 ## Install
 
 ### Prebuilt binary
 
 Pick the asset for your OS / architecture from the
 [latest release](https://github.com/Kcrong/tmux-mcp/releases/latest)
-(Linux and macOS, `amd64` and `arm64`). Each archive contains a single
-`tmux-mcp` binary — drop it on `$PATH`:
+(Linux, macOS, and Windows — `amd64` and `arm64`). Linux/macOS archives
+ship as `.tar.gz`, Windows ships as `.zip`. Each archive contains a
+single `tmux-mcp` binary — drop it on `$PATH`:
 
 ```sh
 curl -fsSL https://github.com/Kcrong/tmux-mcp/releases/latest/download/tmux-mcp_$(uname -s)_$(uname -m).tar.gz \
   | tar -xz -C /usr/local/bin tmux-mcp
 tmux-mcp -version
 ```
+
+Windows binaries are provided for completeness (e.g. you build on
+Windows but ssh to a Linux host, or you run via WSL), but the runtime
+still requires `tmux`, which is Linux/macOS only — see
+[Requirements](#requirements).
 
 Releases are signed with checksums (`checksums.txt` next to the
 archives) — see [Verifying a release](#verifying-a-release).
@@ -243,6 +254,47 @@ printf '%s\n' \
 
 Each line is one JSON-RPC frame. The server responds line-by-line with
 the same framing.
+
+### Process management (systemd, containers, supervisors)
+
+By default `tmux-mcp` puts its private socket inside a freshly created
+directory under `$TMPDIR`. That is fine for desktop MCP clients that
+spawn the binary on demand, but it makes the socket path unpredictable —
+which breaks systemd unit health checks, log forwarders, and any
+supervisor that wants to peek at the underlying tmux server.
+
+Pin the socket location with `-socket=/path` (or `TMUX_MCP_SOCKET=/path`)
+so it lives at a known, well-known address:
+
+```sh
+# flag form — wins over the env var
+tmux-mcp -socket=/run/tmux-mcp/sock
+
+# env form — handy in unit files / Dockerfiles
+TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
+```
+
+Rules of the road:
+
+- The path must be **absolute**. Relative paths are rejected up front
+  with a clear error.
+- The **parent directory must already exist**. `tmux-mcp` will not
+  create `/run/tmux-mcp` for you — that is the operator's job (e.g. a
+  systemd `RuntimeDirectory=` or a `RUN mkdir` step in a Dockerfile).
+  Refusing to auto-create avoids accidentally writing to the wrong
+  place when a typo sneaks in.
+- On shutdown the socket file is removed but the parent directory is
+  left intact, so unit restarts stay idempotent.
+- If neither the flag nor the env var is set the old behaviour applies,
+  so existing setups keep working unchanged.
+
+Minimal systemd snippet:
+
+```ini
+[Service]
+RuntimeDirectory=tmux-mcp
+ExecStart=/usr/local/bin/tmux-mcp -socket=/run/tmux-mcp/sock
+```
 
 ## Tool surface
 
@@ -496,6 +548,26 @@ wait_for_stable session=demo  quiet_ms=200
 - **`wait_for_text` always times out** — remember the pattern is a Go
   regex, not a shell glob. Escape `.`, `+`, `?`, `*`, `(`, `)`, `[`,
   `]`, `{`, `}`, `^`, `$`, `|`, `\` if you mean them literally.
+
+## Releases
+
+Releases are cut automatically by
+[release-please](https://github.com/googleapis/release-please) from
+[Conventional Commits](https://www.conventionalcommits.org/) on `main`:
+
+- Every push to `main` updates a long-lived "release PR" that accumulates
+  the pending changelog and bumps the next semver based on the commit
+  types it sees (`feat:` → minor, `fix:`/`perf:` → patch, anything with
+  `!` or a `BREAKING CHANGE:` footer → major).
+- Merging that release PR tags the new version and publishes a GitHub
+  Release. The existing release workflow then triggers off the tag and
+  builds binaries, signatures, and SBOMs (see
+  [Verifying a release](#verifying-a-release)).
+
+Contributors should write commits in Conventional Commits style
+(`feat:`, `fix:`, `perf:`, `ci:`, `docs:`, `test:`, `refactor:`,
+`chore:`) so release-please can categorise them. `chore:` is hidden
+from the changelog. Manual `git tag` is no longer needed.
 
 ## Verifying a release
 
