@@ -123,6 +123,29 @@ var panesToolDefs = []map[string]any{
 			"additionalProperties": false,
 		},
 	},
+	{
+		"name": "pane_swap",
+		"description": "Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux " +
+			"swaps the layout slots: each pane keeps its `#{pane_id}`, contents, and " +
+			"running process while the positions trade. Both arguments are tmux pane " +
+			"targets (e.g. \"demo:0.0\", \"demo:0.1\"). Useful for rearranging a multi-" +
+			"pane TUI layout without recreating panes.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"src": map[string]any{
+					"type":        "string",
+					"description": "Source pane target (e.g. \"session:window.pane\").",
+				},
+				"dst": map[string]any{
+					"type":        "string",
+					"description": "Destination pane target (e.g. \"session:window.pane\").",
+				},
+			},
+			"required":             []string{"src", "dst"},
+			"additionalProperties": false,
+		},
+	},
 }
 
 func init() {
@@ -299,4 +322,36 @@ func (t *Tools) paneKill(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return nil, internalError(fmt.Errorf("pane_kill: %w", err))
 	}
 	return jsonBlock(map[string]any{"killed": true})
+}
+
+// paneSwap drives tmuxctl.Controller.SwapPane. Both `src` and `dst`
+// must be non-empty pane targets that pass the same conservative regex
+// applied everywhere else on the boundary — the controller refuses
+// stray quoting / shell metachars before any tmux command runs. A
+// missing session surfaces as CodeSessionNotFound (-32000) via
+// internalError → errs.CodeOf, mirroring pane_select / pane_split.
+func (t *Tools) paneSwap(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Src string `json:"src"`
+		Dst string `json:"dst"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("pane_swap: %v", err)
+	}
+	if args.Src == "" {
+		return nil, invalidParams("pane_swap: src required")
+	}
+	if args.Dst == "" {
+		return nil, invalidParams("pane_swap: dst required")
+	}
+	if rerr := validatePaneTarget(args.Src); rerr != nil {
+		return nil, invalidParams("pane_swap: src: %s", rerr.Message)
+	}
+	if rerr := validatePaneTarget(args.Dst); rerr != nil {
+		return nil, invalidParams("pane_swap: dst: %s", rerr.Message)
+	}
+	if err := t.Ctl.SwapPane(ctx, args.Src, args.Dst); err != nil {
+		return nil, internalError(fmt.Errorf("pane_swap: %w", err))
+	}
+	return textBlock("ok"), nil
 }
