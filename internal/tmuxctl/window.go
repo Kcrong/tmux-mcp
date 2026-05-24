@@ -221,6 +221,44 @@ func (c *Controller) RenameWindow(ctx context.Context, session, target, newName 
 	return nil
 }
 
+// MoveWindow relocates the window addressed by src onto the dst slot via
+// `tmux move-window -s <src> -t <dst>`. Both src and dst use tmux's
+// standard `<session>:<window>` target form; dst may carry an empty
+// window part (e.g. "othersession:") to let tmux pick the next available
+// index in that session. Validation of the target shapes (regex /
+// length) lives at the boundary — this method just wires the strings
+// into the right tmux flags.
+//
+// A missing source session surfaces as a wrapped errs.ErrSessionNotFound
+// so the JSON-RPC dispatcher maps it to CodeSessionNotFound the same way
+// SelectWindow / RenameWindow do. Note that `tmux move-window -s
+// <missing>` emits "can't find session" (which run() already
+// translates) rather than the "can't find window" form select / rename
+// produce, because move-window's -s flag explicitly names a window
+// target — we still translate "can't find window" defensively in case
+// older tmux versions phrase it that way.
+//
+// Other failures (destination index already in use, malformed target)
+// pass through as-is so the JSON-RPC layer surfaces them via
+// CodeInternal — the caller can read the wrapped tmux stderr to tell
+// the cases apart.
+func (c *Controller) MoveWindow(ctx context.Context, src, dst string) error {
+	if src == "" {
+		return errors.New("src required")
+	}
+	if dst == "" {
+		return errors.New("dst required")
+	}
+	if _, err := c.run(ctx, "move-window", "-s", src, "-t", dst); err != nil {
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // Window describes a single tmux window as observed by `tmux list-windows`.
 //
 // The fields are the subset of window format variables that an agent

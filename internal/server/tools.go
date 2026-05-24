@@ -461,6 +461,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.windowSelect(ctx, call.Arguments)
 	case "window_rename":
 		return t.windowRename(ctx, call.Arguments)
+	case "window_move":
+		return t.windowMove(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
 	}
