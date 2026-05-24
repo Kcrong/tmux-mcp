@@ -99,6 +99,11 @@ type serveConfig struct {
 	// the receiver has the emitter in place by the time the client's
 	// first frame arrives.
 	installListChanged func(notify func())
+	// metrics is the optional Prometheus exporter handle. When non-nil
+	// the dispatcher records every tools/call (counter + duration
+	// histogram) into the collectors it owns. nil keeps the
+	// metrics-disabled fast-path: no allocations, no Inc/Observe.
+	metrics *Metrics
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -208,6 +213,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 	limiter := newCallLimiter(cfg.maxConcurrentCalls)
 	audit := cfg.audit
 	reaper := cfg.reaper
+	metrics := cfg.metrics
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
 	// dispatchCtx is the parent of every request-scoped context Serve
@@ -545,7 +551,12 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 			// notifications fires first only on non-tools/call
 			// methods.
 			if req.Method == "tools/call" {
-				audit.Record(rid, toolNameFromParams(req.Params), toolArgsFromParams(req.Params), dur, rerr)
+				toolName := toolNameFromParams(req.Params)
+				audit.Record(rid, toolName, toolArgsFromParams(req.Params), dur, rerr)
+				// Same scope as audit: metrics live on the tools/call
+				// surface only. Other RPCs are framing noise that
+				// would inflate cardinality without operator value.
+				metrics.observeToolCall(toolName, dur, rerr)
 			}
 			// Notifications have no id field; they get no response.
 			if len(req.ID) == 0 {

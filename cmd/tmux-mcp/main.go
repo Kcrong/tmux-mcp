@@ -17,6 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+
 	"github.com/Kcrong/tmux-mcp/internal/server"
 	"github.com/Kcrong/tmux-mcp/internal/snapshot"
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
@@ -98,6 +101,14 @@ Flags:
                           kill_all_sessions are explicitly excluded so
                           they cannot extend an idle session's lifetime.
                           Negative values are rejected at startup.
+  -metrics-addr ADDR      when set, expose Prometheus metrics on the
+                          given listen address (e.g. "127.0.0.1:9090"
+                          or ":9090"). The exporter publishes
+                          tmuxmcp_tools_call_total,
+                          tmuxmcp_tools_call_duration_seconds, and
+                          tmuxmcp_sessions_active at /metrics.
+                          Default: "" (exporter disabled, no HTTP
+                          listener opened).
 
 Smoke test:
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tmux-mcp
@@ -206,6 +217,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// where the human / agent decides session lifetime.
 	sessionIdleTimeout := fs.Duration("session-idle-timeout", 0,
 		"auto-kill any session idle for at least DUR (0 disables; rejected if negative)")
+	// Empty default keeps the Prometheus exporter opt-in: no extra
+	// HTTP listener appears unless the operator names a bind address.
+	// We deliberately do NOT default to a wildcard like ":9090" —
+	// binding to all interfaces should be a deliberate choice.
+	metricsAddr := fs.String("metrics-addr", "",
+		"listen address for Prometheus /metrics (e.g. 127.0.0.1:9090); empty disables")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -303,6 +320,40 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = audit.Close() }()
 
+	// Stand up the Prometheus exporter when the operator passes
+	// -metrics-addr. We bind eagerly so port-in-use / malformed-addr
+	// failures surface as a clean startup error instead of a
+	// silently-broken background goroutine. The session-count poller
+	// runs alongside the HTTP server and refreshes the gauge every 5s.
+	var (
+		metrics       *server.Metrics
+		metricsServer *server.MetricsServer
+	)
+	if *metricsAddr != "" {
+		// A fresh registry per process keeps the exporter scoped to
+		// the metrics this server owns plus the standard Go / process
+		// collectors, without leaking into prometheus.DefaultRegisterer.
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(collectors.NewGoCollector())
+		reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+		metrics = server.NewMetrics(reg)
+		metricsServer, err = server.NewMetricsServer(*metricsAddr, reg)
+		if err != nil {
+			return fmt.Errorf("metrics listener %q: %w", *metricsAddr, err)
+		}
+		slog.Info("metrics exporter listening", "addr", metricsServer.Addr())
+		go metrics.RunSessionsPoller(ctx, ctl, 5*time.Second)
+		defer func() {
+			// Shutdown is best-effort with a short deadline so we
+			// don't hang the process on a slow client. http.Server
+			// closes the listener and drains in-flight requests
+			// within this window.
+			shutCtx, cancelShut := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelShut()
+			_ = metricsServer.Shutdown(shutCtx)
+		}()
+	}
+
 	tools := server.NewTools(ctl, snapshot.WithTTL(*snapshotTTL))
 	// Propagate the ldflags-injected binary version so MCP clients see
 	// the same value the -version flag prints, instead of a hardcoded
@@ -341,6 +392,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		// spec-compliant notifications/tools/list_changed frame
 		// without main needing to know about the notification shape.
 		server.WithToolsListChangedNotifier(tools.SetNotifier),
+		server.WithMetrics(metrics),
 	)
 	if errors.Is(serr, server.ErrShutdownTimedOut) {
 		// Surface the timeout via a non-zero exit so supervisors can
