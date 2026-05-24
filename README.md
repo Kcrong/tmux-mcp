@@ -115,6 +115,8 @@ make build              # produces ./tmux-mcp
 ./tmux-mcp -version     # smoke test — prints version and exits
 ```
 
+Pass `-log-level=debug` for verbose JSON logs to stderr (stdout stays JSON-RPC).
+
 `make help` lists every available target.
 
 ## Wire it up
