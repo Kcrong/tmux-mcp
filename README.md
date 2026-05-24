@@ -562,6 +562,7 @@ embedded secrets stay out of the audit trail.
 | `window_select` | Make a window the active one of its session via `tmux select-window`. |
 | `window_rename` | Rename a window via `tmux rename-window` (same regex/length policy as window_create). |
 | `list_windows` | Enumerate windows (optionally scoped to a session) with their index, name, active flag, and pane count. |
+| `show_options` | Wrap `tmux show-options` to return the resolved server / session / window option set as a flat `key → value` map. |
 
 Per-tool reference (inputs, outputs, error codes, examples) lives in
 [`docs/tools.md`](docs/tools.md). The canonical schemas live in
