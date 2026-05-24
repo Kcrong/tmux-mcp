@@ -62,6 +62,7 @@ see [Install](#install). For the full tool reference, jump to
 - [Architecture](#architecture)
 - [Design notes](#design-notes)
 - [FAQ](#faq)
+- [Performance & tuning](#performance--tuning)
 - [Troubleshooting](#troubleshooting)
 - [Releases](#releases)
 - [Verifying a release](#verifying-a-release)
@@ -734,6 +735,61 @@ A: No. Snapshots are kept in memory per session, and only the two most
 recent are retained. The token is good for short-lived comparisons
 between consecutive calls; older tokens fall back to a full reset where
 every line is reported as new.
+
+## Performance & tuning
+
+`tmux-mcp` is happy under everyday agent traffic, but there are a few
+knobs an operator should know about before pointing it at a heavy-load
+TUI workflow or a fleet of long-lived sessions. Each item below is a
+real foot-gun seen in practice — the defaults are deliberately
+conservative so that "do nothing" is the safe choice.
+
+- **Scrollback capping.** `capture` with `mode=scrollback` is bounded
+  at **5000 lines by default**. Lifting that cap with a large
+  `max_lines` (or `max_lines: 0`) on a long-lived shell can trivially
+  return tens of MB of text in a single response, which inflates the
+  JSON-RPC frame, stalls the stdio pipe while the client decodes it,
+  and burns model context if an agent forwards the whole snapshot.
+  Stick with the default unless you genuinely need deeper history; if
+  you do, prefer the smallest value that answers your question and let
+  the oldest lines drop (the response keeps the most recent activity
+  and sets `truncated: true`).
+
+- **`wait_for_text` regex caching.** Compiled regexes are cached
+  internally, so calling `wait_for_text` repeatedly with the same
+  `pattern` is materially cheaper than rotating patterns each call.
+  When you're polling for the same prompt or sentinel — `^\$ $`,
+  `READY-\d+`, an app-specific banner — reuse one canonical pattern
+  string instead of building a fresh one per request and you'll skip
+  the recompile on every iteration.
+
+- **Polling cadence (`step_ms`).** `wait_for_stable` and
+  `wait_for_text` re-capture the pane every `step_ms` milliseconds. A
+  very small value (e.g. `step_ms: 20`) means you fire ~50
+  `tmux capture-pane` calls per second per waiter, which under
+  concurrent agents quickly saturates the tmux server and starves real
+  work. **100–200 ms is the sweet spot** — fast enough that humans and
+  agents perceive it as responsive, slow enough that capture overhead
+  stays in the noise. Drop below 100 ms only when you've measured a
+  genuine need.
+
+- **Sessions per server instance.** Operations on a session take a
+  per-controller mutex, so as one `tmux-mcp` PID accumulates many
+  active sessions (especially with several agents waiting on different
+  panes at once) you'll start to see contention show up as latency on
+  unrelated calls. If you're driving more than a handful of busy
+  sessions, prefer to **shard across multiple `tmux-mcp` processes**
+  (each gets its own private socket and tmux server — see
+  [Architecture](#architecture)) rather than piling everything onto one
+  instance.
+
+- **Concurrent-call rate limiting.** The server does not yet cap how
+  many tool calls run in flight; in practice this is bounded by the
+  client, but a misbehaving caller can flood the dispatch path. A
+  `-max-concurrent-calls` flag (default 64) is being added in
+  [PR #51](https://github.com/Kcrong/tmux-mcp/pull/51) — once that
+  lands, set it explicitly on shared deployments so a runaway client
+  cannot exhaust goroutines or the tmux server.
 
 ## Troubleshooting
 
