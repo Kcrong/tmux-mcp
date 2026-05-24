@@ -357,6 +357,27 @@ On failure (no tmux on `$PATH`, version too old, …) it prints a
 `probe failed: …` diagnostic to stderr and exits non-zero — stdout
 stays empty so a parser can rely on the `ok\t…` shape.
 
+### Config dry-run
+
+`-probe` only checks that `tmux` itself is healthy. When you also want
+to validate the **rest** of the config — the `-socket` parent
+directory, the `-audit-log` path, the `-log-format` value, every other
+flag — without committing to the JSON-RPC loop, use `-dry-run`:
+
+```sh
+tmux-mcp -dry-run -socket=/run/tmux-mcp/sock -audit-log=/var/log/tmux-mcp/audit.jsonl
+# prints "dry-run ok\ttmux=3.4\ttmux-mcp=v0.5.0" and exits 0
+```
+
+The flag walks the full startup path (parse flags, install slog
+handler, init the tmux controller, open the audit sink, build the tool
+surface), then exits **before** stdin is read. Any misconfiguration —
+a relative socket, a missing audit-log parent, a bogus
+`-log-format` — surfaces as a non-zero exit with the same diagnostic
+the JSON-RPC server would have printed at startup, so you can iterate
+on a unit file or Claude Desktop config locally before reloading
+anything.
+
 ### Concurrency cap
 
 `-max-concurrent-calls=N` caps simultaneously-executing `tools/call`
@@ -931,6 +952,8 @@ The defaults aim to "just work" for desktop MCP clients, but a handful
 of failure modes show up often enough to be worth naming. Each entry
 below maps the symptom to the smallest fix and links to the flag or
 section that documents it in full.
+
+Want to validate config before swap? Run [`tmux-mcp -dry-run`](#config-dry-run) with the flags you intend to ship — it walks the full bootstrap and exits 0 (or prints the same startup error you'd see at runtime) without ever opening stdin.
 
 ### `tmux server already running` / socket conflict
 
