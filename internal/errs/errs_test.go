@@ -60,6 +60,16 @@ func TestCodeOf(t *testing.T) {
 			want: CodeTimeout,
 		},
 		{
+			name: "ErrSessionExists direct",
+			err:  ErrSessionExists,
+			want: CodeSessionExists,
+		},
+		{
+			name: "ErrSessionExists wrapped",
+			err:  fmt.Errorf("rename: %w: %q", ErrSessionExists, "demo"),
+			want: CodeSessionExists,
+		},
+		{
 			name: "context.Canceled",
 			err:  context.Canceled,
 			want: CodeContextCancelled,
@@ -100,6 +110,7 @@ func TestCodes_Stable(t *testing.T) {
 		{"CodeTmuxVersionUnsupported", CodeTmuxVersionUnsupported, -32001},
 		{"CodeTimeout", CodeTimeout, -32002},
 		{"CodeContextCancelled", CodeContextCancelled, -32003},
+		{"CodeSessionExists", CodeSessionExists, -32004},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,6 +129,9 @@ func TestSentinels_Distinct(t *testing.T) {
 	t.Parallel()
 	if errors.Is(ErrSessionNotFound, ErrTmuxVersionUnsupported) ||
 		errors.Is(ErrSessionNotFound, ErrTimeout) ||
+		errors.Is(ErrSessionNotFound, ErrSessionExists) ||
+		errors.Is(ErrSessionExists, ErrTmuxVersionUnsupported) ||
+		errors.Is(ErrSessionExists, ErrTimeout) ||
 		errors.Is(ErrTmuxVersionUnsupported, ErrTimeout) {
 		t.Fatal("sentinel errors must be distinct")
 	}

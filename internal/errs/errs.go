@@ -32,6 +32,12 @@ const (
 	// CodeContextCancelled is returned when the caller cancels the context
 	// (or it hits a deadline) mid-call.
 	CodeContextCancelled = -32003
+	// CodeSessionExists is returned when a request would create or
+	// rename to a tmux session name that is already in use on this
+	// controller. Distinct from CodeSessionNotFound (the existing
+	// sentinel for "name does not exist") so clients can branch on the
+	// collision case explicitly.
+	CodeSessionExists = -32004
 )
 
 // Sentinel errors. Wrap them with fmt.Errorf("%w: ...", err) at the call
@@ -44,6 +50,10 @@ var (
 	ErrTmuxVersionUnsupported = errors.New("tmux version unsupported")
 	// ErrTimeout signals that a polling wait exceeded its deadline.
 	ErrTimeout = errors.New("timeout")
+	// ErrSessionExists signals that a tmux session name collides with an
+	// existing one — typically surfaced by session_rename when the
+	// requested new name is already taken on this controller.
+	ErrSessionExists = errors.New("session already exists")
 )
 
 // CodeOf returns the JSON-RPC error code that best describes err. It
@@ -56,6 +66,8 @@ func CodeOf(err error) int {
 		return CodeInternal
 	case errors.Is(err, ErrSessionNotFound):
 		return CodeSessionNotFound
+	case errors.Is(err, ErrSessionExists):
+		return CodeSessionExists
 	case errors.Is(err, ErrTmuxVersionUnsupported):
 		return CodeTmuxVersionUnsupported
 	case errors.Is(err, ErrTimeout):
