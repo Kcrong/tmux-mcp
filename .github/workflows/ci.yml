@@ -109,4 +109,7 @@ jobs:
         run: |
           set -eux
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
+          # `go env GOPATH` may return a colon-separated list on this runner,
+          # so install + invoke via PATH instead of stitching the path
+          # ourselves.
+          PATH="$(go env GOPATH | cut -d: -f1)/bin:$PATH" govulncheck ./...
