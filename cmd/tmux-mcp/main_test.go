@@ -99,6 +99,46 @@ func TestSessionIdleTimeoutFlag_RejectsNegative(t *testing.T) {
 	}
 }
 
+// TestPprofFlag_RejectsWithoutMetricsAddr pins the contract that
+// -pprof is a deliberately co-mounted feature: it has no listener of
+// its own and therefore requires -metrics-addr to be set. A missing
+// -metrics-addr must surface as a clean startup error wrapping
+// errPprofRequiresMetricsAddr, with a stderr line that names the
+// prerequisite so an operator on a misconfigured systemd unit doesn't
+// have to guess. This guards against a regression that silently
+// disables pprof (or, worse, auto-binds a port on the operator's
+// behalf) when -pprof appears without an address.
+func TestPprofFlag_RejectsWithoutMetricsAddr(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-pprof"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for -pprof without -metrics-addr, got nil")
+	}
+	if !errors.Is(err, errPprofRequiresMetricsAddr) {
+		t.Fatalf("expected errPprofRequiresMetricsAddr, got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-pprof requires -metrics-addr") {
+		t.Fatalf("expected stderr to explain the prerequisite, got %q", stderr.String())
+	}
+	// stdout stays untouched so an operator piping JSON-RPC into the
+	// binary doesn't see a stray non-frame on the failure path.
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout on the rejection path, got %q", stdout.String())
+	}
+
+	// -help must document the flag so operators discover it without
+	// reading the source.
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"-help"}, strings.NewReader(""), &stdout, &stderr); err != nil && err.Error() != "flag: help requested" {
+		t.Fatalf("run(-help): unexpected error %v", err)
+	}
+	if !strings.Contains(stderr.String(), "-pprof") {
+		t.Fatalf("expected -pprof in usage block, got %q", stderr.String())
+	}
+}
+
 // TestSnapshotTTLFlag_AcceptedAndDocumented confirms that the
 // -snapshot-ttl flag is parsed (i.e. not rejected as "unknown flag")
 // and that its help line is part of the -help usage block. Behavioural
