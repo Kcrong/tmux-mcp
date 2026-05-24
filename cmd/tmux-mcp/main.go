@@ -46,6 +46,14 @@ Flags:
                           success; non-zero exit + stderr diagnostic on
                           failure. Useful for k8s liveness, systemd
                           ExecStartPre, Docker HEALTHCHECK.
+  -dry-run                perform full startup (parse flags, validate paths,
+                          init tmux controller, open audit sink, build the
+                          tool surface), then exit 0 without reading stdin.
+                          Prints "dry-run ok\ttmux=<v>\ttmux-mcp=<v>" on
+                          success. Useful for unit-test config / liveness
+                          check before swapping in a real config (systemd
+                          ExecStartPre, Claude Desktop config dry-test, env
+                          var validation).
   -log-level LEVEL        log verbosity: error|warn|info|debug (default "info")
   -log-format FMT         slog output format: text|json. When unset, the
                           server emits text by default and switches to json
@@ -142,6 +150,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	versionJSONFlag := fs.Bool("version-json", false, "print version metadata as JSON and exit")
 	probe := fs.Bool("probe", false,
 		"run a startup health check (verify tmux + version) and exit")
+	// dry-run goes further than -probe: it walks the entire startup
+	// path (slog handler install, tmux controller init, audit open,
+	// tool registry build) and exits cleanly *before* server.Serve
+	// touches stdin. That way operators can validate a unit-file or
+	// MCP-client config end-to-end without committing to the JSON-RPC
+	// loop. Defers (ctl.Shutdown, audit.Close) still fire, so any
+	// resource the bootstrap acquired is released before we exit.
+	dryRun := fs.Bool("dry-run", false,
+		"perform full startup, then exit 0 without reading stdin")
 	logLevel := fs.String("log-level", "info", "log verbosity: error|warn|info|debug")
 	logFormatRaw := fs.String("log-format", "text", "slog output format: text|json (debug auto-promotes to json when this flag is not set)")
 	// Off by default — AddSource walks runtime.Callers on every record
@@ -291,6 +308,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// the same value the -version flag prints, instead of a hardcoded
 	// constant inside the server package.
 	tools.Version = version
+	// -dry-run wants every bootstrap side-effect (tmux init, audit
+	// open, tool registry build) to happen so we surface real config
+	// problems, but stop short of opening stdin. Reporting tmux's
+	// version + our own gives operators a single line to grep on for
+	// a successful pre-flight, mirroring the -probe tab-delimited
+	// shape with a distinct "dry-run ok" prefix so callers can tell
+	// the two paths apart. Returning here unwinds the deferred
+	// ctl.Shutdown + audit.Close, so resources acquired by the
+	// bootstrap are released before exit.
+	if *dryRun {
+		tmuxVer, err := tmuxctl.ProbeVersion(ctx)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "dry-run ok\ttmux=%s\ttmux-mcp=%s\n",
+			tmuxVer, binaryVersion())
+		return nil
+	}
 	serr := server.Serve(ctx, stdin, stdout, tools.Handle,
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
 		server.WithAudit(audit),
