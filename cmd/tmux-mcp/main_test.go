@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"testing"
@@ -253,7 +254,8 @@ func TestAuditLogBadPathFailsStartup(t *testing.T) {
 	}
 }
 
-// TestDebugLevelEmitsJSONLogs is a smoke test: with -log-level=debug a
+// TestDebugLevelEmitsJSONLogs is a smoke test: with -log-level=debug
+// (and no -log-format) the legacy auto-promotion kicks in and a
 // malformed request line on stdin must produce a JSON-formatted slog
 // record on stderr (and stdout must stay valid JSON-RPC).
 func TestDebugLevelEmitsJSONLogs(t *testing.T) {
@@ -287,5 +289,177 @@ func TestDebugLevelEmitsJSONLogs(t *testing.T) {
 	body := strings.TrimSpace(stdout.String())
 	if !strings.Contains(body, "-32700") {
 		t.Fatalf("expected JSON-RPC parse error on stdout, got %q", body)
+	}
+}
+
+// TestResolveLogFormat covers the matrix of (raw value, level, explicit)
+// inputs that resolveLogFormat is responsible for: explicit values
+// always win, the implicit default falls back to text except when
+// -log-level=debug auto-promotes to JSON, and unknown values produce a
+// wrapped errInvalidLogFormat sentinel.
+func TestResolveLogFormat(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		lvl      slog.Level
+		explicit bool
+		want     logFormat
+		wantErr  bool
+	}{
+		{"explicit-text", "text", slog.LevelInfo, true, logFormatText, false},
+		{"explicit-json", "json", slog.LevelInfo, true, logFormatJSON, false},
+		{"explicit-text-at-debug-stays-text", "text", slog.LevelDebug, true, logFormatText, false},
+		{"explicit-json-at-info-stays-json", "json", slog.LevelInfo, true, logFormatJSON, false},
+		{"implicit-default-info-is-text", "text", slog.LevelInfo, false, logFormatText, false},
+		{"implicit-default-warn-is-text", "text", slog.LevelWarn, false, logFormatText, false},
+		{"implicit-default-error-is-text", "text", slog.LevelError, false, logFormatText, false},
+		{"implicit-default-debug-promotes-to-json", "text", slog.LevelDebug, false, logFormatJSON, false},
+		{"case-insensitive-uppercase-text", "TEXT", slog.LevelInfo, true, logFormatText, false},
+		{"case-insensitive-mixed-json", "Json", slog.LevelInfo, true, logFormatJSON, false},
+		{"whitespace-trimmed", "  json  ", slog.LevelInfo, true, logFormatJSON, false},
+		{"unknown-yaml-is-error", "yaml", slog.LevelInfo, true, "", true},
+		{"empty-is-error", "", slog.LevelInfo, true, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveLogFormat(tc.raw, tc.lvl, tc.explicit)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveLogFormat(%q, %v, %v) = %q, nil; want errInvalidLogFormat",
+						tc.raw, tc.lvl, tc.explicit, got)
+				}
+				if !errors.Is(err, errInvalidLogFormat) {
+					t.Fatalf("err = %v; want wrap of errInvalidLogFormat", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveLogFormat(%q, %v, %v) unexpected err: %v",
+					tc.raw, tc.lvl, tc.explicit, err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveLogFormat(%q, %v, %v) = %q, want %q",
+					tc.raw, tc.lvl, tc.explicit, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewLogHandler asserts the small dispatcher routes to the right
+// slog handler implementation. The slog package types are concrete, so
+// we can test by writing a record and inspecting the on-the-wire shape:
+// JSON output starts with '{', text output is key=value form.
+func TestNewLogHandler(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		format     logFormat
+		wantPrefix string // first non-space byte
+	}{
+		{logFormatJSON, "{"},
+		{logFormatText, "t"}, // text handler emits "time=…"
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.format), func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			h := newLogHandler(&buf, slog.LevelInfo, tc.format)
+			slog.New(h).Info("hello", "k", "v")
+			out := strings.TrimSpace(buf.String())
+			if out == "" {
+				t.Fatalf("expected log output, got empty buffer")
+			}
+			if !strings.HasPrefix(out, tc.wantPrefix) {
+				t.Fatalf("format=%s: expected output to start with %q, got %q",
+					tc.format, tc.wantPrefix, out)
+			}
+		})
+	}
+}
+
+// TestLogFormatTextEmitsTextLogs is the e2e companion to
+// TestDebugLevelEmitsJSONLogs: when the operator passes -log-format=text
+// explicitly (even at debug), the handler installed must be the text
+// handler — confirmed by stderr lines that are NOT valid JSON.
+func TestLogFormatTextEmitsTextLogs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-log-level=debug", "-log-format=text"},
+		strings.NewReader("not json\n"), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run: %v stderr=%q", err, stderr.String())
+	}
+	saw := false
+	for line := range strings.SplitSeq(stderr.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Text handler emits "time=… level=… msg=…". A JSON record
+		// starts with '{'; a text record does not.
+		if strings.HasPrefix(line, "{") {
+			t.Fatalf("expected text-format log line, got JSON: %q", line)
+		}
+		if strings.Contains(line, "level=") && strings.Contains(line, "msg=") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("expected at least one text-format slog record on stderr, got %q", stderr.String())
+	}
+}
+
+// TestLogFormatJSONOverridesAtInfo asserts the operator can opt in to
+// JSON even when the auto-promotion would not have fired (i.e. at
+// info level). This is the inverse of the legacy behaviour and the
+// real reason the flag exists: log aggregation pipelines need a
+// stable, parseable shape regardless of the configured level.
+func TestLogFormatJSONOverridesAtInfo(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-log-format=json"}, strings.NewReader("not json\n"), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run: %v stderr=%q", err, stderr.String())
+	}
+	gotLog := false
+	for line := range strings.SplitSeq(stderr.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) == nil {
+			if _, ok := rec["level"]; ok {
+				gotLog = true
+				break
+			}
+		}
+	}
+	if !gotLog {
+		t.Fatalf("expected JSON slog record on stderr at info level, got %q", stderr.String())
+	}
+}
+
+// TestInvalidLogFormatRejected makes sure run() surfaces a wrapped
+// errInvalidLogFormat for unknown values, that it writes a
+// "tmux-mcp: invalid -log-format …" diagnostic to stderr, and that it
+// leaves stdout untouched so an MCP client never sees a stray frame
+// during a misconfigured launch.
+func TestInvalidLogFormatRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"-log-format=yaml"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for invalid -log-format, got nil")
+	}
+	if !errors.Is(err, errInvalidLogFormat) {
+		t.Fatalf("expected errInvalidLogFormat wrap, got %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected stdout untouched on validation failure, got %q", stdout.String())
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "tmux-mcp: invalid -log-format") {
+		t.Fatalf("expected stderr to contain diagnostic, got %q", got)
+	}
+	if !strings.Contains(got, `"yaml"`) {
+		t.Fatalf("expected stderr diagnostic to quote the bad value, got %q", got)
 	}
 }

@@ -45,11 +45,18 @@ If `tmux` is not installed, the server tells you exactly what to run
 see [Install](#install). For the full tool reference, jump to
 [Tool surface](#tool-surface).
 
+### Log output format
+
+Pass `-log-format=text|json` to pin the slog output shape (default
+`text`; `-log-level=debug` auto-promotes to `json` only when the flag
+is left unset, so log aggregators can opt in to JSON at any level).
+
 ---
 
 ## Contents
 
 - [Quickstart](#quickstart-60-seconds)
+- [Log output format](#log-output-format)
 - [Why tmux](#why-tmux)
 - [Requirements](#requirements)
 - [Install](#install)
