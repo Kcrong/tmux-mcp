@@ -3542,3 +3542,64 @@ popup, default border, the user's shell:
 { "name": "display_popup", "arguments": {} }
 ```
 
+---
+
+## `lock_server`
+
+Lock the entire tmux server via `tmux lock-server` (alias `lock`). tmux
+iterates every attached client on this controller's private daemon and
+runs the configured `lock-command` (default `lock -np`) against each
+one. Distinct from a session-scoped lock (which would target every
+client attached to one named session) and the single-client variant
+(one specific TTY): `lock_server` covers every screen on every session
+this daemon is hosting in a single call.
+
+The simplest of the three lock primitives — tmux's `lock-server` takes
+no flags at all, so the boundary policy mirrors that exactly.
+
+Headless servers with nothing attached are a successful no-op: tmux
+still exits 0 because the iteration over attached clients is empty.
+Mutating in spirit (it changes what every attached client's terminal
+displays — the lock screen replaces the live session view across every
+session on this daemon), so it is **not** allowed under `-read-only`.
+
+### Input
+
+No fields. Pass `{}` (or `null` — the handler accepts an empty
+arguments value). The schema sets `additionalProperties: false`, so
+any stray field (e.g. a `"session"` borrowed from `lock_session`, or
+a `"client"` from `lock_client`) is rejected with `-32602` before tmux
+is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "locked": true }
+```
+
+The ack is identical whether tmux iterated zero or many attached
+clients because tmux's `lock-server` itself does not distinguish the
+two — and surfacing that detail would push every caller to write a
+"how many clients did we lock?" branch they do not need.
+
+### Errors
+
+| Code     | Cause                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | An unknown field was supplied on `arguments` (the schema is closed).                                               |
+| `-32000` | No daemon is running on this controller's socket (`errs.ErrSessionNotFound`). Reuses the standard "named target does not exist" code shared with `lock_session` / `lock_client` / `list_clients` / `session_kill`. |
+| `-32603` | tmux refused the lock for an unexpected reason.                                                                    |
+
+### Example
+
+```jsonc
+{}
+```
+
+Pairs naturally with a long-running multi-session deployment: when an
+operator hands the server back to a human and wants every attached
+terminal to require authentication before resuming work, `lock_server`
+is the single call that does it without disturbing any running
+process.
