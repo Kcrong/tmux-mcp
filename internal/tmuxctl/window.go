@@ -318,6 +318,15 @@ func (c *Controller) LinkWindow(ctx context.Context, src, dst string, kill bool)
 		args = append(args, "-k")
 	}
 	if _, err := c.run(ctx, args...); err != nil {
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // UnlinkWindow removes the window reference addressed by target via
 // `tmux unlink-window -t <target>` (with `-k` when kill is true). It is
 // the inverse of LinkWindow: where link-window grafts a window's

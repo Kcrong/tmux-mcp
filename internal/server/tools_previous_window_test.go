@@ -10,13 +10,13 @@ import (
 	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
-// activeWindowIndex returns the numeric index of the currently active
+// activeWindowIndexFromTools returns the numeric index of the currently active
 // window in the named session. Tests use it to assert which slot
 // previous_window landed on without re-encoding the JSON parsing in
 // every case. A missing-active result is reported via -1 so callers
 // can fail the test with a meaningful diagnostic rather than an
 // out-of-range panic.
-func activeWindowIndex(t *testing.T, tools *Tools, ctx context.Context, session string) int {
+func activeWindowIndexFromTools(t *testing.T, tools *Tools, ctx context.Context, session string) int {
 	t.Helper()
 	body := extractText(t, callTool(t, tools, ctx, "list_windows", map[string]any{"session": session}))
 	var obj struct {
@@ -66,7 +66,7 @@ func TestHandle_PreviousWindow_StepsBackward(t *testing.T) {
 		"session": "pws", "name": "last", "command": "/bin/sh", "select": true,
 	})
 
-	if got := activeWindowIndex(t, tools, ctx, "pws"); got != 2 {
+	if got := activeWindowIndexFromTools(t, tools, ctx, "pws"); got != 2 {
 		t.Fatalf("baseline broken: active index = %d, want 2", got)
 	}
 
@@ -77,7 +77,7 @@ func TestHandle_PreviousWindow_StepsBackward(t *testing.T) {
 		t.Fatalf("previous_window response = %q, want to contain \"moved\":true", body)
 	}
 
-	if got := activeWindowIndex(t, tools, ctx, "pws"); got != 1 {
+	if got := activeWindowIndexFromTools(t, tools, ctx, "pws"); got != 1 {
 		t.Fatalf("active index after previous_window = %d, want 1", got)
 	}
 }

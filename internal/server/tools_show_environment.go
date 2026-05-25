@@ -9,32 +9,6 @@ import (
 	"github.com/Kcrong/tmux-mcp/internal/tmuxctl"
 )
 
-// maxEnvNameLen caps the length of an environment-variable name.
-// POSIX itself doesn't pin a hard limit, but real-world env names
-// top out well under 128 bytes; pinning the bound here means a buggy
-// or hostile caller cannot smuggle a megabyte-sized identifier
-// through the boundary that tmux would happily forward to its argv
-// parser.
-const maxEnvNameLen = 128
-
-// validateEnvName enforces the conservative env-name policy: must
-// match the POSIX-shaped regex (envNameRE, defined alongside its
-// first user in tools_display_popup.go) and stay within the length
-// bound. Shared with the future write-side set_environment tool so
-// the two surfaces accept exactly the same identifier set.
-func validateEnvName(name string) *rpcError {
-	if name == "" {
-		return invalidParams("name required")
-	}
-	if len(name) > maxEnvNameLen {
-		return invalidParams("name length %d out of range [1..%d]", len(name), maxEnvNameLen)
-	}
-	if !envNameRE.MatchString(name) {
-		return invalidParams("name %q must match %s", name, envNameRE.String())
-	}
-	return nil
-}
-
 // showEnvironmentToolDefs holds the JSON Schema for the
 // show_environment tool. The block is appended onto the main toolDefs
 // slice from this file's init() so the registration site stays close

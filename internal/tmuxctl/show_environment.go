@@ -6,29 +6,6 @@ import (
 	"strings"
 )
 
-// EnvironmentScope constants accepted by [Controller.ShowEnvironment]
-// (and the future write-side [Controller.SetEnvironment]). They map
-// onto tmux's `show-environment` / `set-environment` flag set: `-g`
-// for the global (server-wide) environment future sessions inherit,
-// and the default (no `-g`) for a single session's environment table.
-// Keeping the scopes as named string constants lets the JSON-RPC
-// boundary validate the caller's raw string against this exact set
-// without hand-rolling a switch.
-const (
-	// EnvironmentScopeSession selects the per-session environment
-	// table (`tmux show-environment -t <session>`). Future panes
-	// spawned inside that session inherit any entries here; existing
-	// panes keep whatever environment they already have, matching
-	// the underlying tmux semantics.
-	EnvironmentScopeSession = "session"
-	// EnvironmentScopeGlobal selects the server-wide environment
-	// table (`tmux show-environment -g`). New sessions inherit any
-	// entries here when they are created; existing sessions keep
-	// their own per-session overrides, which is the ordinary tmux
-	// precedence.
-	EnvironmentScopeGlobal = "global"
-)
-
 // EnvEntry is a single environment variable as reported by
 // `tmux show-environment`. Present=false signals the variable is
 // explicitly *removed* from the requested scope (tmux prints these

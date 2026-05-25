@@ -10,21 +10,6 @@ import (
 	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
-// windowLayoutDump returns the opaque #{window_layout} dump string
-// for the targeted window. The dump is the only stable cross-version
-// signal that previous-layout actually moved the preset pointer:
-// preset names are not echoed back via list-windows, but the dump
-// changes whenever the per-pane geometry does. Lives in the test file
-// because no production caller needs the raw value.
-func windowLayoutDump(t *testing.T, ctx context.Context, c *Controller, target string) string {
-	t.Helper()
-	out, err := c.run(ctx, "display-message", "-p", "-t", target, "#{window_layout}")
-	if err != nil {
-		t.Fatalf("display-message #{window_layout}: %v", err)
-	}
-	return strings.TrimSpace(out)
-}
-
 // seedMultiPaneSession creates a session, splits its first window
 // twice, and returns the "session:window" target the layout cycle
 // tests can drive. Centralising the prologue keeps each case focused

@@ -10,27 +10,6 @@ import (
 	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
-// activeIndex returns the numeric index of the currently active window
-// in the named session. Tests use it to assert which slot
-// PreviousWindow landed on without re-encoding the parsing in every
-// case. A missing-active result is reported via -1 so callers can fail
-// the test with a meaningful diagnostic rather than an out-of-range
-// panic.
-func activeIndex(t *testing.T, c *Controller, ctx context.Context, session string) int {
-	t.Helper()
-	wins, err := c.ListWindows(ctx, session)
-	if err != nil {
-		t.Fatalf("ListWindows(%q): %v", session, err)
-	}
-	for _, w := range wins {
-		if w.Active {
-			return w.Index
-		}
-	}
-	t.Fatalf("no active window in session %q: %+v", session, wins)
-	return -1
-}
-
 // TestPreviousWindow_StepsBackward pins the happy path: with three
 // windows and the active flag sitting on index 2, PreviousWindow must
 // land on index 1. Without this baseline a future regression that
