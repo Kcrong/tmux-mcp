@@ -4053,6 +4053,32 @@ flag tells tmux to proceed even on the last reference, destroying the
 window in the process. The boundary does not pre-flight the reference
 count: letting tmux refuse yields the same answer with one fewer
 round-trip and avoids racing a concurrent link/unlink.
+## `rotate_window`
+
+Cycle the panes inside a window through the existing layout slots via
+`tmux rotate-window [-U|-D] -t <target>`. tmux keeps the layout shape
+(even-horizontal, main-vertical, tiled, …) intact and only rotates
+which pane occupies which slot — a three-pane row `A B C` becomes
+`B C A` under the default `-U`, and `C A B` under `-D`.
+
+This is **distinct** from a future `next_layout` / `previous_layout`
+pair (which would cycle through the preset layout templates):
+`rotate_window` leaves the active layout in place and only shuffles
+the panes within it. It also pairs with `swap_window` (which trades
+two *windows* between session slots) and `pane_swap` (which trades
+two *panes* in place without rotating the rest of the window).
+
+### Input
+
+| Field      | Type    | Required | Default | Notes                                                                                                  |
+| ---------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `target`   | string  | yes      | —       | Window target. Bare session name (`demo`) rotates the active window; `<session>:<window>` (`demo:0`) pins a specific window. Session 1-64, `^[A-Za-z0-9_-]+$`; window 1-64 (`^[A-Za-z0-9_-]+$`) or numeric (`\d+`). |
+| `downward` | boolean | no       | `false` | When `true`, rotate the other way (tmux's `-D`). Default `false` emits the tmux-default `-U`.          |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front. Empty `target` is rejected with `-32602` rather
+than letting tmux fall back to "the current window of the current
+client" — almost never what an agent meant.
 
 ### Output
 
@@ -4071,6 +4097,12 @@ caller wants to confirm the new slot.
 The boundary deliberately does not echo the post-unlink layout — a
 follow-up `list_windows` is one call away if the caller wants to
 confirm the destination dropped the slot.
+{ "rotated": true }
+```
+
+The boundary deliberately does not echo the post-rotation pane order
+— a follow-up `list_panes` is one call away if the caller wants to
+confirm the new slot ordering.
 
 ### Errors
 
@@ -4082,6 +4114,8 @@ confirm the destination dropped the slot.
 | `-32602` | Missing/invalid `target` (empty, no `:`, empty session/window half, regex/length violation); or an unknown field was sent. |
 | `-32000` | A referenced session does not exist on this server, or the target does not match a window (`errs.ErrSessionNotFound`). |
 | `-32603` | tmux refused the unlink (e.g. `kill=false` against the only reference, or other unexpected tmux failure). |
+| `-32000` | `target` does not match an existing session/window (`errs.ErrSessionNotFound`).    |
+| `-32603` | tmux refused the rotation for an unexpected reason (e.g. a single-pane window).    |
 
 ### Example
 
@@ -4120,6 +4154,16 @@ underlying window in one call:
 
 ```jsonc
 { "name": "unlink_window", "arguments": { "target": "build:watch", "kill": true } }
+{ "target": "demo", "downward": false }
+```
+
+Pair with `list_panes` (before and after) when you need to confirm the
+slot ordering actually shifted:
+
+```jsonc
+{ "name": "list_panes",     "arguments": { "session": "demo" } }
+{ "name": "rotate_window",  "arguments": { "target": "demo" } }
+{ "name": "list_panes",     "arguments": { "session": "demo" } }
 ```
 
 ---
