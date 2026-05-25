@@ -59,7 +59,9 @@ var panesToolDefs = []map[string]any{
 		"name": "pane_select",
 		"description": "Make target the active pane of its window. target is a tmux \"session:window.pane\" " +
 			"string (e.g. \"demo:0.1\"). Subsequent send_keys / capture calls that name the session " +
-			"will then act on the newly selected pane.",
+			"will then act on the newly selected pane. For mark/unmark, last-active jumps, " +
+			"directional walks, input toggling, or zoom, use `select_pane` — it accepts the same " +
+			"target plus the full optional flag set tmux's `select-pane` understands.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -129,6 +131,65 @@ var panesToolDefs = []map[string]any{
 				},
 			},
 			"required":             []string{"target_pane"},
+			"additionalProperties": false,
+		},
+	},
+	{
+		"name": "select_pane",
+		"description": "Wrap `tmux select-pane -t TARGET` with the full optional flag set. " +
+			"Use this in place of `pane_select` when the caller needs to mark / unmark the " +
+			"pane (`-m` / `-M`), jump to the last-active pane (`-l`), walk one step toward a " +
+			"neighbour (`-U`/`-D`/`-L`/`-R`, picked via `direction`), toggle pane input " +
+			"(`-e`/`-d`), or zoom the window on the target (`-Z`) — all atomic on tmux's side. " +
+			"`target` is the same tmux pane target form `pane_select` accepts " +
+			"(`session`, `session:window`, `session:window.pane`, or the `%N` pane id). " +
+			"`mark`/`unmark` and `enable_input`/`disable_input` are mutually exclusive; " +
+			"requesting both pairs trips CodeInvalidParams before any tmux command runs. " +
+			"Returns `ok` on success.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Pane target (\"session\", \"session:window\", \"session:window.pane\", or `%N`).",
+				},
+				"mark": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, mark this pane (-m) so swap-pane / join-pane can pick it up implicitly.",
+				},
+				"unmark": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, clear the marked-pane state (-M).",
+				},
+				"last": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, jump to the last-active pane (-l) of the target's window.",
+				},
+				"direction": map[string]any{
+					"type":        "string",
+					"enum":        []string{"up", "down", "left", "right"},
+					"description": "Walk one step toward the named neighbour: up (-U), down (-D), left (-L), right (-R).",
+				},
+				"enable_input": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, enable input on the pane (-e).",
+				},
+				"disable_input": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, disable input on the pane (-d).",
+				},
+				"zoom": map[string]any{
+					"type":        "boolean",
+					"default":     false,
+					"description": "When true, also zoom the window on the target pane (-Z).",
+				},
+			},
+			"required":             []string{"target"},
 			"additionalProperties": false,
 		},
 	},
@@ -294,6 +355,67 @@ func (t *Tools) paneSelect(ctx context.Context, raw json.RawMessage) (any, *rpcE
 	}
 	if err := t.Ctl.SelectPane(ctx, t.resolvePaneTarget(args.Target)); err != nil {
 		return nil, internalError(err)
+	}
+	return textBlock("ok"), nil
+}
+
+// selectPane drives tmuxctl.Controller.SelectPaneAdvanced. The handler
+// is the more capable sibling of pane_select: it accepts the same target
+// form but also forwards the optional flag set tmux's `select-pane`
+// understands (mark/unmark, last, directional walk, enable/disable
+// input, zoom). The boundary keeps the pane_select handler in place for
+// callers that only need the bare "make this pane active" semantics —
+// new code that needs any of the flags should call select_pane instead.
+//
+// Up-front validation mirrors the shape of pane_select / pane_resize:
+// non-empty target, conservative regex check, whitelisted direction
+// when supplied. The mutual-exclusion guard for mark/unmark and
+// enable_input/disable_input lives in the controller so a programmatic
+// caller (future ad-hoc internal user) cannot bypass it.
+func (t *Tools) selectPane(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Target       string `json:"target"`
+		Mark         bool   `json:"mark"`
+		Unmark       bool   `json:"unmark"`
+		Last         bool   `json:"last"`
+		Direction    string `json:"direction"`
+		EnableInput  bool   `json:"enable_input"`
+		DisableInput bool   `json:"disable_input"`
+		Zoom         bool   `json:"zoom"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams("select_pane: %v", err)
+	}
+	if args.Target == "" {
+		return nil, invalidParams("select_pane: target required")
+	}
+	if rerr := validatePaneTarget(args.Target); rerr != nil {
+		return nil, invalidParams("select_pane: %s", rerr.Message)
+	}
+	switch args.Direction {
+	case "", "up", "down", "left", "right":
+		// ok
+	default:
+		return nil, invalidParams("select_pane: direction %q must be one of \"up\", \"down\", \"left\", \"right\"", args.Direction)
+	}
+	if args.Mark && args.Unmark {
+		return nil, invalidParams("select_pane: mark and unmark are mutually exclusive")
+	}
+	if args.EnableInput && args.DisableInput {
+		return nil, invalidParams("select_pane: enable_input and disable_input are mutually exclusive")
+	}
+	err := t.Ctl.SelectPaneAdvanced(ctx, tmuxctl.SelectPaneOptions{
+		Target:       t.resolvePaneTarget(args.Target),
+		Mark:         args.Mark,
+		Unmark:       args.Unmark,
+		Last:         args.Last,
+		Direction:    args.Direction,
+		EnableInput:  args.EnableInput,
+		DisableInput: args.DisableInput,
+		Zoom:         args.Zoom,
+	})
+	if err != nil {
+		return nil, internalError(fmt.Errorf("select_pane: %w", err))
 	}
 	return textBlock("ok"), nil
 }

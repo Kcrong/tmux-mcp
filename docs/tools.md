@@ -989,6 +989,11 @@ newly selected pane. Useful for multi-pane TUIs (vim+terminal split,
 zellij-style layouts) where the agent needs to flip focus between
 panes between commands.
 
+For mark/unmark, last-active jumps, directional walks, input toggling,
+or zoom, reach for [`select_pane`](#select_pane) instead — it accepts
+the same `target` plus the full optional flag set `tmux select-pane`
+understands.
+
 ### Input
 
 | Field    | Type   | Required | Notes                                                |
@@ -1008,6 +1013,68 @@ Status text block: `ok`.
 
 ```jsonc
 { "target": "demo:0.1" }
+```
+
+---
+
+## `select_pane`
+
+The capable sibling of [`pane_select`](#pane_select): wraps
+`tmux select-pane -t TARGET` with the full optional flag set so an
+agent can mark / unmark the pane, jump back to the last-active pane,
+walk one step toward a directional neighbour, toggle pane input, or
+zoom the window — atomic on tmux's side. Use this when the bare
+"make this pane active" semantics of `pane_select` aren't enough.
+
+The flag pairs `mark` / `unmark` and `enable_input` / `disable_input`
+are mutually exclusive; requesting both members of a pair returns
+`-32602` before any tmux command runs (tmux's silent last-flag-wins
+behaviour is rarely what the caller intended).
+
+### Input
+
+| Field            | Type    | Required | Notes                                                                              |
+| ---------------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `target`         | string  | yes      | tmux pane target (`session`, `session:window`, `session:window.pane`, or `%N`)     |
+| `mark`           | boolean | no       | when `true`, mark the pane (`-m`) so swap-pane / join-pane can pick it up         |
+| `unmark`         | boolean | no       | when `true`, clear the marked-pane state (`-M`)                                    |
+| `last`           | boolean | no       | when `true`, jump to the last-active pane (`-l`) of the target's window            |
+| `direction`      | string  | no       | walk one step toward the named neighbour: `"up"` (-U), `"down"` (-D), `"left"` (-L), `"right"` (-R) |
+| `enable_input`   | boolean | no       | when `true`, enable input on the pane (`-e`)                                       |
+| `disable_input`  | boolean | no       | when `true`, disable input on the pane (`-d`)                                      |
+| `zoom`           | boolean | no       | when `true`, also zoom the window on the target pane (`-Z`)                        |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, malformed pane target, unknown `direction`, or both members of `mark`/`unmark` (or `enable_input`/`disable_input`) set. |
+| `-32000` | tmux could not resolve the target (`errs.ErrSessionNotFound`).                                                                           |
+| `-32603` | tmux select-pane failed for any other reason.                                                                                            |
+
+### Example
+
+Walk one pane to the right, marking it as the implicit swap-source for
+a subsequent `pane_swap`:
+
+```jsonc
+{ "target": "demo:0.0", "direction": "right", "mark": true }
+```
+
+Disable input on a side-car log pane while leaving focus on it:
+
+```jsonc
+{ "target": "demo:0.1", "disable_input": true }
+```
+
+Toggle zoom on the active pane of a window:
+
+```jsonc
+{ "target": "demo:0", "zoom": true }
 ```
 
 ---

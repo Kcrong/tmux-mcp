@@ -551,6 +551,7 @@ embedded secrets stay out of the audit trail.
 | `resize` | Resize the pane (cols × rows). |
 | `list_panes` | Enumerate panes (optionally scoped to a session) so an agent can target a non-default pane. |
 | `pane_select` | Make a `session:window.pane` target the active pane of its window. |
+| `select_pane` | Capable variant of `pane_select`: same target plus optional `mark`/`unmark`, `last`, `direction`, `enable_input`/`disable_input`, `zoom` flags (wraps `tmux select-pane`). |
 | `pane_split` | Split a pane horizontally or vertically; optionally run a command in the new pane. |
 | `pane_kill` | Destroy a single pane via `tmux kill-pane`; tmux's own collapse semantics on the last pane of a window/session are preserved. |
 | `pane_join` | Move a pane out of its current window and re-attach it to another window via `tmux join-pane`; horizontal flag toggles `-h`. |
