@@ -3338,3 +3338,65 @@ popup, default border, the user's shell:
 { "name": "display_popup", "arguments": {} }
 ```
 
+---
+
+## `previous_layout`
+
+Cycle the targeted window's pane arrangement one step BACKWARD through
+tmux's preset ring via `tmux previous-layout -t <target>`. The five
+presets tmux ships (`even-horizontal`, `even-vertical`,
+`main-horizontal`, `main-vertical`, `tiled`) walk in reverse — wrapping
+from the first preset to the last so the call never refuses on an
+edge. Sibling of `next_layout`; pair with `select_layout` when you want
+to jump to a specific preset or stored layout dump rather than step
+through the ring.
+
+`previous_layout` MUTATES tmux state (it changes a window's pane
+arrangement) so it is intentionally NOT part of the read-only
+allowlist and is rejected when the operator runs the server with
+`-read-only`.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                              |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `target` | string | yes      | window in `<session>:<window>` form; session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index (`\d+`). |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected by spec-compliant clients before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "cycled": true }
+```
+
+`previous-layout` itself produces no useful stdout; a follow-up
+`display_message` against `#{window_layout}` is one call away if the
+caller wants to confirm the actual dump that landed.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `target` (empty, no `:`, bad regex on either half). |
+| `-32000` | The targeted session/window does not exist (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the cycle for an unexpected reason.                   |
+
+### Example
+
+```jsonc
+{ "target": "demo:0" }
+```
+
+A typical chain looks like: split the window to gain panes, anchor on
+a known preset, then step backward to reshape.
+
+```jsonc
+{ "name": "pane_split",      "arguments": { "session": "demo", "direction": "vertical", "detach": true } }
+{ "name": "select_layout",   "arguments": { "target": "demo:0", "layout": "tiled" } }
+{ "name": "previous_layout", "arguments": { "target": "demo:0" } }
+```
+
