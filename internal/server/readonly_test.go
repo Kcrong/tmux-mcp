@@ -93,6 +93,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"window_move",
 		"new_window",
 		"swap_window",
+		"select_layout",
 		"unbind_key",
 		"link_window",
 		"set_window_option",

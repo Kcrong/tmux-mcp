@@ -2417,6 +2417,91 @@ with (typically the user's default shell):
 
 ---
 
+## `select_layout`
+
+Apply a preset or stored pane layout to a window via
+`tmux select-layout -t <session>:<window> [-n] [-p] [-E] [layout]`.
+`layout` accepts either one of the five preset names tmux ships out of
+the box (`even-horizontal`, `even-vertical`, `main-horizontal`,
+`main-vertical`, `tiled`) or a stored layout dump string previously
+read from `#{window_layout}` (the value `display_message` /
+`list-windows` surfaces). Optional `next` (-n) and `previous` (-p)
+cycle through the preset ring; optional `spread` (-E) spreads the
+current pane and its neighbours out evenly. Pairs with `pane_split`
+to populate the panes a layout will reshape and with `display_message`
+(`#{window_layout}`) to dump the post-call layout for later restore.
+
+### Input
+
+| Field      | Type    | Required | Default | Notes                                                                                          |
+| ---------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `target`   | string  | yes      | —       | window target in `<session>:<window>` form (e.g. `demo:0`); session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index. |
+| `layout`   | string  | yes      | —       | preset name or stored layout dump; len ≤ 4096, newlines refused.                               |
+| `next`     | boolean | no       | `false` | when true, cycle to the next preset layout (`-n`).                                             |
+| `previous` | boolean | no       | `false` | when true, cycle to the previous preset layout (`-p`).                                         |
+| `spread`   | boolean | no       | `false` | when true, spread the current pane and its neighbours out evenly (`-E`).                       |
+
+`next` and `previous` are mutually exclusive — passing both rejects
+with `-32602` ("next and previous are mutually exclusive") before tmux
+is consulted. The schema sets `additionalProperties: false`, so any
+unknown field is rejected up front.
+
+`select_layout` mutates tmux state and is therefore NOT in the
+read-only allowlist: a server started with `-read-only` will reject
+the call with `-32011` (`errs.ErrReadOnly`).
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "selected": true }
+```
+
+The boundary deliberately does not echo the resulting layout dump — a
+follow-up `display_message` against `#{window_layout}` is one call
+away if the caller wants to capture the dump for later restore.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target` or `layout`; `target` not in `<session>:<window>` form; `layout` empty / over 4096 bytes / contains newlines; `next` and `previous` both true; or an unknown field was sent. |
+| `-32000` | `session` does not exist on this server, or the targeted window does not match (`errs.ErrSessionNotFound`). |
+| `-32011` | Server is running with `-read-only` and refuses mutating tools (`errs.ErrReadOnly`). |
+| `-32603` | tmux refused the layout for an unexpected reason (e.g. a stored dump that does not match the current pane count). |
+
+### Examples
+
+```jsonc
+// Apply the "tiled" preset to the first window of the session.
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "tiled" } }
+
+// Cycle to the next preset (anchor on a known preset first if the
+// ring's starting position matters).
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "tiled", "next": true } }
+
+// Restore a layout previously dumped via `#{window_layout}`.
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0",
+                 "layout": "bb62,159x48,0,0{79x48,0,0,79x48,80,0}" } }
+```
+
+A typical capture-and-restore chain:
+
+```jsonc
+{ "name": "display_message",
+  "arguments": { "session": "demo", "window": "0",
+                 "format": "#{window_layout}" } }
+// ... later, after experimenting with other presets ...
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "<saved value>" } }
+```
+
+---
+
 ## `send_signal`
 
 Deliver a POSIX signal to the PID of the session's currently active
