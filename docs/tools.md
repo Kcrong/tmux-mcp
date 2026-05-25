@@ -3338,3 +3338,106 @@ popup, default border, the user's shell:
 { "name": "display_popup", "arguments": {} }
 ```
 
+---
+
+## `wait_for`
+
+Synchronise across tmux clients via `tmux wait-for [-L|-S|-U] CHANNEL`.
+The four modes correspond to tmux's flag matrix:
+
+| Mode       | tmux invocation         | Blocking? | Use case                                                                                                                  |
+| ---------- | ----------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `wait`     | `tmux wait-for CHANNEL` | yes       | block until somebody fires `signal` on the same channel — the canonical "wait for milestone" rendezvous                   |
+| `signal`   | `tmux wait-for -S …`    | no        | wake every blocked waiter on the channel; tmux discards signals that arrive with no waiters listening (no buffering)      |
+| `lock`     | `tmux wait-for -L …`    | when held | acquire the channel as a mutex; second locker blocks until the first releases                                             |
+| `unlock`   | `tmux wait-for -U …`    | no        | release a previously-acquired lock so the next blocked locker can proceed                                                 |
+
+This is a **mutating** tool — `signal` / `unlock` change channel
+state, and the blocking modes hold a tmux client — so a `-read-only`
+deployment rejects it with `-32011` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                                                                                                                                                  |
+| ------------ | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`       | string  | no       | one of `wait`, `lock`, `signal`, `unlock`; default `wait`. Anything outside the enum is rejected with `-32602`.                                                                                                                                                        |
+| `channel`    | string  | yes      | rendezvous identifier; regex `^[A-Za-z0-9_-]+$`, len 1-128. Conservative shape rejects whitespace / shell metachars / dots / colons / slashes so a stray quote cannot slip into tmux's argv.                                                                            |
+| `timeout_ms` | integer | no       | caller-side deadline applied via `context.WithTimeout` for blocking modes (`wait`, `lock`); default 10000 (10s); range 0..600000 (10 min). `0` means "honour the request's existing context — no extra timeout". `signal` / `unlock` are non-blocking and ignore this. |
+
+The schema sets `additionalProperties: false`, so a typo'd field
+(e.g. `"channel_name"`, `"timeoutMs"`) fails fast with `-32602`
+instead of silently being ignored.
+
+tmux's own `wait-for` has no built-in deadline — it really does block
+forever until somebody fires `-S` (or the whole tmux server is
+restarted). The boundary attaches `context.WithTimeout` for `wait` /
+`lock` calls so a misbehaving signaller cannot pin a tools/call
+goroutine indefinitely; the schema's 10s default keeps that footgun
+closed by default while still being long enough to cover a realistic
+"wait for the next CI stage to start" rendezvous.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "woken":   true,
+  "mode":    "wait",        // resolved mode — echoes the schema default when omitted
+  "channel": "build_done"
+}
+```
+
+| Field     | Type    | Notes                                                                                                                                       |
+| --------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `woken`   | boolean | Always `true` on success — kept as a flat boolean so a future field (e.g. wait duration) can land alongside without breaking existing callers. |
+| `mode`    | string  | Resolved mode, useful when the caller omitted `mode` and wants to confirm the default `wait` is what actually ran.                          |
+| `channel` | string  | Echoed verbatim from the request.                                                                                                           |
+
+### Errors
+
+| Code     | Cause                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `channel` missing / malformed, `mode` outside the enum, `timeout_ms` outside `0..600000`, or an unknown field.                                 |
+| `-32003` | A `wait` / `lock` call exceeded its `timeout_ms` (or the request's parent context expired) — `errs.CodeContextCancelled`.                      |
+| `-32011` | Server is running in `-read-only` mode (this tool can mutate channel state and hold a client).                                                 |
+| `-32603` | tmux failed for an unexpected reason — e.g. `unlock` against a channel that was never locked surfaces here with the verbatim tmux stderr.      |
+
+### Examples
+
+A simple fire-and-forget signal — useful when a long-running command
+finishes and the agent wants to nudge a sibling that may be blocked
+on the same channel:
+
+```jsonc
+{ "mode": "signal", "channel": "build_done" }
+```
+
+The blocking peer of the above. Wait up to 30s for `build_done`,
+returning `{"woken": true, ...}` when the signal arrives or
+`-32003` when the deadline passes:
+
+```jsonc
+{ "mode": "wait", "channel": "build_done", "timeout_ms": 30000 }
+```
+
+Lock / unlock for mutual exclusion. Two callers issuing `lock`
+against the same channel are serialised — the second one blocks
+until the first issues `unlock`:
+
+```jsonc
+{ "mode": "lock",   "channel": "deploy_lock" }
+// ... critical section runs here ...
+{ "mode": "unlock", "channel": "deploy_lock" }
+```
+
+`timeout_ms: 0` is a deliberate sentinel: "no extra timeout — honour
+the request's existing context". Useful when the caller has already
+pinned a longer deadline upstream and does not want the tool to
+override it:
+
+```jsonc
+{ "mode": "wait", "channel": "ci_started", "timeout_ms": 0 }
+```
+
