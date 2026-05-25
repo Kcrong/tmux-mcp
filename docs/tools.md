@@ -3069,6 +3069,83 @@ Pair with `session_list` to find live sessions, then walk the tree:
 
 ---
 
+## `link_window`
+
+Share a window across sessions in place via
+`tmux link-window -s <src_session>:<src_window> -t <dst_session>:<dst_window>`.
+Unlike `window_move` (which relocates and removes the source) and
+`swap_window` (which trades two windows of the same session),
+`link_window` leaves the source intact: the same `#{window_id}` is
+reachable from both sessions, so a long-running build window can be
+exposed in a "monitor" session without losing the foreground in the
+working session.
+
+### Input
+
+| Field         | Type    | Required | Default | Notes                                                                              |
+| ------------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `src_session` | string  | yes      | —       | source session name; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `src_window`  | string  | yes      | —       | source window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`)             |
+| `dst_session` | string  | yes      | —       | destination session name; same regex/length policy as `src_session`                |
+| `dst_window`  | string  | yes      | —       | destination window name (same regex/length policy as `src_window`) or numeric index |
+| `kill`        | boolean | no       | `false` | when `true`, overwrite an existing dst window instead of erroring (tmux's `-k` flag) |
+
+The `(src_session, src_window)` and `(dst_session, dst_window)` pairs
+must differ — passing the same `<session>:<window>` rejects with
+`-32602` ("src and dst must differ") before tmux is consulted, so the
+boundary surfaces a more informative error than tmux's own no-op
+refusal. The schema sets `additionalProperties: false`, so any unknown
+field is rejected up front (a typo like `"src_win"` fails fast instead
+of silently producing a partial target).
+
+`kill=true` is the right setting when an agent wants to repeatedly
+expose the latest build into a fixed monitor slot — without it tmux
+refuses the call with "index in use" once the slot is occupied.
+`kill=false` (the default) is safer for one-shot links because it
+prevents an accidental overwrite of a window the user might still be
+attached to.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "linked": true, "dst": "monitor:1" }
+```
+
+`dst` echoes the destination handle in the form the caller can hand
+straight to `list_windows` / `send_keys` / `window_select` next, so a
+follow-up step does not have to reconstruct the colon-joined target
+itself. The src is omitted because the caller already supplied it.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `src_session`, `src_window`, `dst_session`, or `dst_window`; both pairs equal; or an unknown field was sent. |
+| `-32000` | A referenced session does not exist on this server, or one of the targets does not match a window (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the link (e.g. `kill=false` with the dst slot already in use, or other unexpected tmux failure). |
+
+### Example
+
+```jsonc
+{
+  "src_session": "build", "src_window": "watch",
+  "dst_session": "monitor", "dst_window": "1",
+  "kill": true
+}
+```
+
+Pair with `list_windows` against the destination session to confirm
+the linked window landed in the expected slot:
+
+```jsonc
+{ "name": "link_window",  "arguments": { "src_session": "build", "src_window": "watch", "dst_session": "monitor", "dst_window": "1" } }
+{ "name": "list_windows", "arguments": { "session": "monitor" } }
+```
+
+---
+
 ## `set_buffer`
 
 Write `data` into a tmux paste buffer via `tmux set-buffer`. Buffers
