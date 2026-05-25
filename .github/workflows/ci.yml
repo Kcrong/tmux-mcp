@@ -96,6 +96,21 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage-linux.out | tail -n 40
 
+      # Codecov merges multiple uploads server-side per
+      # https://docs.codecov.com/docs/merging-reports — flag the upload as
+      # `linux` so the report keeps per-OS slices, and let test-macos
+      # upload its own profile with `flags: macos`. No local merge step
+      # required.
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+        with:
+          files: coverage-linux.out
+          flags: linux
+          disable_search: true
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         if: always()
         with:
@@ -134,74 +149,22 @@ jobs:
       - name: test (macOS-specific behavior)
         run: go test ./... -count=1 -covermode=atomic -coverprofile=coverage-macos.out
 
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+        with:
+          files: coverage-macos.out
+          flags: macos
+          disable_search: true
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         if: always()
         with:
           name: coverage-macos
           path: coverage-macos.out
           retention-days: 14
-
-  coverage-upload:
-    # Merges Linux + macOS coverage profiles so Codecov sees the full picture.
-    # Runs after both gates so a single failure on either platform stops the
-    # upload — partial coverage is misleading.
-    needs: [test-linux, test-macos]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
-        with:
-          name: coverage-linux
-          path: cov
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
-        with:
-          name: coverage-macos
-          path: cov
-
-      - name: merge profiles
-        # GOTOOLCHAIN=auto so `go install gocovmerge@latest` can pull the
-        # newer toolchain its transitive deps require — setup-go pins the
-        # local toolchain to go.mod's `go` directive (1.24.6), but recent
-        # golang.org/x/tools versions need 1.25+.
-        env:
-          GOTOOLCHAIN: auto
-        run: |
-          set -eux
-          go install github.com/wadey/gocovmerge@latest
-          "$(go env GOPATH)/bin/gocovmerge" cov/coverage-linux.out cov/coverage-macos.out > coverage.out
-          go tool cover -func=coverage.out | tail -n 40
-          go tool cover -html=coverage.out -o coverage.html
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
-        if: always()
-        with:
-          name: coverage-html
-          path: coverage.html
-          retention-days: 14
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
-        if: always()
-        with:
-          name: coverage
-          path: coverage.out
-          retention-days: 14
-
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
 
   install-test-linux:
     # Verifies `go install github.com/Kcrong/tmux-mcp/cmd/tmux-mcp@<sha>` works
