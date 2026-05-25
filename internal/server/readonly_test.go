@@ -84,6 +84,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"send_signal",
 		"resize",
 		"pane_select",
+		"select_pane",
 		"pane_split",
 		"pane_kill",
 		"pane_swap",

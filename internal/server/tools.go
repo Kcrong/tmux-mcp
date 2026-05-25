@@ -742,6 +742,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listPanes(ctx, call.Arguments)
 	case "pane_select":
 		return t.paneSelect(ctx, call.Arguments)
+	case "select_pane":
+		return t.selectPane(ctx, call.Arguments)
 	case "pane_split":
 		return t.paneSplit(ctx, call.Arguments)
 	case "pane_kill":
