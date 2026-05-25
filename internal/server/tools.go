@@ -744,6 +744,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.movePane(ctx, call.Arguments)
 	case "respawn_pane":
 		return t.respawnPane(ctx, call.Arguments)
+	case "respawn_window":
+		return t.respawnWindow(ctx, call.Arguments)
 	case "clear_history":
 		return t.clearHistory(ctx, call.Arguments)
 	case "clock_mode":
