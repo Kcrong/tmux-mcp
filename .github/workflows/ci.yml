@@ -2,47 +2,29 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   merge_group:
 
 permissions:
   contents: read
 
+# PR runs cancel on new push to save compute. Main / merge_group preserve
+# every run so the workflow_run chain (security → stress → merge-gate)
+# always has a definitive upstream conclusion to react to.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # `changes` runs first and tells every downstream job whether Go-relevant
-  # files (or the workflow itself) changed. Docs-only PRs short-circuit the
-  # Go pipeline by leaving the conditional jobs as `skipped`, which still
-  # satisfies any required-status-check rule on those job names.
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      go: ${{ steps.filter.outputs.go }}
-      workflows: ${{ steps.filter.outputs.workflows }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - id: filter
-        uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590  # v3.0.3
-        with:
-          filters: |
-            go:
-              - '**/*.go'
-              - 'go.mod'
-              - 'go.sum'
-              - '.github/workflows/ci.yml'
-              - '.golangci.yml'
-              - 'Makefile'
-            workflows:
-              - '.github/workflows/**'
-
   lint:
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -81,9 +63,8 @@ jobs:
           version: v2.12.2
           args: --timeout=5m
 
-  test:
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
+  test-linux:
+    needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -110,45 +91,25 @@ jobs:
         run: go build -trimpath ./...
 
       - name: test (race + coverage)
-        run: go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out
+        run: go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage-linux.out
 
       - name: coverage summary
-        run: go tool cover -func=coverage.out | tail -n 40
-
-      - name: coverage HTML
-        if: always()
-        run: go tool cover -html=coverage.out -o coverage.html
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-html
-          path: coverage.html
-          retention-days: 14
+        run: go tool cover -func=coverage-linux.out | tail -n 40
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         if: always()
         with:
-          name: coverage
-          path: coverage.out
+          name: coverage-linux
+          path: coverage-linux.out
           retention-days: 14
 
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
-          # Public repo: tokenless upload works for in-repo pushes; PRs
-          # from forks may be unauthenticated and silently skipped. Set
-          # the CODECOV_TOKEN repo secret to lift that.
-          token: ${{ secrets.CODECOV_TOKEN }}
-
   test-macos:
-    # Advisory only — surfaces macOS-specific tmux/process behavior
-    # (e.g. BSD ps, fork/exec semantics) without blocking merges.
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
+    # Gate. Linux side already covers race detection — macOS exists to catch
+    # OS-specific divergence (BSD ps, fork/exec, kqueue, brew tmux quirks).
+    # Once task #220 lands build-tag classification, this will narrow to the
+    # macOS-only suite via -tags=integration_macos. For now it runs the full
+    # suite without -race to avoid duplicating Linux's race coverage.
+    needs: [lint]
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -170,25 +131,120 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: test (race)
-        run: go test ./... -count=1 -race
+      - name: test (macOS-specific behavior)
+        run: go test ./... -count=1 -covermode=atomic -coverprofile=coverage-macos.out
 
-  windows-build:
-    # Cross-compile smoke test. tmux does not run on Windows, but we
-    # ship Windows binaries in releases so users with a Go toolchain on
-    # Windows (and a Linux/macOS host via ssh or WSL) can grab one.
-    # Catches accidental Linux-only imports before they hit a release.
-    # Gated on `test` so we skip the cross-build whenever unit tests are
-    # already broken — the cross-compile rarely surfaces issues that
-    # weren't already caught by the Linux tests.
-    needs: [changes, test]
-    if: needs.changes.outputs.go == 'true'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: coverage-macos
+          path: coverage-macos.out
+          retention-days: 14
+
+  coverage-upload:
+    # Merges Linux + macOS coverage profiles so Codecov sees the full picture.
+    # Runs after both gates so a single failure on either platform stops the
+    # upload — partial coverage is misleading.
+    needs: [test-linux, test-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: coverage-linux
+          path: cov
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: coverage-macos
+          path: cov
+
+      - name: merge profiles
+        run: |
+          set -eux
+          go install github.com/wadey/gocovmerge@latest
+          "$(go env GOPATH)/bin/gocovmerge" cov/coverage-linux.out cov/coverage-macos.out > coverage.out
+          go tool cover -func=coverage.out | tail -n 40
+          go tool cover -html=coverage.out -o coverage.html
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: coverage-html
+          path: coverage.html
+          retention-days: 14
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  install-test-linux:
+    # Verifies `go install github.com/Kcrong/tmux-mcp/cmd/tmux-mcp@<sha>` works
+    # end-to-end on a clean toolchain. Catches missing deps, non-vendored
+    # imports, and ldflags surprises before they hit a release.
+    needs: [test-linux, test-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: go install from current commit
+        run: |
+          set -eux
+          go install ./cmd/tmux-mcp
+          "$(go env GOPATH)/bin/tmux-mcp" -version
 
-      - uses: actions/setup-go@v5
+  install-test-macos:
+    needs: [test-linux, test-macos]
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: go install from current commit
+        run: |
+          set -eux
+          go install ./cmd/tmux-mcp
+          "$(go env GOPATH)/bin/tmux-mcp" -version
+
+  windows-build:
+    # Cross-compile smoke test. tmux does not run on Windows, but we ship
+    # Windows binaries in releases. Catches accidental Linux-only imports
+    # before they hit a release.
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -205,72 +261,3 @@ jobs:
           GOOS: windows
           GOARCH: arm64
         run: go build -trimpath -o tmux-mcp-arm64.exe ./cmd/tmux-mcp
-
-  go-install:
-    # Smoke test for `go install ./cmd/tmux-mcp`. Gated on `test` so we
-    # don't burn minutes installing a binary whose unit tests are red.
-    needs: [changes, test]
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-      - name: go install from current commit
-        run: |
-          set -eux
-          go install ./cmd/tmux-mcp
-          "$(go env GOPATH)/bin/tmux-mcp" -version
-
-  benchmarks:
-    # Advisory only — does not block merge. Reviewers see the benchstat
-    # comparison as a workflow artifact so perf regressions surface at
-    # review time instead of slipping in silently.
-    # Gated on `test` so we don't bench-compare a tree whose unit tests
-    # are already failing.
-    needs: [changes, test]
-    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: bench main
-        run: |
-          set -eux
-          git checkout origin/${{ github.event.pull_request.base.ref }}
-          go test -bench=. -benchmem -run=^$ -count=5 ./... > /tmp/main.txt 2>&1 || true
-
-      - name: bench PR
-        run: |
-          set -eux
-          git checkout ${{ github.event.pull_request.head.sha }}
-          go test -bench=. -benchmem -run=^$ -count=5 ./... > /tmp/pr.txt 2>&1
-
-      - name: install benchstat
-        run: go install golang.org/x/perf/cmd/benchstat@latest
-
-      - name: compare
-        run: |
-          "$(go env GOPATH)/bin/benchstat" /tmp/main.txt /tmp/pr.txt | tee benchstat.txt
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: benchstat
-          path: |
-            /tmp/main.txt
-            /tmp/pr.txt
-            benchstat.txt

@@ -1,0 +1,128 @@
+name: security
+
+# Triggered after CI completes. Runs CodeQL, govulncheck, and gosec in
+# parallel. Decoupled from CI so a security-only re-run (e.g. a CVE drop)
+# doesn't churn the whole test matrix.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+concurrency:
+  group: security-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  # CI failures should not silently produce missing security checks. Skip
+  # the work but emit a `success` conclusion so merge-gate sees the
+  # workflow and treats CI failure (not security) as the blocker.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    if: github.event.workflow_run.conclusion == 'success'
+    outputs:
+      sha: ${{ steps.s.outputs.sha }}
+    steps:
+      - id: s
+        run: echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+
+  codeql:
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        with:
+          languages: go
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        with:
+          category: '/language:go'
+
+  govulncheck:
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: govulncheck
+        run: |
+          set -eux
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  gosec:
+    # Informational: findings upload to the Security tab, but the job does
+    # not fail on findings. Drop `|| true` once the baseline is clean.
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install gosec
+        run: |
+          set -eux
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          "$(go env GOPATH)/bin/gosec" -version
+
+      - name: Run gosec (SARIF)
+        run: |
+          set -eux
+          "$(go env GOPATH)/bin/gosec" -no-fail -fmt sarif -out gosec.sarif ./... || true
+          "$(go env GOPATH)/bin/gosec" -fmt text ./... || true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: gosec-sarif
+          path: gosec.sarif
+          if-no-files-found: ignore
+          retention-days: 14
