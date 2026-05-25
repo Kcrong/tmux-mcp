@@ -5845,6 +5845,24 @@ under the hood. It is allowed under `-read-only`.
 | Field    | Type   | Required | Notes                                                                                                                                                                |
 | -------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `target` | string | no       | optional session name; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64). When set, scope the scan to this session. When omitted, scan everything. |
+## `source_buffer`
+
+Read the named tmux paste buffer (or the most-recently-added buffer
+when `name` is omitted) and feed its contents to tmux's command
+parser as a sequence of commands — the same parser that processes
+lines from `~/.tmux.conf` or `tmux source-file`. Wraps
+`tmux source-buffer [-b NAME]`.
+
+Useful for staging dynamic config edits in a paste buffer (via
+`set_buffer` / `load_buffer`) and applying them without writing a
+file to disk. Buffers live on the tmux server (not on a session), so
+this tool is not session-scoped.
+
+### Input
+
+| Field  | Type   | Required | Notes                                                                                            |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `name` | string | no       | optional buffer name; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty / omitted → most-recent buffer. |
 
 ### Output
 
@@ -5893,6 +5911,16 @@ whitespace), the `command` field reflects the **stored** form, not
 the original input the caller passed to `set_hook`. Bodies with
 embedded whitespace round-trip verbatim because tmux preserves the
 surrounding quotes; bodies without whitespace may come back unquoted.
+  "sourced": true,
+  "name":    "cfg"   // echoed back when the caller pinned a name; empty otherwise.
+}
+```
+
+The buffer body is consumed verbatim by tmux's command parser; one
+command per line, with the same continuation / quoting rules as
+`~/.tmux.conf`. Side-effects (option changes, key bindings, hooks)
+land on the tmux server immediately and persist for the rest of the
+server's lifetime.
 
 ### Errors
 
@@ -5965,6 +5993,17 @@ Fire-and-forget (the call returns before the shell command exits):
 | `-32602` | `target` outside the regex/length policy, or an unknown field on `arguments`. |
 | `-32000` | `target` names a session that does not exist on this server (`errs.ErrSessionNotFound`). |
 | `-32603` | tmux refused the show for an unexpected reason (rare; typically a fork/exec error). |
+| `-32602` | `name` outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | The named buffer does not exist on this server, or no tmux server is running yet (`errs.ErrSessionNotFound`). |
+| `-32603` | A command in the buffer body is malformed (unknown verb, bad syntax) or tmux refused the source for an unexpected reason. |
+
+The split between `-32000` and `-32603` is load-bearing: missing
+buffers map to the same code clients already branch on for
+`show_buffer`, while parse errors against the buffer body — which
+are user-input mistakes against tmux's command grammar — surface as
+the generic internal-error code so a client can distinguish "the
+buffer is not here" from "the buffer is here but its contents are
+not valid tmux commands".
 
 ### Examples
 
@@ -5982,5 +6021,19 @@ A typical install-then-verify chain pairs with
 ```jsonc
 { "name": "set_hook",  "arguments": { "name": "pane-died", "command": "display-message \"x\"", "target": "demo" } }
 { "name": "show_hooks", "arguments": { "target": "demo" } }
+// Apply the most-recently-added buffer (the common case after a
+// fresh set_buffer).
+{}
+
+// Apply a specific named buffer.
+{ "name": "cfg" }
+```
+
+A typical chain stages config without touching disk:
+
+```jsonc
+{ "name": "set_buffer",    "arguments": { "data": "set -g status-keys vi", "name": "cfg" } }
+{ "name": "source_buffer", "arguments": { "name": "cfg" } }
+{ "name": "show_options",  "arguments": { "scope": "server" } }
 ```
 

@@ -900,6 +900,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.commandPrompt(ctx, call.Arguments)
 	case "confirm_before":
 		return t.confirmBefore(ctx, call.Arguments)
+	case "source_buffer":
+		return t.sourceBuffer(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path
