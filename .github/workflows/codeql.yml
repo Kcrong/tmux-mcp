@@ -20,8 +20,32 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Same `changes` gate as ci.yml so docs-only PRs short-circuit the
+  # CodeQL build. Schedule events fall through to `analyze` regardless
+  # because path-filter has nothing to compare against on a cron run
+  # and we always want the weekly re-scan to execute.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - id: filter
+        if: github.event_name != 'schedule'
+        uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590  # v3.0.3
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/workflows/codeql.yml'
+
   analyze:
     name: Analyze (Go)
+    needs: changes
+    if: github.event_name == 'schedule' || needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

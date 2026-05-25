@@ -75,13 +75,22 @@ jobs:
           go-version: '1.24'
           cache: true
 
+      # Cache the gosec binary so we skip the ~10s `go install` until
+      # we deliberately bump the pinned tag in the cache key below.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/go/bin/gosec
+          key: gosec-${{ runner.os }}-v2.21.4
+
       - name: Install gosec
         # Pin to a specific tag (not @latest) for reproducible CI runs.
         # Bump deliberately when upstream cuts a release we want to pull
         # in.
         run: |
           set -eux
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          if [ ! -x ~/go/bin/gosec ]; then
+            go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          fi
           "$(go env GOPATH)/bin/gosec" -version
 
       - name: Run gosec (SARIF)
