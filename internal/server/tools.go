@@ -776,6 +776,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listWindows(ctx, call.Arguments)
 	case "list_clients":
 		return t.listClients(ctx, call.Arguments)
+	case "show_messages":
+		return t.showMessages(ctx, call.Arguments)
 	case "list_keys":
 		return t.listKeys(ctx, call.Arguments)
 	case "unbind_key":
