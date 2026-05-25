@@ -541,6 +541,7 @@ embedded secrets stay out of the audit trail.
 | `session_kill` | Kill a session by name. |
 | `kill_all_sessions` | Kill every session this server manages and clear all snapshot history. |
 | `session_describe` | Return structured metadata for one session (windows, panes, size, creation time). |
+| `has_session` | Yes/no existence probe via `tmux has-session`; returns `{"exists": bool}` and treats missing sessions as a literal answer, not an error. |
 | `session_rename` | Rename an existing session via `tmux rename-session -t OLD NEW`. |
 | `session_inspect` | Return process-level metadata (pid, cwd, command) for a session's active pane. |
 | `send_keys` | Type into a session. Accepts literal text or named keys (`C-c`, `Up`, `Enter`, …). |
