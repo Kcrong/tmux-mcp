@@ -168,6 +168,12 @@ jobs:
           path: cov
 
       - name: merge profiles
+        # GOTOOLCHAIN=auto so `go install gocovmerge@latest` can pull the
+        # newer toolchain its transitive deps require — setup-go pins the
+        # local toolchain to go.mod's `go` directive (1.24.6), but recent
+        # golang.org/x/tools versions need 1.25+.
+        env:
+          GOTOOLCHAIN: auto
         run: |
           set -eux
           go install github.com/wadey/gocovmerge@latest
