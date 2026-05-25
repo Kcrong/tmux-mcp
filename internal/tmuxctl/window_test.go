@@ -14,10 +14,11 @@ import (
 // window appears in list-windows under the requested name. Catches
 // argv ordering (the -n / -- separator) and the -P/-F output parser.
 func TestCreateWindow_NamedAndCommand(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "cw", Command: "/bin/sh", Width: 80, Height: 20,
@@ -54,10 +55,11 @@ func TestCreateWindow_NamedAndCommand(t *testing.T) {
 // WindowResult when the caller omits the name — tmux auto-assigns a
 // label and the parser must surface whatever tmux reports.
 func TestCreateWindow_DefaultNameWhenEmpty(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "cwd", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -78,10 +80,11 @@ func TestCreateWindow_DefaultNameWhenEmpty(t *testing.T) {
 // TestCreateWindow_BackgroundFlag confirms Select=false maps to the -d
 // flag — the active window pointer should still be the original one.
 func TestCreateWindow_BackgroundFlag(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "cwb", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -107,10 +110,11 @@ func TestCreateWindow_BackgroundFlag(t *testing.T) {
 // contract: calling CreateWindow against an unknown session must
 // surface errs.ErrSessionNotFound.
 func TestCreateWindow_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	// Anchor so we exercise the "server up, session missing" branch.
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -128,10 +132,11 @@ func TestCreateWindow_MissingSessionWrapsSentinel(t *testing.T) {
 // would otherwise resolve "" to whatever it considers current, which
 // is rarely what an agent meant to ask for.
 func TestCreateWindow_RejectsEmptySession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	_, err := c.CreateWindow(ctx, WindowSpec{Session: ""})
 	if err == nil {
 		t.Fatal("expected error for empty session")
@@ -145,10 +150,11 @@ func TestCreateWindow_RejectsEmptySession(t *testing.T) {
 // windows in a session, killing the second one leaves the session
 // alive with one window remaining.
 func TestKillWindow_RemovesNonLastWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "kw", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -184,10 +190,11 @@ func TestKillWindow_RemovesNonLastWindow(t *testing.T) {
 // boundary "is this the last window?" check. After a session with two
 // windows is set up, CountWindows must return 2.
 func TestCountWindows_ReturnsExpected(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "cn", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -210,10 +217,11 @@ func TestCountWindows_ReturnsExpected(t *testing.T) {
 // CodeSessionNotFound — the same contract every other tmuxctl method
 // upholds.
 func TestCountWindows_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -231,10 +239,11 @@ func TestCountWindows_MissingSessionWrapsSentinel(t *testing.T) {
 // this the JSON-RPC layer would return CodeInternal instead of
 // CodeSessionNotFound, breaking the "branch on code" contract.
 func TestKillWindow_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -250,10 +259,11 @@ func TestKillWindow_MissingSessionWrapsSentinel(t *testing.T) {
 // TestKillWindow_RejectsEmptyArgs guards both up-front nil-checks so a
 // `tmux kill-window` is never issued with a partial target string.
 func TestKillWindow_RejectsEmptyArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.KillWindow(ctx, "", "0"); err == nil ||
 		!strings.Contains(err.Error(), "session required") {
 		t.Fatalf("empty session: got %v, want \"session required\"", err)

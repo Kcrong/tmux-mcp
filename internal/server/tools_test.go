@@ -62,6 +62,7 @@ func extractText(t *testing.T, result any) string {
 }
 
 func TestHandle_InitializeAndList(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx := context.Background()
@@ -102,10 +103,11 @@ func TestHandle_InitializeAndList(t *testing.T) {
 }
 
 func TestHandle_SessionRoundTrip(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -154,10 +156,11 @@ func TestHandle_SessionRoundTrip(t *testing.T) {
 }
 
 func TestHandle_SnapshotDiff(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -209,10 +212,11 @@ func TestHandle_SnapshotDiff(t *testing.T) {
 }
 
 func TestHandle_SessionKillForgetsSnapshotHistory(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -242,6 +246,7 @@ func TestHandle_SessionKillForgetsSnapshotHistory(t *testing.T) {
 }
 
 func TestCapCaptureBody(t *testing.T) {
+	t.Parallel()
 	mkLines := func(n int) string {
 		parts := make([]string, n)
 		for i := 0; i < n; i++ {
@@ -251,6 +256,7 @@ func TestCapCaptureBody(t *testing.T) {
 	}
 
 	t.Run("visible no cap when max_lines=0", func(t *testing.T) {
+		t.Parallel()
 		body := mkLines(200)
 		got, truncated := capCaptureBody(body, tmuxctl.CaptureVisible, 0)
 		if truncated {
@@ -262,6 +268,7 @@ func TestCapCaptureBody(t *testing.T) {
 	})
 
 	t.Run("visible respects max_lines", func(t *testing.T) {
+		t.Parallel()
 		body := mkLines(200)
 		got, truncated := capCaptureBody(body, tmuxctl.CaptureVisible, 50)
 		if !truncated {
@@ -280,6 +287,7 @@ func TestCapCaptureBody(t *testing.T) {
 	})
 
 	t.Run("scrollback applies default cap when max_lines=0", func(t *testing.T) {
+		t.Parallel()
 		body := mkLines(6000)
 		got, truncated := capCaptureBody(body, tmuxctl.CaptureScrollback, 0)
 		if !truncated {
@@ -295,6 +303,7 @@ func TestCapCaptureBody(t *testing.T) {
 	})
 
 	t.Run("scrollback respects explicit max_lines", func(t *testing.T) {
+		t.Parallel()
 		body := mkLines(1000)
 		got, truncated := capCaptureBody(body, tmuxctl.CaptureScrollback, 100)
 		if !truncated {
@@ -307,6 +316,7 @@ func TestCapCaptureBody(t *testing.T) {
 	})
 
 	t.Run("scrollback short body unchanged", func(t *testing.T) {
+		t.Parallel()
 		body := mkLines(10)
 		got, truncated := capCaptureBody(body, tmuxctl.CaptureScrollback, 0)
 		if truncated {
@@ -319,10 +329,11 @@ func TestCapCaptureBody(t *testing.T) {
 }
 
 func TestCaptureHandler_ScrollbackTruncated(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -378,10 +389,11 @@ func TestCaptureHandler_ScrollbackTruncated(t *testing.T) {
 }
 
 func TestCaptureHandler_VisibleBackcompat(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -423,6 +435,7 @@ func TestCaptureHandler_VisibleBackcompat(t *testing.T) {
 }
 
 func TestHandle_ToolCallUnknown(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{"name": "nonexistent_tool", "arguments": map[string]any{}})
@@ -459,6 +472,7 @@ func initializeServerInfo(t *testing.T, tools *Tools) map[string]any {
 // (ldflags) and the MCP initialize response: whatever the binary's
 // version variable holds is what the server advertises.
 func TestInitialize_VersionFromField(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{Version: "1.2.3"}
 	info := initializeServerInfo(t, tools)
 	if got := info["version"]; got != "1.2.3" {
@@ -473,6 +487,7 @@ func TestInitialize_VersionFromField(t *testing.T) {
 // fallback. main.version defaults to "dev" too, so an unversioned build
 // keeps that string end-to-end.
 func TestInitialize_VersionDefaultsToDev(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	info := initializeServerInfo(t, tools)
 	if got := info["version"]; got != "dev" {
@@ -485,10 +500,11 @@ func TestInitialize_VersionDefaultsToDev(t *testing.T) {
 // errs.CodeSessionNotFound (-32000) so MCP clients can branch on a
 // stable code rather than the (version-specific) tmux stderr text.
 func TestHandle_SessionKillUnknownSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Start the tmux server with a real session so the dispatcher hits
 	// the "server is up but the named session does not exist" branch
@@ -522,6 +538,7 @@ func TestHandle_SessionKillUnknownSessionMapsCode(t *testing.T) {
 // invalid-params code (-32602) still flows through unchanged — typed
 // errors must not leak into the params-validation path.
 func TestHandle_InvalidParamsCodeUnchanged(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	// Send tools/call with non-JSON-object params so json.Unmarshal fails.

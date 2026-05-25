@@ -594,7 +594,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// who passed -log-output=PATH get a private append-only file; the
 	// stdout magic value is honoured for debugging but corrupts the
 	// JSON-RPC framing if combined with serving stdio.
-	slog.SetDefault(slog.New(newLogHandler(logWriter, lvl, format, *logSource)))
+	//
+	// We deliberately do NOT call slog.SetDefault here. Mutating the
+	// process-global default leaks into every t.Parallel() test that
+	// constructs its own *slog.Logger and races on the global state,
+	// producing the flake reproduced in the suite. Instead we keep the
+	// configured logger as a local value and inject it into Serve and
+	// the controller via dependency injection (WithServeLogger), so
+	// tests can construct an isolated logger per t.Parallel() without
+	// touching shared state.
+	logger := slog.New(newLogHandler(logWriter, lvl, format, *logSource))
 
 	// Write the pid file before opening any sockets so a permission /
 	// "stale pid file" failure surfaces as a clean startup error and we
@@ -612,7 +621,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// worth surfacing as a non-zero exit — the process has
 			// already finished its real work.
 			if rerr := os.Remove(*pidFile); rerr != nil && !os.IsNotExist(rerr) {
-				slog.Warn("pid file cleanup failed", "path", *pidFile, "err", rerr)
+				logger.Warn("pid file cleanup failed", "path", *pidFile, "err", rerr)
 			}
 		}()
 	}
@@ -639,7 +648,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	go func() {
 		select {
 		case sig := <-sigCh:
-			slog.Info("shutdown signal received",
+			logger.Info("shutdown signal received",
 				"signal", sig.String(),
 				"shutdown_timeout", *shutdownTimeout,
 			)
@@ -688,7 +697,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("metrics listener %q: %w", *metricsAddr, err)
 		}
-		slog.Info("metrics exporter listening",
+		logger.Info("metrics exporter listening",
 			"addr", metricsServer.Addr(),
 			"pprof", *enablePprof,
 		)
@@ -712,7 +721,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// to the legacy ProbeVersion(ctx) so the unset case is
 			// byte-compatible with pre-flag deployments.
 			if _, perr := tmuxctl.ProbeVersionWithBinary(probeCtx, *tmuxBin); perr != nil {
-				slog.Warn("startup probe failed; /healthz stays 503",
+				logger.Warn("startup probe failed; /healthz stays 503",
 					"err", perr)
 				return
 			}
@@ -775,6 +784,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 	serr := server.Serve(ctx, stdin, stdout, tools.Handle,
+		// Inject the local logger via DI so Serve / Audit / IdleReaper /
+		// callLimiter / Metrics all log against the same operator-
+		// configured handler without anyone calling slog.SetDefault.
+		// This is what makes t.Parallel() tests safe: each test
+		// constructs its own *slog.Logger and there is no shared
+		// process-global default to race on.
+		server.WithServeLogger(logger),
 		server.WithMaxConcurrentCalls(*maxConcurrentCalls),
 		server.WithMaxResponseBytes(maxResponseBytes),
 		server.WithAudit(audit),

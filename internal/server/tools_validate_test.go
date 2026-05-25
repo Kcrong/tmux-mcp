@@ -12,6 +12,7 @@ import (
 // params) before any tmux command is run, so a bare *Tools (with no
 // real Controller) is fine.
 func TestValidate_ToolCall_Failures(t *testing.T) {
+	t.Parallel()
 	// A nil controller suffices because none of these inputs should
 	// ever reach the tmux call — they must fail validation first.
 	tools := &Tools{}
@@ -198,6 +199,7 @@ func TestValidate_ToolCall_Failures(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			argsRaw, err := json.Marshal(tc.args)
 			if err != nil {
 				t.Fatalf("marshal args: %v", err)
@@ -232,6 +234,7 @@ func TestValidate_ToolCall_Failures(t *testing.T) {
 // because we use a nil controller — we only assert that validation
 // itself does not reject the input.
 func TestValidate_AcceptsLiberalDefaults(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		tool string
@@ -290,6 +293,7 @@ func TestValidate_AcceptsLiberalDefaults(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			argsRaw, err := json.Marshal(tc.args)
 			if err != nil {
 				t.Fatalf("marshal args: %v", err)

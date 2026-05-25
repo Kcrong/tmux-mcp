@@ -18,10 +18,11 @@ import (
 // documented arguments, and the response envelope carries the
 // `{"cleared": true}` ack.
 func TestHandle_ClearHistory_DropsScrollback(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -104,6 +105,7 @@ func TestHandle_ClearHistory_DropsScrollback(t *testing.T) {
 // than falling through to tmux with an empty -t value (which tmux
 // would resolve to whatever pane it considers current).
 func TestHandle_ClearHistory_RejectsMissingTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -123,6 +125,7 @@ func TestHandle_ClearHistory_RejectsMissingTarget(t *testing.T) {
 // `target` so a stray quote/whitespace can't slip through to the tmux
 // argv.
 func TestHandle_ClearHistory_RejectsBadTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -144,10 +147,11 @@ func TestHandle_ClearHistory_RejectsBadTarget(t *testing.T) {
 // that clear_history against a target on an unknown session surfaces
 // CodeSessionNotFound (-32000), mirroring pane_kill / pane_select.
 func TestHandle_ClearHistory_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -179,6 +183,7 @@ func TestHandle_ClearHistory_MissingSessionMapsCode(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via the
 // schema endpoint.
 func TestHandle_ToolsList_IncludesClearHistory(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

@@ -1,28 +1,47 @@
 name: stress
+
+# Reusable workflow invoked from ci.yml. Runs the stress harness (race +
+# leak detection) and benchmarks (benchstat-compared against the PR base)
+# in parallel.
+#
+# Inputs the caller MUST supply:
+#   * base_ref — branch name to benchstat-compare against. Empty for main
+#     pushes (the bench job falls back to HEAD~1) or fork PRs that we
+#     can't fetch the base for (auto-skip).
+#   * event — the parent event ('pull_request' | 'push' | 'merge_group').
+#     Drives the HEAD~1 fallback for push events.
+#   * bypass_benchmark_regression — when true, a statistically significant
+#     benchstat regression is logged but does not fail the job. Used by
+#     the caller to honor an `expected-regression` PR label without
+#     punching a hole in the gate for normal PRs.
+#
+# Baseline behavior: if there is no resolvable baseline (first run, fork
+# PR, etc.), benchstat passes automatically.
+
 on:
-  # Manual trigger so anyone with write access can spot-check the
-  # stress suite before/after a risky change. The schedule below also
-  # runs it once a week so leaks cannot accumulate undetected between
-  # human-driven runs.
-  workflow_dispatch:
-  schedule:
-    # Weekly Monday 06:00 UTC. Cron timing matches CodeQL's slot, but
-    # this workflow runs on a separate runner so they don't contend.
-    - cron: '0 6 * * 1'
+  workflow_call:
+    inputs:
+      base_ref:
+        type: string
+        required: false
+        default: ''
+      event:
+        type: string
+        required: true
+      bypass_benchmark_regression:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
-
-concurrency:
-  group: stress-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   stress:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install tmux
         run: |
@@ -35,7 +54,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends tmux
           tmux -V
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -68,12 +87,10 @@ jobs:
             -run='^TestStress' \
             -v 2>&1 | tee stress-artifacts/stress.log
 
-      - name: post-run goroutine sample
+      - name: post-run summary
         if: always()
         run: |
           set -eux
-          # Lightweight summary the artifact viewer can grep without
-          # downloading the full log.
           {
             echo "## stress run summary"
             echo "ref: ${GITHUB_REF}"
@@ -85,9 +102,130 @@ jobs:
             tail -n 50 stress-artifacts/stress.log || true
           } > stress-artifacts/summary.md
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: stress-artifacts
           path: stress-artifacts/
+          retention-days: 30
+
+  benchmarks:
+    # Compares this commit's bench results against the PR base (or main on
+    # main pushes) using benchstat. A regression with default p-value 0.05
+    # fails the job unless inputs.bypass_benchmark_regression is true.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Install tmux
+        run: |
+          set -eux
+          if command -v tmux >/dev/null 2>&1; then
+            tmux -V
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux
+          tmux -V
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: bench (this commit)
+        run: |
+          set -eux
+          mkdir -p bench
+          go test -bench=. -benchmem -run=^$ -count=10 ./... > bench/head.txt 2>&1
+
+      - name: bench (baseline)
+        id: baseline
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          EVENT: ${{ inputs.event }}
+        run: |
+          set -eux
+          base_ref="$BASE_REF"
+          # Push to main → compare HEAD against HEAD~1; PR → compare against
+          # PR base; fork PR with no base ref → no baseline (auto-pass).
+          if [ -z "$base_ref" ] && [ "$EVENT" = "push" ]; then
+            base_ref="HEAD~1"
+          fi
+          if [ -z "$base_ref" ]; then
+            echo "no baseline available — skipping comparison"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Resolve to an actual rev so checkout below works for both branch
+          # names and HEAD~N.
+          if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            git fetch --depth=50 origin "$base_ref" || true
+            base_ref="origin/$base_ref"
+          fi
+          if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            echo "could not resolve baseline $base_ref — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          git checkout "$base_ref" -- .
+          go test -bench=. -benchmem -run=^$ -count=10 ./... > bench/base.txt 2>&1 || true
+          # Restore the head tree for the compare step.
+          git checkout "$head_sha" -- .
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: install benchstat
+        if: steps.baseline.outputs.skip != 'true'
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: compare
+        if: steps.baseline.outputs.skip != 'true'
+        env:
+          BYPASS: ${{ inputs.bypass_benchmark_regression }}
+          # Tolerance below which a stat-significant slowdown is treated
+          # as runner noise. GitHub-hosted runner variance routinely puts
+          # +0.3..1% changes at p<0.05 even when the code is identical
+          # (workflow-only PRs reproduce this), so a finer threshold just
+          # produces false-positive blocks. Hand-tunable as the codebase
+          # adds bench coverage.
+          REGRESSION_THRESHOLD_PCT: '15'
+        run: |
+          set -eux
+          # Default benchstat p-value (0.05) — a stat-significant regression
+          # exits non-zero. Tee the report so reviewers see it in the log
+          # AND in the artifact.
+          "$(go env GOPATH)/bin/benchstat" -row .name bench/base.txt bench/head.txt | tee bench/benchstat.txt
+          # benchstat doesn't exit non-zero on regressions; we parse the
+          # delta column. A line like `WaitForText  184n  185n  +0.33% (p=0.024 n=10)`
+          # is statistically significant but uninteresting; only fail when
+          # the magnitude exceeds REGRESSION_THRESHOLD_PCT AND p<0.05.
+          regressions=$(awk -v thr="$REGRESSION_THRESHOLD_PCT" '
+            match($0, /\+([0-9]+(\.[0-9]+)?)%[[:space:]]+\(p=/, m) {
+              # Extract p-value: token after `p=` and before `,` or `)`.
+              if (match($0, /p=([0-9]+(\.[0-9]+)?)/, p)) {
+                if (m[1]+0 >= thr+0 && p[1]+0 < 0.05) print
+              }
+            }
+          ' bench/benchstat.txt)
+          if [ -n "$regressions" ]; then
+            echo "::warning::benchstat regression(s) above ${REGRESSION_THRESHOLD_PCT}% with p<0.05:"
+            printf '%s\n' "$regressions"
+            if [ "$BYPASS" = "true" ]; then
+              echo "::warning::regressions bypassed via expected-regression label"
+              exit 0
+            fi
+            exit 1
+          fi
+          echo "no regression above ${REGRESSION_THRESHOLD_PCT}% threshold"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: benchmarks
+          path: bench/
           retention-days: 30

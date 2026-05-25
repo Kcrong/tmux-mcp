@@ -16,10 +16,11 @@ import (
 // reaps a window once its last pane has been pulled out, which is the
 // observable contract MCP callers depend on.
 func TestHandle_PaneJoin_MovesPaneIntoDestinationWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -82,6 +83,7 @@ func TestHandle_PaneJoin_MovesPaneIntoDestinationWindow(t *testing.T) {
 // the empty string at runtime so a half-formed call cannot leak a
 // stray "" past the regex.
 func TestHandle_PaneJoin_RejectsEmptySrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -100,6 +102,7 @@ func TestHandle_PaneJoin_RejectsEmptySrc(t *testing.T) {
 // TestHandle_PaneJoin_RejectsEmptyDst mirrors the src guard for the
 // destination argument so tmux never sees a "-t" without a value.
 func TestHandle_PaneJoin_RejectsEmptyDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -120,6 +123,7 @@ func TestHandle_PaneJoin_RejectsEmptyDst(t *testing.T) {
 // tmux argv, even though the boundary already guards `session` fields
 // elsewhere.
 func TestHandle_PaneJoin_RejectsBadSrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -141,6 +145,7 @@ func TestHandle_PaneJoin_RejectsBadSrc(t *testing.T) {
 // TestHandle_PaneJoin_RejectsBadDst mirrors the bad-src check for the
 // destination argument, ensuring the regex applies symmetrically.
 func TestHandle_PaneJoin_RejectsBadDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -163,10 +168,11 @@ func TestHandle_PaneJoin_RejectsBadDst(t *testing.T) {
 // pane_join against an unknown session surfaces CodeSessionNotFound
 // (-32000), mirroring pane_swap / pane_split.
 func TestHandle_PaneJoin_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor so we hit "server up, session missing" rather than "no
 	// server" (different stderr shape).
@@ -198,6 +204,7 @@ func TestHandle_PaneJoin_MissingSessionMapsCode(t *testing.T) {
 // TestHandle_ToolsList_IncludesPaneJoin makes sure tools/list advertises
 // the new tool so MCP clients can discover it via the schema endpoint.
 func TestHandle_ToolsList_IncludesPaneJoin(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

@@ -24,6 +24,7 @@ import (
 // deferred os.Remove and frequently miss the existence window under
 // the race detector.
 func TestPIDFile_Roundtrip(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -38,8 +39,8 @@ func TestPIDFile_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	defer func() { _ = pr.Close() }()
-	defer func() { _ = pw.Close() }() // idempotent, in case test fails before explicit close
+	t.Cleanup(func() { _ = pr.Close() })
+	t.Cleanup(func() { _ = pw.Close() }) // idempotent, in case test fails before explicit close
 
 	var (
 		stdout, stderr bytes.Buffer
@@ -112,6 +113,7 @@ func TestPIDFile_Roundtrip(t *testing.T) {
 // rest of this file follows the same convention: anything that goes
 // through run() runs sequentially.
 func TestPIDFile_AlreadyExists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tmux-mcp.pid")
 	const sentinel = "99999\n"
@@ -155,6 +157,7 @@ func TestPIDFile_AlreadyExists(t *testing.T) {
 // parent directory is a portable, deterministic failure mode that
 // exercises the same error path.
 func TestPIDFile_PermissionDenied(t *testing.T) {
+	t.Parallel()
 	// Path lives under a directory that does not exist. os.WriteFile
 	// will return ENOENT on the parent and our error wrapper kicks in.
 	dir := t.TempDir()

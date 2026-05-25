@@ -47,10 +47,11 @@ func hasIndex(haystack []int, needle int) bool {
 // the move list_windows must reflect the new layout (no window at the
 // old index, a window at the new one).
 func TestHandle_WindowMove_RenumbersWithinSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wm", "command": "/bin/sh",
@@ -103,10 +104,11 @@ func TestHandle_WindowMove_RenumbersWithinSession(t *testing.T) {
 // CodeSessionNotFound, mirroring the rest of the window tools so an MCP
 // client can branch on a stable code rather than parsing tmux stderr.
 func TestHandle_WindowMove_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor a real session so the dispatcher hits the "server up,
 	// session missing" branch — without it, tmux emits "no server
@@ -141,10 +143,11 @@ func TestHandle_WindowMove_MissingSessionMapsCode(t *testing.T) {
 // params error (the schema validated cleanly) and not a missing-session
 // error (both sessions exist).
 func TestHandle_WindowMove_DuplicateIndexSurfacesError(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wmd", "command": "/bin/sh",
@@ -183,6 +186,7 @@ func TestHandle_WindowMove_DuplicateIndexSurfacesError(t *testing.T) {
 // whose pieces violate the regex policy. Both must fail with
 // CodeInvalidParams before tmux is consulted.
 func TestHandle_WindowMove_RejectsBadSrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	cases := []struct {
@@ -196,6 +200,7 @@ func TestHandle_WindowMove_RejectsBadSrc(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			params := mustJSON(t, map[string]any{
 				"name":      "window_move",
 				"arguments": map[string]any{"src": tc.src, "dst": "wm:5"},
@@ -216,6 +221,7 @@ func TestHandle_WindowMove_RejectsBadSrc(t *testing.T) {
 // guards. An empty window part is *allowed* (lets tmux pick), so the
 // table only catches the genuinely-invalid forms.
 func TestHandle_WindowMove_RejectsBadDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	cases := []struct {
@@ -228,6 +234,7 @@ func TestHandle_WindowMove_RejectsBadDst(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			params := mustJSON(t, map[string]any{
 				"name":      "window_move",
 				"arguments": map[string]any{"src": "wm:0", "dst": tc.dst},
@@ -247,6 +254,7 @@ func TestHandle_WindowMove_RejectsBadDst(t *testing.T) {
 // TestHandle_WindowMove_RejectsEmptyArgs locks the up-front empty-string
 // guards so the dispatcher never builds a partial tmux target.
 func TestHandle_WindowMove_RejectsEmptyArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	cases := []struct {
@@ -258,6 +266,7 @@ func TestHandle_WindowMove_RejectsEmptyArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			params := mustJSON(t, map[string]any{
 				"name": "window_move", "arguments": tc.args,
 			})
@@ -277,10 +286,11 @@ func TestHandle_WindowMove_RejectsEmptyArgs(t *testing.T) {
 // Without explicit assertions an integration regression here would slip
 // through every other test in the suite.
 func TestHandle_WindowMove_AcceptsEmptyDstWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "src", "command": "/bin/sh",
@@ -328,6 +338,7 @@ func TestHandle_WindowMove_AcceptsEmptyDstWindow(t *testing.T) {
 // tools/list — including the strict additionalProperties contract every
 // other window tool upholds.
 func TestHandle_ToolsList_IncludesWindowMove(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

@@ -11,10 +11,11 @@ import (
 // asserts that a single KillAllSessions call clears all of them and
 // returns the killed names.
 func TestKillAllSessions_KillsEveryKnownSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	want := []string{"alpha", "beta", "gamma"}
 	for _, n := range want {
@@ -50,10 +51,11 @@ func TestKillAllSessions_KillsEveryKnownSession(t *testing.T) {
 // controller returns an empty slice and a nil error rather than tripping
 // on the no-server-running edge case.
 func TestKillAllSessions_ZeroSessionsIsNoop(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	killed, err := c.KillAllSessions(ctx)
 	if err != nil {

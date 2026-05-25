@@ -17,10 +17,11 @@ import (
 // the load-bearing contract every agent that reaches for clear_history
 // relies on — the buffer actually goes away.
 func TestClearHistory_DropsScrollback(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "ch", Command: "/bin/sh",
@@ -84,10 +85,11 @@ func TestClearHistory_DropsScrollback(t *testing.T) {
 // be able to errors.Is into errs.ErrSessionNotFound regardless of which
 // exact phrase tmux emitted ("can't find pane" vs "no current target").
 func TestClearHistory_MissingTargetWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -108,10 +110,11 @@ func TestClearHistory_MissingTargetWrapsSentinel(t *testing.T) {
 // would otherwise resolve "" to whatever pane it considers current,
 // which is almost never what the caller actually wanted.
 func TestClearHistory_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	err := c.ClearHistory(ctx, "")
 	if err == nil {
