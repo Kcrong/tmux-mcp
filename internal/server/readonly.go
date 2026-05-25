@@ -58,6 +58,12 @@ var readOnlyTools = map[string]struct{}{
 	// already correct on the day they land.
 	"show_buffer":  {},
 	"show_options": {},
+	// show_window_options is the read-side sibling of set_window_option:
+	// it wraps `tmux show-window-options [-g] [-t TARGET] [OPTION]` and
+	// only ever inspects the resolved window-options table. No write
+	// path runs in this handler, so it belongs on the inspection
+	// allowlist alongside show_options.
+	"show_window_options": {},
 	// "display_message" is the registered tool name; "show_message" is
 	// the spec-named alias the read-only feature reserves so callers
 	// targeting either name see the same policy.
