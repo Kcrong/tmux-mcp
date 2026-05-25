@@ -802,6 +802,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.selectLayout(ctx, call.Arguments)
 	case "next_window":
 		return t.nextWindow(ctx, call.Arguments)
+	case "last_window":
+		return t.lastWindow(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
 	case "find_window":

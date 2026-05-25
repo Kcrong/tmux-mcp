@@ -2993,6 +2993,60 @@ window, drive it.
 
 ---
 
+## `last_window`
+
+Switch the named session back to its previously-active window via
+`tmux last-window -t <target>`. tmux remembers the last active window
+per session and toggles between the "current" and the "last" slot —
+the equivalent of the interactive `prefix + l` (or the customary
+`Alt-a`) hot key, which agents reach for to flip between two related
+contexts (editor / build, code / repl) without having to remember the
+destination's index or name. Pairs with `window_select` for explicit
+targets and `window_create` / `window_kill` for lifecycle.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                   |
+| -------- | ------ | -------- | ------------------------------------------------------- |
+| `target` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$` |
+
+The schema sets `additionalProperties: false`, so a typo like `session`
+(the natural reflex from `window_select`) is rejected with `-32602`
+before tmux is consulted, rather than silently behaving like a no-op
+against the default target.
+
+### Output
+
+Plain text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.                                                              |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`).                                                  |
+| `-32603` | tmux refused the toggle for an unexpected reason — most commonly "no last window" when the session has only ever had one window. |
+
+### Example
+
+```jsonc
+{ "target": "demo" }
+```
+
+A typical "flip back-and-forth" chain looks like:
+
+```jsonc
+{ "name": "window_select", "arguments": { "session": "demo", "target": "editor" } }
+{ "name": "window_select", "arguments": { "session": "demo", "target": "build" } }
+{ "name": "last_window",   "arguments": { "target": "demo" } }   // ➔ back to "editor"
+{ "name": "last_window",   "arguments": { "target": "demo" } }   // ➔ back to "build"
+```
+
+`last_window` mutates the active-window pointer, so it is **not**
+included in the `-read-only` allowlist.
+
+---
+
 ## `window_rename`
 
 Rename a window via `tmux rename-window -t <session>:<target> <name>`.
