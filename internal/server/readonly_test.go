@@ -82,6 +82,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"pane_break",
 		"last_pane",
 		"move_pane",
+		"copy_mode",
 		"window_create",
 		"window_kill",
 		"window_select",
