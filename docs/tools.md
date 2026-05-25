@@ -1189,6 +1189,82 @@ the teardown landed:
 
 ---
 
+## `list_commands`
+
+Enumerate every command this tmux build advertises via
+`tmux list-commands`. Useful for an agent that needs to introspect
+the tmux command surface before sending one through the rest of the
+boundary, or to confirm a command exists on the deployed tmux
+release. Each entry carries `{ name, alias, args }` — `alias` is the
+short form (e.g. `lsk` for `list-keys`) and is empty when the command
+has no alias; `args` is the verbatim flag/argument signature tmux
+printed (empty for no-arg commands like `kill-server`).
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `command` | string | no       | optional command name (e.g. `"list-keys"`, `"send-keys"`); maps to the trailing positional `tmux list-commands NAME`. len 1-64, regex `^[A-Za-z][A-Za-z0-9-]*$`. Omit to list every command. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`command` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"name"` (instead of `"command"`) fails fast
+instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `commands`:
+
+```jsonc
+{
+  "commands": [
+    { "name": "list-keys",    "alias": "lsk", "args": "[-1aN] [-P prefix-string] [-T key-table] [key]" },
+    { "name": "kill-server",  "alias": "",    "args": "" }
+  ]
+}
+```
+
+| Field   | Type   | Notes                                                                                                |
+| ------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| `name`  | string | Canonical command name (the verb you'd pass to `tmux <name>`).                                       |
+| `alias` | string | tmux's short form for the command (e.g. `lsk` for `list-keys`); empty when the command has no alias. |
+| `args`  | string | The verbatim flag/argument signature tmux printed; empty for no-arg commands like `kill-server`.     |
+
+A filter that does not match a known command returns
+`{"commands": []}` — a clean empty list rather than an error — so
+callers can iterate the response without a separate "is this an
+error" branch. (tmux 3.0–3.3 exits 1 on an unknown filter; 3.4+ exits
+0 with empty stdout. The boundary collapses both into the same empty
+list.)
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `command` outside the regex/length policy, or an unknown field was sent. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).   |
+
+### Examples
+
+```jsonc
+// Every command tmux exposes.
+{}
+
+// Just the signature for one command.
+{ "command": "list-keys" }
+```
+
+Pair with `display_message` once you've discovered a command of
+interest — `list_commands` answers "does this tmux build support
+verb X?" so the agent doesn't have to guess against an older release:
+
+```jsonc
+{ "name": "list_commands",   "arguments": { "command": "display-message" } }
+{ "name": "display_message", "arguments": { "format": "#{session_name}", "session": "demo" } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /

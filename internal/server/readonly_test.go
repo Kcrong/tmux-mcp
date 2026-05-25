@@ -31,6 +31,7 @@ func TestIsReadOnlyTool_AllowlistMembers(t *testing.T) {
 		"list_clients",
 		"list_buffers",
 		"list_keys",
+		"list_commands",
 		"choose_tree",
 		"show_buffer",
 		"show_options",

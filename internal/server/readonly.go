@@ -44,6 +44,10 @@ var readOnlyTools = map[string]struct{}{
 	"list_clients":  {},
 	"list_buffers":  {},
 	"list_keys":     {},
+	// list_commands wraps `tmux list-commands` — pure introspection
+	// of the tmux command surface (every verb tmux exposes plus its
+	// argument signature). Never mutates server state.
+	"list_commands": {},
 	// choose_tree is the snapshot form of `tmux choose-tree` — it
 	// only ever runs `tmux list-windows -F ...` under the hood and
 	// never mutates server state.
