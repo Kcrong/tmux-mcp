@@ -65,6 +65,12 @@ var readOnlyTools = map[string]struct{}{
 	// targeting either name see the same policy.
 	"display_message": {},
 	"show_message":    {},
+	// show_messages reads tmux's per-client message log
+	// (`tmux show-messages [-JT]`) — a pure inspection of the buffer
+	// tmux maintains for the bottom status bar. Note the trailing 's':
+	// distinct from the "show_message" alias above (which is the
+	// inspection-only spelling of display_message).
+	"show_messages": {},
 	// Per-session metadata views — describe / inspect both run a
 	// `display-message`-style read against tmux and never mutate.
 	"session_describe": {},
