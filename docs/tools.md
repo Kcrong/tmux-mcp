@@ -5349,6 +5349,8 @@ assigned name, then read it back.
 { "name": "show_buffer",  "arguments": { "name": "buffer0" } }
 ```
 
+---
+
 ## `switch_client`
 
 Redirect a tmux client between sessions on the same server via
@@ -5863,6 +5865,78 @@ stderr in this case; any other tmux failure surfaces as `-32603`.
 | `-32000` | Target session does not exist (`errs.ErrSessionNotFound`); also covers tmux's "no such window" / "invalid option" stderr shapes for an unknown hook name on the unset path. |
 | `-32603` | tmux refused the set-hook for an unexpected reason (rare; typically a fork/exec error). |
 
+---
+
+## `display_menu`
+
+Render an interactive tmux menu via
+`tmux display-menu [-O] [-b BORDER-LINES] [-c TARGET-CLIENT]
+[-C STARTING-CHOICE] [-H SELECTED-STYLE] [-S BORDER-STYLE]
+[-T TITLE] [-t TARGET-PANE] [-x POSITION] [-y POSITION]
+name key command ...`. Each entry in `items` is one menu row
+carrying a label, an optional single-key shortcut, and an optional
+tmux command run on selection — the boundary expands the array into
+the alternating positional triples tmux's parser consumes.
+
+tmux's `display-menu` requires an attached client to draw on, so the
+headless tmux servers tmux-mcp typically owns will surface tmux's
+`no current client` diagnostic verbatim until a client attaches.
+Pass `target_client` (a TTY path like `/dev/pts/3`) to scope the
+draw call when the server is multi-tenant. This tool is
+**not read-only** — it changes UI state on the chosen client and is
+rejected when the server runs with `-read-only`.
+
+### Input
+
+Top-level fields:
+
+| Field             | Type    | Required | Default | Notes                                                                                                                                                              |
+| ----------------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `items`           | array   | yes      | —       | Menu rows; `minItems: 1`, `maxItems: 256`. Schema below.                                                                                                           |
+| `target_pane`     | string  | no       | —       | Pane the menu's commands run against (`-t`). Conservative regex; len 1-256.                                                                                        |
+| `target_client`   | string  | no       | —       | Client to draw the menu on (`-c`); typically a TTY path. Same regex as `show_messages`'s `client`.                                                                 |
+| `title`           | string  | no       | —       | Menu title format (`-T`). Max 4096 bytes; no embedded newlines/NULs.                                                                                               |
+| `border_lines`    | string  | no       | —       | Border-line style passed to `-b` (e.g. `single`, `double`, `none`). Max 256 bytes.                                                                                 |
+| `border_style`    | string  | no       | —       | tmux style spec for the border (`-S`), e.g. `fg=red`. Max 256 bytes.                                                                                               |
+| `selected_style`  | string  | no       | —       | tmux style spec for the highlighted row (`-H`). Max 256 bytes.                                                                                                     |
+| `starting_choice` | string  | no       | —       | Index/label of the row pre-selected when the menu opens (`-C`). Max 256 bytes.                                                                                     |
+| `x`               | string  | no       | —       | Horizontal position (`-x`): integer column, magic letter (`C`/`R`/`P`/`M`/`W`), or `#{...}` format.                                                                |
+| `y`               | string  | no       | —       | Vertical position (`-y`): integer row, magic letter (`C`/`P`/`M`/`W`/`S`), or `#{...}` format.                                                                     |
+| `no_callbacks`    | boolean | no       | `false` | When true, pass `-O` so the menu does not close on mouse release without a selection.                                                                              |
+
+Per-item schema (`items[i]`):
+
+| Field     | Type   | Required | Default | Notes                                                                          |
+| --------- | ------ | -------- | ------- | ------------------------------------------------------------------------------ |
+| `name`    | string | yes      | —       | Row label (format-evaluated by tmux). Min 1, max 1024 bytes; no newlines.      |
+| `key`     | string | no       | —       | Optional single-key shortcut. Max 64 bytes; printable subset of `bind-key`.    |
+| `command` | string | no       | —       | Optional tmux command run when the row is chosen. Max 4096 bytes; no newlines. |
+
+`additionalProperties: false` is locked at both the top level and the
+per-item level so a typoed field gets a fast schema-shaped rejection
+rather than a silent no-op.
+
+### Output
+
+JSON block:
+
+```jsonc
+{ "displayed": true }
+```
+
+The boundary deliberately does not echo the items back because
+display-menu is a fire-and-forget UX trigger; a follow-up
+`list_clients` or `show_messages` call is one tool away if the agent
+wants confirmation the menu reached the client.
+
+### Errors
+
+| Code     | Cause                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | `items` empty/missing; per-item `name` empty; bound violation on any field; `target_pane`/`target_client` outside the regex/length policy. |
+| `-32000` | Target client/pane is missing on this server (`errs.ErrSessionNotFound`).                                                            |
+| `-32603` | tmux refused the call for any other reason (e.g. headless server with `no current client`).                                          |
+
 ### Examples
 
 ```jsonc
@@ -6304,5 +6378,52 @@ override it:
 
 ```jsonc
 { "mode": "wait", "channel": "ci_started", "timeout_ms": 0 }
+```
+
+// Minimal: a two-row menu drawn on whatever client is attached.
+{
+  "name": "display_menu",
+  "arguments": {
+    "items": [
+      { "name": "Build",  "key": "b", "command": "send-keys -t 0 'make' Enter" },
+      { "name": "Cancel", "key": "q", "command": "" }
+    ]
+  }
+}
+```
+
+```jsonc
+// Centered, titled, scoped to a specific client.
+{
+  "name": "display_menu",
+  "arguments": {
+    "title":         "Build options",
+    "target_client": "/dev/pts/3",
+    "x":             "C",
+    "y":             "C",
+    "border_lines":  "double",
+    "selected_style": "bg=blue",
+    "items": [
+      { "name": "Run tests",   "key": "t", "command": "send-keys 'go test ./...' Enter" },
+      { "name": "Run linter",  "key": "l", "command": "send-keys 'golangci-lint run' Enter" },
+      { "name": "Open editor", "key": "e", "command": "send-keys 'vim' Enter" }
+    ]
+  }
+}
+```
+
+```jsonc
+// Pin the starting choice and prevent mouse-release dismissal.
+{
+  "name": "display_menu",
+  "arguments": {
+    "starting_choice": "1",
+    "no_callbacks":    true,
+    "items": [
+      { "name": "Yes", "key": "y", "command": "display 'confirmed'" },
+      { "name": "No",  "key": "n", "command": "display 'cancelled'" }
+    ]
+  }
+}
 ```
 
