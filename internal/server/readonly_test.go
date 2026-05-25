@@ -63,6 +63,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"session_kill",
 		"session_rename",
 		"kill_all_sessions",
+		"start_server",
 		"clear_history",
 		"send_signal",
 		"resize",
