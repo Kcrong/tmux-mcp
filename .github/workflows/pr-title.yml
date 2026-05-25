@@ -1,0 +1,45 @@
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Enforces conventional-commit style PR titles so squash merges land on
+      # main with a parseable subject line. release.yml's auto-tag job reads
+      # those subjects to compute semver bumps — a non-conforming title would
+      # silently fall through to a patch bump and miss feat/breaking signals.
+      - uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017  # v5.5.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # 9 standard types (build/chore/ci/docs/feat/fix/perf/refactor/test).
+          # `style` and `revert` intentionally excluded — neither has a clear
+          # semver mapping for this repo.
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+          requireScope: false
+          subjectPattern: '^[A-Za-z0-9].+$'
+          subjectPatternError: |
+            The PR title subject (after the type) must start with an
+            alphanumeric character. Example: `feat: add stream cancellation`.

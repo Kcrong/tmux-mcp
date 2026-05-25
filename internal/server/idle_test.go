@@ -369,6 +369,7 @@ func TestSessionFromArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := sessionFromArgs(tc.method, []byte(tc.args))
 			if got != tc.want {
 				t.Fatalf("sessionFromArgs(%q, %s) = %q; want %q",
@@ -422,6 +423,7 @@ func TestReapInterval(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := reapInterval(tc.timeout); got != tc.want {
 				t.Fatalf("reapInterval(%v) = %v; want %v", tc.timeout, got, tc.want)
 			}

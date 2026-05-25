@@ -15,10 +15,11 @@ import (
 // name and rejects the old one. Mirrors TestSessionDescribe_HappyPath
 // so the registration+dispatch path stays observable end-to-end.
 func TestSessionRename_HappyPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -96,10 +97,11 @@ func TestSessionRename_HappyPath(t *testing.T) {
 // "rename a session that does not exist": the JSON-RPC error code must
 // be CodeSessionNotFound (-32000).
 func TestSessionRename_UnknownSourceMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server so we hit "server up, session missing"
 	// (a fresh controller produces a different "no server running"
@@ -133,10 +135,11 @@ func TestSessionRename_UnknownSourceMapsCode(t *testing.T) {
 // clients can distinguish "name in use" from the more familiar
 // CodeSessionNotFound (-32000).
 func TestSessionRename_DuplicateNewMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -178,6 +181,7 @@ func TestSessionRename_DuplicateNewMapsCode(t *testing.T) {
 // confuse tmux's target parser (spaces, colons, dots) must surface as
 // CodeInvalidParams up front.
 func TestSessionRename_RejectsInvalidNewName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 
@@ -192,6 +196,7 @@ func TestSessionRename_RejectsInvalidNewName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			params := mustJSON(t, map[string]any{
 				"name": "session_rename",
 				"arguments": map[string]any{
@@ -214,6 +219,7 @@ func TestSessionRename_RejectsInvalidNewName(t *testing.T) {
 // TestSessionRename_RejectsInvalidOldName guards the same policy on the
 // `name` argument so a malformed source name never reaches tmux.
 func TestSessionRename_RejectsInvalidOldName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 
@@ -237,6 +243,7 @@ func TestSessionRename_RejectsInvalidOldName(t *testing.T) {
 // letting tmux emit the more-confusing "duplicate session" path that
 // would map to CodeSessionExists.
 func TestSessionRename_RejectsEqualNames(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 
@@ -260,6 +267,7 @@ func TestSessionRename_RejectsEqualNames(t *testing.T) {
 // enforce that on a typed unmarshal failure, but the dispatcher's
 // invalidParams response keeps the wire contract honest.
 func TestSessionRename_RejectsMissingArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 
@@ -281,6 +289,7 @@ func TestSessionRename_RejectsMissingArgs(t *testing.T) {
 // TestSessionRename_ListedInTools confirms the init()-time registration
 // actually wired session_rename into tools/list.
 func TestSessionRename_ListedInTools(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

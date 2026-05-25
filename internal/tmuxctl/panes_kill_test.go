@@ -15,10 +15,11 @@ import (
 // ListPanes is back down to the original single pane. This is the
 // shape every chained tool relies on after a successful kill-pane.
 func TestKillPane_ReducesPaneCount(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "kp", Command: "/bin/sh", Width: 80, Height: 24,
@@ -61,10 +62,11 @@ func TestKillPane_ReducesPaneCount(t *testing.T) {
 // to errors.Is into errs.ErrSessionNotFound regardless of which exact
 // phrase tmux emitted.
 func TestKillPane_MissingTargetWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -85,10 +87,11 @@ func TestKillPane_MissingTargetWrapsSentinel(t *testing.T) {
 // otherwise resolve "" to whatever pane it considers current, which is
 // almost never what the caller actually wanted.
 func TestKillPane_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	err := c.KillPane(ctx, "")
 	if err == nil {
@@ -106,10 +109,11 @@ func TestKillPane_RejectsEmptyTarget(t *testing.T) {
 // does not refuse this; callers that want a guard should pre-check
 // with list_panes / list_windows.
 func TestKillPane_LastPaneCollapsesWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "kpl", Command: "/bin/sh", Width: 80, Height: 24,

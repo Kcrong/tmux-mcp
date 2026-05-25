@@ -17,10 +17,11 @@ import (
 // reaps a window once its last pane has been pulled out, which is the
 // observable contract callers depend on.
 func TestJoinPane_MovesPaneIntoDestinationWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "jp", Command: "/bin/sh", Width: 80, Height: 24,
@@ -81,10 +82,11 @@ func TestJoinPane_MovesPaneIntoDestinationWindow(t *testing.T) {
 // strictly narrower than the full-width window, while a vertical join
 // leaves both at full width.
 func TestJoinPane_HorizontalUsesHFlag(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	const cols = 80
 	if err := c.CreateSession(ctx, SessionSpec{
@@ -124,10 +126,11 @@ func TestJoinPane_HorizontalUsesHFlag(t *testing.T) {
 // CodeSessionNotFound — the same contract every other tmuxctl pane
 // method upholds.
 func TestJoinPane_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, session
 	// missing" (the stderr shape changes versus "no server").
@@ -147,10 +150,11 @@ func TestJoinPane_MissingSessionWrapsSentinel(t *testing.T) {
 // TestJoinPane_RejectsEmptySrc locks the up-front guard. tmux would
 // otherwise resolve "" to whatever pane it considers current.
 func TestJoinPane_RejectsEmptySrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.JoinPane(ctx, "", "demo:0", false)
 	if err == nil {
 		t.Fatal("expected error for empty src")
@@ -163,10 +167,11 @@ func TestJoinPane_RejectsEmptySrc(t *testing.T) {
 // TestJoinPane_RejectsEmptyDst mirrors the src guard for the destination
 // argument so a half-formed call cannot reach tmux.
 func TestJoinPane_RejectsEmptyDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.JoinPane(ctx, "demo:0.0", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty dst")

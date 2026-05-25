@@ -15,10 +15,11 @@ import (
 // list_windows must report the second window as active so an agent can
 // rely on the chain `create -> select -> list_windows -> capture`.
 func TestHandle_WindowSelect_MovesActiveFlag(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "ws", "command": "/bin/sh",
@@ -83,6 +84,7 @@ func TestHandle_WindowSelect_MovesActiveFlag(t *testing.T) {
 // the `target` argument: a string that would otherwise be passed to
 // tmux must be refused with CodeInvalidParams up front.
 func TestHandle_WindowSelect_RejectsBadTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -103,6 +105,7 @@ func TestHandle_WindowSelect_RejectsBadTarget(t *testing.T) {
 // tmux target "session:" and let tmux pick whatever it considers
 // current, almost never what the caller meant.
 func TestHandle_WindowSelect_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -122,10 +125,11 @@ func TestHandle_WindowSelect_RejectsEmptyTarget(t *testing.T) {
 // CodeSessionNotFound contract: window_select against an unknown
 // session must surface -32000, mirroring the rest of the window tools.
 func TestHandle_WindowSelect_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "anchor", "command": "/bin/sh",
@@ -149,10 +153,11 @@ func TestHandle_WindowSelect_MissingSessionMapsCode(t *testing.T) {
 // path: after renaming, list_windows must reflect the new label and
 // the old one must be gone.
 func TestHandle_WindowRename_UpdatesListWindows(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wr", "command": "/bin/sh",
@@ -202,6 +207,7 @@ func TestHandle_WindowRename_UpdatesListWindows(t *testing.T) {
 // optional `name` enforces, restated here so a hostile rename fails
 // fast.
 func TestHandle_WindowRename_RejectsBadName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -224,6 +230,7 @@ func TestHandle_WindowRename_RejectsBadName(t *testing.T) {
 // confusing error; the boundary catches it up front with
 // CodeInvalidParams.
 func TestHandle_WindowRename_RejectsEmptyName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -243,10 +250,11 @@ func TestHandle_WindowRename_RejectsEmptyName(t *testing.T) {
 // CodeSessionNotFound contract for the rename path, mirroring the
 // CreateWindow / SelectWindow tests above.
 func TestHandle_WindowRename_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "anchor", "command": "/bin/sh",
@@ -272,6 +280,7 @@ func TestHandle_WindowRename_MissingSessionMapsCode(t *testing.T) {
 // surface advertises the two new window-navigation tools so MCP
 // clients can discover them via tools/list.
 func TestHandle_ToolsList_IncludesWindowNavigation(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

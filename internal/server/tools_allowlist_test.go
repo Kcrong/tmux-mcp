@@ -13,6 +13,7 @@ import (
 // is what unrelated deployments see when -allowlist is left at its
 // empty-string default.
 func TestAllowlist_NilExposesEverything(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx := context.Background()
@@ -47,6 +48,7 @@ func TestAllowlist_NilExposesEverything(t *testing.T) {
 // (capture), and a tools/call for any other tool returns -32601 with
 // the documented "tool %q is not in -allowlist" message.
 func TestAllowlist_FiltersListAndCall(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	if err := tools.SetAllowlist([]string{"capture"}); err != nil {
 		t.Fatalf("SetAllowlist: %v", err)
@@ -93,6 +95,7 @@ func TestAllowlist_FiltersListAndCall(t *testing.T) {
 // matches MCP's spec: a malicious or naive client that skips
 // enumeration must not bypass the policy.
 func TestAllowlist_EnforcedBeforeListEnumerated(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	if err := tools.SetAllowlist([]string{"capture"}); err != nil {
 		t.Fatalf("SetAllowlist: %v", err)
@@ -119,6 +122,7 @@ func TestAllowlist_EnforcedBeforeListEnumerated(t *testing.T) {
 // allowlist guard. This guards against an over-eager filter that
 // rejects everything, including the tools the operator did permit.
 func TestAllowlist_AllowedToolDispatchesNormally(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	if err := tools.SetAllowlist([]string{"session_list"}); err != nil {
@@ -144,6 +148,7 @@ func TestAllowlist_AllowedToolDispatchesNormally(t *testing.T) {
 // typo. Operators typing a long allowlist into a unit file see all
 // their typos at once.
 func TestAllowlist_UnknownNamesReportedTogether(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	err := tools.SetAllowlist([]string{"capture", "ghost1", "session_kill", "ghost2"})
 	if err == nil {
@@ -177,6 +182,7 @@ func TestAllowlist_UnknownNamesReportedTogether(t *testing.T) {
 // splits on "," — without pushing presentation details into every
 // caller.
 func TestAllowlist_TrimsAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	// A combination of leading/trailing whitespace, an empty entry from
 	// a trailing comma, and a duplicate.
@@ -213,6 +219,7 @@ func TestAllowlist_TrimsAndDeduplicates(t *testing.T) {
 // flip the filter at runtime; today's CLI just skips the call when the
 // flag is empty, but the API must support a clean reset.
 func TestAllowlist_EmptyClearsFilter(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	if err := tools.SetAllowlist([]string{"capture"}); err != nil {
 		t.Fatalf("SetAllowlist initial: %v", err)
@@ -238,6 +245,7 @@ func TestAllowlist_EmptyClearsFilter(t *testing.T) {
 // silently reject every dynamically-registered tool — exactly the
 // failure mode the spec'd "live registry" wording was meant to prevent.
 func TestAllowlist_ValidatesAgainstDynRegistry(t *testing.T) {
+	t.Parallel()
 	tools := &Tools{}
 	tools.RegisterTool(
 		map[string]any{
