@@ -30,7 +30,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
 | `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
-| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `list_panes`, `list_windows`, `list_clients`, `list_keys`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
+| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `has_session`, `list_panes`, `list_windows`, `list_clients`, `list_keys`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
 
 ## `-version-json` output
 
@@ -334,7 +334,7 @@ a Claude Desktop config to a new socket path / audit log location.
   `tools/call` without first enumerating `tools/list` cannot bypass
   the filter.
 - Examples:
-  - Read-only inspector: `-allowlist=capture,wait_for_text,wait_for_stable,snapshot_diff,session_list,session_describe,session_inspect,list_panes,list_windows`
+  - Read-only inspector: `-allowlist=capture,wait_for_text,wait_for_stable,snapshot_diff,session_list,has_session,session_describe,session_inspect,list_panes,list_windows`
   - Block destructive tools (everything except
     `kill_all_sessions`, `pane_kill`, `session_kill`, `send_signal`):
     pass an explicit allowlist of the tools you do want — there is
@@ -350,8 +350,8 @@ a Claude Desktop config to a new socket path / audit log location.
   shared dev container with one agent per developer). `session_create`
   with `name=demo` and `-session-prefix=agent_alice_` lands on tmux as
   `agent_alice_demo`. The reverse direction is transparent: `capture`,
-  `send_keys`, `session_kill`, `session_describe`, `session_inspect`,
-  `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
+  `send_keys`, `session_kill`, `has_session`, `session_describe`,
+  `session_inspect`, `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
   `send_signal`, `pane_*`, `window_*`, and `clear_history` all accept
   the bare logical name and forward to the prefixed identity.
 - `session_list` returns only sessions inside this prefix (with the
@@ -429,6 +429,7 @@ tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
   | `display_message`  | `show_message`   |
   | `session_describe` | (same)           |
   | `session_inspect`  | (same)           |
+  | `has_session`      | (same)           |
 
 - Anything not in the table — `send_keys`, `session_create`,
   `session_kill`, `kill_all_sessions`, `pane_*` (except listing),

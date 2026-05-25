@@ -218,6 +218,72 @@ distinguish the two.
 
 ---
 
+## `kill_server`
+
+Ask the controller's private tmux daemon to exit via
+`tmux kill-server`. Unlike `kill_all_sessions` (which iterates over
+sessions on a live daemon and leaves the server process up), this tool
+tears down tmux itself. The next `session_create` therefore pays the
+full re-spawn cost — there is no live daemon left to attach to. The
+call is idempotent: when no daemon is running the response is still a
+clean ack, so an agent looping in a recovery dance never sees a
+spurious failure for a state that is already correct.
+
+> **CAUTION — destroys ALL state on this controller's tmux server.**
+> kill_server wipes EVERY session, window, and pane on this socket,
+> including unrelated work belonging to other agents that share the
+> same controller (`-session-prefix` does NOT scope this tool — tmux
+> kill-server has no per-prefix form). Snapshot history for every
+> session the daemon was carrying is forgotten. Reach for
+> `kill_all_sessions` first if you only need a clean slate within your
+> own prefix; reach for `kill_server` only when you actually want the
+> daemon process gone.
+
+### Input
+
+No fields. Pass `{}`. The schema sets `additionalProperties: false`,
+so any stray field (e.g. a mistakenly-passed `"session"`) is rejected
+with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "killed": true }
+```
+
+The shape is intentionally minimal. There is no per-session list to
+echo back — every session on the daemon is gone — and the boolean is
+there so a future addition (e.g. a `count` field for the number of
+sessions reaped) can be layered on without breaking callers that read
+only the field they care about.
+
+### Errors
+
+- `-32602` — `arguments` carried an unknown field.
+- `-32603` — tmux failed to kill the server for an unexpected reason
+  (the "no server running" / "error connecting" / "server exited
+  unexpectedly" cases are NOT errors — they are the goal state, and
+  the tool returns a clean ack).
+
+### Example
+
+```jsonc
+{}
+```
+
+Pair with a follow-up `session_list` to confirm the daemon is gone
+(the listing comes back empty because tmux is no longer accepting
+connections on this socket):
+
+```jsonc
+{ "name": "kill_server",  "arguments": {} }
+{ "name": "session_list", "arguments": {} }
+```
+
+---
+
 ## `session_describe`
 
 Return structured metadata for a single session: window count, total
@@ -260,6 +326,73 @@ would be empty).
 
 ```jsonc
 { "name": "demo" }
+```
+
+---
+
+## `has_session`
+
+Report whether the named session currently exists on this server.
+Wraps tmux's `has-session` primitive — strictly the cheapest path
+when the caller only needs a yes/no answer (e.g. before deciding
+whether to `session_create` or jump straight to `send_keys`).
+
+A missing session is the literal answer the caller asked for, NOT
+an error: only malformed args (`-32602`) or genuine tmux failures
+(`-32603`) surface as JSON-RPC errors. This is the load-bearing
+contract that makes the tool worth using over `session_list` or
+`session_describe` — agents can ask "is X there?" without first
+having to catch a `-32000`.
+
+`has_session` is on the read-only allowlist, so a server running
+with `-read-only` still exposes it.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, regex `^[A-Za-z0-9_-]+$`       |
+
+The schema sets `additionalProperties: false`, so any field other
+than `name` is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "exists": true }
+```
+
+or
+
+```jsonc
+{ "exists": false }
+```
+
+The probe is cheap by design: a single tmux IPC and a one-bit
+answer. No layout, no PID, no creation time — reach for
+`session_describe` / `session_inspect` when those are needed.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name` (regex/length violation), or an unknown field was sent.     |
+| `-32603` | tmux refused the call for a genuine reason (e.g. server crashed, IO error). A non-existent session is **not** an error here — see the "false" output above. |
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+A typical chain looks like: probe before you act, then commit only
+when the session is already there.
+
+```jsonc
+{ "name": "has_session", "arguments": { "name": "demo" } }
+{ "name": "send_keys",   "arguments": { "session": "demo", "keys": ["echo hi", "Enter"] } }
 ```
 
 ---
@@ -981,6 +1114,81 @@ doesn't have to memorise the default tmux key map:
 
 ---
 
+## `unbind_key`
+
+Remove a tmux key binding via `tmux unbind-key [-a] [-T TABLE] [KEY]`.
+Sister of `bind_key` and `list_keys`: pass `key` to remove a single
+chord, or set `all=true` to wipe every binding in the targeted table
+(`-a`). Useful for an agent tearing down a custom binding set installed
+earlier in the session, or for a recovery loop that wants to flush a
+custom keymap before re-registering it from scratch.
+
+### Input
+
+| Field       | Type    | Required | Notes                                                                                                                              |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | string  | no\*     | Key chord to remove (e.g. `"C-a"`, `"F12"`, `"M-{"`). Mutually exclusive with `all=true`. len 1-256, no NUL or ASCII control bytes. |
+| `key_table` | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`); maps to `-T TABLE`. len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to use tmux's default table for the operation. |
+| `all`       | boolean | no\*     | When true, remove every binding in the targeted table (`-a`). Mutually exclusive with `key`. Default `false`.                       |
+
+\* Exactly one of `{key set, all=true}` is required: both empty would
+silently no-op on tmux (a buggy caller's unbind never lands), and both
+set contradict each other (tmux silently swallows the KEY when `-a` is
+present). The handler refuses both shapes with `-32602` (invalid params).
+
+The schema sets `additionalProperties: false`, so any field other than
+the three above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat ack object:
+
+```jsonc
+{ "unbound": true }
+```
+
+Idempotent by design. tmux's `unbind-key` itself emits `table TABLE
+doesn't exist` (when the targeted custom table has been wiped) and
+`unknown key: KEY` (when the chord was never bound) for the
+"already-gone" shapes; the boundary swallows both so a recovery loop
+re-issuing the same teardown frame does not see a spurious failure on
+the second iteration. `unbound: true` is returned uniformly whether the
+binding existed or not.
+
+### Errors
+
+| Code     | Cause                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Neither `key` nor `all=true` set; or both set; or `key`/`key_table` malformed (length, regex, control bytes); or an unknown field was sent. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, etc.). Idempotent shapes (`table doesn't exist`, `unknown key`) are NOT errors. |
+
+### Examples
+
+```jsonc
+// Remove a single binding from a custom table.
+{ "key": "F12", "key_table": "agent-table" }
+
+// Wipe every binding in a custom table.
+{ "key_table": "agent-table", "all": true }
+
+// Remove a chord from tmux's default key table for the operation
+// (no `-T` flag, no `-a`).
+{ "key": "C-a" }
+```
+
+Pair with `bind_key` to install bindings, and `list_keys` to confirm
+the teardown landed:
+
+```jsonc
+{ "name": "bind_key",   "arguments": { "key": "F12", "key_table": "agent", "command": "display-message hi" } }
+{ "name": "unbind_key", "arguments": { "key": "F12", "key_table": "agent" } }
+{ "name": "list_keys",  "arguments": { "key_table": "agent" } } // empty after teardown
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
@@ -1364,6 +1572,76 @@ and then promote it into a window of its own:
 ```jsonc
 { "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
 { "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `move_pane`
+
+Relocate a single pane to a different slot, window, or session via
+`tmux move-pane -s <src> -t <dst>` (with `-h` / `-b` / `-d` selected by
+the boolean knobs). Distinct from
+[`pane_swap`](#pane_swap) (which trades two existing panes in place,
+leaving counts unchanged) and
+[`pane_break`](#pane_break) (which detaches a pane into its own
+brand-new window): `move_pane` takes one source pane and re-homes it
+next to the destination, splitting the destination to make room. The
+source pane keeps its `#{pane_id}`, contents, and running process —
+only the layout slot changes — so follow-up `pane_select` /
+`send_keys` calls against the moved pane see the new placement
+immediately.
+
+When the donor window has no remaining panes after the move, tmux
+reaps it: a `list_windows` call after the move may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                          |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------ |
+| `src`        | string  | yes      | Source pane target (`session`, `session:window`, `session:window.pane`, or `%N`) |
+| `dst`        | string  | yes      | Destination pane target (same target forms as `src`)                           |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.     |
+| `before`     | boolean | no       | When true, insert the moved pane before the destination (`-b`); default is after. |
+| `no_focus`   | boolean | no       | When true, do not change the active pane after the move (`-d`).                |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+JSON block: `{"moved": true, "src": "<src>", "dst": "<dst>"}`. The
+echoed `src` / `dst` are the logical (caller-supplied) values, so a
+`-session-prefix` deployment never leaks the prefixed identity back to
+the caller.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the move for any other reason.                                                        |
+
+### Example
+
+```jsonc
+// Default: move into the destination window with a top/bottom split,
+// inserted after the destination, focus follows.
+{ "src": "demo:1.0", "dst": "demo:0.0" }
+
+// Horizontal split, place moved pane before destination, leave focus alone.
+{ "src": "demo:1.0", "dst": "demo:0.0", "horizontal": true, "before": true, "no_focus": true }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "move_pane",    "arguments": { "src": "demo:1.0", "dst": "demo:0.0", "no_focus": true } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
 
