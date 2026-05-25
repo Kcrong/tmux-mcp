@@ -90,6 +90,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"set_window_option",
 		"wait_for_stable",
 		"snapshot_diff",
+		"choose_client",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
