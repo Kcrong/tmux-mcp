@@ -242,7 +242,7 @@ func TestHandle_RespawnWindow_CwdAppliesStartDirectory(t *testing.T) {
 	}
 
 	call("session_create", map[string]any{
-		"name": "rwd", "command": "sleep 60", "width": 80, "height": 24,
+		"name": "rwd", "command": "sleep 60", "width": 200, "height": 24,
 	})
 	t.Cleanup(func() {
 		_, _ = tools.Handle(context.Background(), "tools/call",
@@ -281,15 +281,20 @@ func TestHandle_RespawnWindow_CwdAppliesStartDirectory(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	var pane string
+	var pane, flat string
 	for time.Now().Before(deadline) {
 		pane = runTmux(t, socket, "capture-pane", "-p", "-t", "rwd:0")
-		if strings.Contains(pane, resolved) {
+		// macOS tmpdir paths live under /private/var/folders/... and
+		// are long enough that even a 200-col pane can wrap a single
+		// pwd line. Strip newlines so the path match doesn't depend
+		// on whether tmux wrapped the row.
+		flat = strings.ReplaceAll(pane, "\n", "")
+		if strings.Contains(flat, resolved) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !strings.Contains(pane, resolved) {
+	if !strings.Contains(flat, resolved) {
 		t.Fatalf("pane did not show cwd %q after respawn; body=%q",
 			resolved, pane)
 	}

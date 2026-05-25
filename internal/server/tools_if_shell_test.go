@@ -39,6 +39,28 @@ func readEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session str
 	return obj.Value
 }
 
+// eventuallyEnvHandler polls display_message until the value resolves
+// to want or the timeout expires. tmux's if-shell queues the chosen
+// branch on the server's command queue, so the client returns from
+// the call before the dispatched set-environment has actually run; a
+// single readback after if_shell can race the dispatch (consistently
+// observable on macOS, where fork/exec timing keeps the gap visible).
+// Polling absorbs that gap without masking real bugs — a regression
+// that genuinely never sets the value still fails after the deadline.
+func eventuallyEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		got = readEnvHandler(t, ctx, tools, session)
+		if got == want {
+			return got
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return got
+}
+
 // TestHandle_IfShell_TrueBranchRuns drives the load-bearing happy path
 // end-to-end through the dispatcher: session_create → if_shell with
 // `/bin/true` → assert via display_message that the then-branch's
@@ -83,7 +105,7 @@ func TestHandle_IfShell_TrueBranchRuns(t *testing.T) {
 		t.Fatalf("if_shell.dispatched = false, want true; body=%s", body)
 	}
 
-	if got := readEnvHandler(t, ctx, tools, "ift"); got != "then_branch" {
+	if got := eventuallyEnvHandler(t, ctx, tools, "ift", "then_branch"); got != "then_branch" {
 		t.Fatalf("display_message #{IF_BRANCH} = %q, want then_branch", got)
 	}
 }
@@ -124,7 +146,7 @@ func TestHandle_IfShell_FalseBranchRuns(t *testing.T) {
 		"else_command":  "set-environment -t iff IF_BRANCH else_branch",
 	})
 
-	if got := readEnvHandler(t, ctx, tools, "iff"); got != "else_branch" {
+	if got := eventuallyEnvHandler(t, ctx, tools, "iff", "else_branch"); got != "else_branch" {
 		t.Fatalf("display_message #{IF_BRANCH} = %q, want else_branch", got)
 	}
 }
@@ -166,7 +188,7 @@ func TestHandle_IfShell_FalseBranchNoElseIsNoop(t *testing.T) {
 		"shell_command": "/bin/true",
 		"then_command":  "set-environment -t ifn IF_BRANCH untouched",
 	})
-	if got := readEnvHandler(t, ctx, tools, "ifn"); got != "untouched" {
+	if got := eventuallyEnvHandler(t, ctx, tools, "ifn", "untouched"); got != "untouched" {
 		t.Fatalf("seed display_message #{IF_BRANCH} = %q, want untouched", got)
 	}
 
@@ -175,6 +197,12 @@ func TestHandle_IfShell_FalseBranchNoElseIsNoop(t *testing.T) {
 		"shell_command": "/bin/false",
 		"then_command":  "set-environment -t ifn IF_BRANCH then_branch",
 	})
+
+	// Wait long enough for any stray then_branch dispatch (which would
+	// be a real bug) to have arrived from the server's queue, then
+	// confirm the seed is still in place.
+	time.Sleep(2 * time.Second)
+
 	if got := readEnvHandler(t, ctx, tools, "ifn"); got != "untouched" {
 		t.Fatalf("display_message #{IF_BRANCH} = %q, want untouched (no branch should have run)", got)
 	}
