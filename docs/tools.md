@@ -2760,6 +2760,81 @@ the layout actually flipped:
 
 ---
 
+## `unlink_window`
+
+Remove a window reference from a session via
+`tmux unlink-window -t <session>:<window>`. The inverse of
+`link_window`: where link-window grafts a window's `#{window_id}` into
+a second session's slot, unlink-window detaches the named slot from
+that session — leaving the window itself alive in any other sessions
+still referencing the same id. Pairs with `link_window` (graft) and
+`window_move` (relocate, removing the source).
+
+### Input
+
+| Field    | Type    | Required | Default | Notes                                                                                |
+| -------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------ |
+| `target` | string  | yes      | —       | window reference like `mysession:0`; session 1-64 [A-Za-z0-9_-], window name (same regex/length policy) or numeric index (`\d+`) |
+| `kill`   | boolean | no       | `false` | when `true`, unlink even the last reference (destroys the window) — tmux's `-k` flag |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front (a typo like `"targets"` fails fast instead of
+silently producing a missing-target rejection).
+
+`kill=false` (the default) is the right setting when the window lives
+in another session that should keep it: tmux refuses to unlink the
+last reference because doing so would also reap the underlying window,
+and the refusal is surfaced as `-32603` so the caller can react. Set
+`kill=true` once no session needs the linked window any longer — that
+flag tells tmux to proceed even on the last reference, destroying the
+window in the process. The boundary does not pre-flight the reference
+count: letting tmux refuse yields the same answer with one fewer
+round-trip and avoids racing a concurrent link/unlink.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "unlinked": true }
+```
+
+The boundary deliberately does not echo the post-unlink layout — a
+follow-up `list_windows` is one call away if the caller wants to
+confirm the destination dropped the slot.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target` (empty, no `:`, empty session/window half, regex/length violation); or an unknown field was sent. |
+| `-32000` | A referenced session does not exist on this server, or the target does not match a window (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the unlink (e.g. `kill=false` against the only reference, or other unexpected tmux failure). |
+
+### Example
+
+```jsonc
+{ "target": "monitor:1" }
+```
+
+Pair with `link_window` to undo a share once the monitor session no
+longer needs the linked window — without `kill` the source session
+keeps its copy untouched:
+
+```jsonc
+{ "name": "link_window",   "arguments": { "src_session": "build", "src_window": "watch", "dst_session": "monitor", "dst_window": "1" } }
+{ "name": "unlink_window", "arguments": { "target": "monitor:1" } }
+```
+
+Or use `kill=true` to remove the last reference and destroy the
+underlying window in one call:
+
+```jsonc
+{ "name": "unlink_window", "arguments": { "target": "build:watch", "kill": true } }
+```
+
+---
+
 ## `choose_tree`
 
 Snapshot the (session, window) tree this server's tmux holds, in the
