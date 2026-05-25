@@ -21,10 +21,11 @@ import (
 // makes session_list racy ("no server" vs "server exited unexpectedly"
 // depending on timing).
 func TestHandle_SendSignal_TerminatesSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -67,10 +68,11 @@ func TestHandle_SendSignal_TerminatesSession(t *testing.T) {
 // clients can branch on the standard JSON-RPC code rather than the
 // free-form message text.
 func TestHandle_SendSignal_RejectsUnknownSignal(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	createParams := mustJSON(t, map[string]any{
 		"name":      "session_create",
@@ -99,10 +101,11 @@ func TestHandle_SendSignal_RejectsUnknownSignal(t *testing.T) {
 // CodeSessionNotFound, mirroring the contract enforced for
 // session_kill / pane_select.
 func TestHandle_SendSignal_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so the dispatcher hits
 	// the "server is up but the named session does not exist" branch.
@@ -135,6 +138,7 @@ func TestHandle_SendSignal_MissingSessionMapsCode(t *testing.T) {
 // zero-arg caller; the schema marks session as required, but the
 // handler must also reject "" at runtime.
 func TestHandle_SendSignal_RejectsEmptySession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -154,6 +158,7 @@ func TestHandle_SendSignal_RejectsEmptySession(t *testing.T) {
 // check on session names — the same policy every other tool enforces
 // must apply here too.
 func TestHandle_SendSignal_RejectsBadSessionName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -173,6 +178,7 @@ func TestHandle_SendSignal_RejectsBadSessionName(t *testing.T) {
 // signal branch: the dispatcher must return CodeInvalidParams rather
 // than letting an empty string fall through to the controller.
 func TestHandle_SendSignal_RejectsEmptySignal(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -191,6 +197,7 @@ func TestHandle_SendSignal_RejectsEmptySignal(t *testing.T) {
 // TestHandle_ToolsList_IncludesSendSignal makes sure tools/list
 // advertises the new tool so MCP clients can discover it.
 func TestHandle_ToolsList_IncludesSendSignal(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

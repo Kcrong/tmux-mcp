@@ -167,21 +167,21 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// withCapturedLogs swaps slog.Default() for a JSON-handler writing to
-// the returned synchronised buffer for the duration of the test, so
-// assertions can inspect emitted fields. The original default logger
-// is restored on cleanup.
-func withCapturedLogs(t *testing.T) *threadSafeBuffer {
+// withCapturedLogs returns a buffer plus a ServeOption that wires a
+// fresh JSON-handler logger into Serve. We deliberately avoid
+// slog.SetDefault here: tests run with t.Parallel() and would otherwise
+// race on the process-global default. The DI refactor added
+// WithServeLogger for exactly this case.
+func withCapturedLogs(t *testing.T) (*threadSafeBuffer, ServeOption) {
 	t.Helper()
 	buf := &threadSafeBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
+	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return buf, WithServeLogger(logger)
 }
 
 func TestServe_LogsCarryRequestID(t *testing.T) {
-	logs := withCapturedLogs(t)
+	t.Parallel()
+	logs, withLogger := withCapturedLogs(t)
 
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
@@ -197,9 +197,9 @@ func TestServe_LogsCarryRequestID(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+	go func() { done <- Serve(ctx, in, syncWriter, handler, withLogger) }()
 
 	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":42,"method":"trace_me"}` + "\n"))
 
@@ -277,7 +277,8 @@ func TestServe_LogsCarryRequestID(t *testing.T) {
 }
 
 func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
-	logs := withCapturedLogs(t)
+	t.Parallel()
+	logs, withLogger := withCapturedLogs(t)
 
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
@@ -289,9 +290,9 @@ func TestServe_LogsRpcErrorWithRequestID(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+	go func() { done <- Serve(ctx, in, syncWriter, handler, withLogger) }()
 
 	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"explode"}` + "\n"))
 

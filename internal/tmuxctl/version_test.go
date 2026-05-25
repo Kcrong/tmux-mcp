@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Kcrong/tmux-mcp/internal/errs"
 )
 
 func TestParseTmuxVersion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		in        string
@@ -36,6 +40,7 @@ func TestParseTmuxVersion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			v, err := parseTmuxVersion(tc.in)
 			if tc.wantErr {
 				if err == nil {
@@ -59,6 +64,7 @@ func TestParseTmuxVersion(t *testing.T) {
 }
 
 func TestTmuxVersionAtLeast(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		v    tmuxVersion
@@ -75,6 +81,7 @@ func TestTmuxVersionAtLeast(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tc.v.atLeast(minTmuxMajor, minTmuxMinor); got != tc.ok {
 				t.Fatalf("%+v.atLeast(3,0) = %v, want %v", tc.v, got, tc.ok)
 			}
@@ -84,6 +91,16 @@ func TestTmuxVersionAtLeast(t *testing.T) {
 
 // fakeTmux writes a tiny shell script that prints fixed output to stdout
 // when invoked with -V, and returns its absolute path.
+//
+// Why the wait-for-exec dance below: under -race + many parallel tests
+// the kernel can briefly return ETXTBSY ("text file busy") on the first
+// exec of a file we just wrote. That happens because *another*
+// goroutine in this process forked while our writer fd was still open;
+// the child inherits the fd, so the still-fresh binary is "open for
+// write" on that pid, which Linux treats as exec-blocking. The fd
+// closes as soon as the sibling fork completes, so a short retry is
+// the standard remedy (golang/go#22315). We do it inside the helper so
+// every caller picks up the fix without having to know about it.
 func fakeTmux(t *testing.T, version string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -95,10 +112,34 @@ func fakeTmux(t *testing.T, version string) string {
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake tmux: %v", err)
 	}
+	waitForExec(t, path)
 	return path
 }
 
+// waitForExec polls the freshly-written binary until exec stops
+// returning ETXTBSY. The retry budget (10 × 20ms = 200ms) is generous
+// enough to cover any reasonable parent-fork window without making the
+// test suite drag on a healthy machine.
+func waitForExec(t *testing.T, path string) {
+	t.Helper()
+	const attempts = 10
+	const delay = 20 * time.Millisecond
+	for i := 0; i < attempts; i++ {
+		err := exec.Command(path, "-V").Run()
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, syscall.ETXTBSY) {
+			// Real failure (script bug, missing shell, …) — surface it
+			// immediately rather than spending the whole budget on it.
+			return
+		}
+		time.Sleep(delay)
+	}
+}
+
 func TestCheckTmuxVersion_TooOld(t *testing.T) {
+	t.Parallel()
 	bin := fakeTmux(t, "tmux 2.6")
 	err := checkTmuxVersion(context.Background(), bin)
 	if err == nil {
@@ -123,8 +164,10 @@ func TestCheckTmuxVersion_TooOld(t *testing.T) {
 }
 
 func TestCheckTmuxVersion_OK(t *testing.T) {
+	t.Parallel()
 	for _, ver := range []string{"tmux 3.0", "tmux 3.4a", "tmux next-3.5", "tmux master"} {
 		t.Run(ver, func(t *testing.T) {
+			t.Parallel()
 			bin := fakeTmux(t, ver)
 			if err := checkTmuxVersion(context.Background(), bin); err != nil {
 				t.Fatalf("checkTmuxVersion(%q) = %v", ver, err)
@@ -137,6 +180,7 @@ func TestCheckTmuxVersion_OK(t *testing.T) {
 // path: when tmux is available locally we just make sure the version
 // gate does not reject it.
 func TestNew_RealTmuxIfNewEnough(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c, err := New()
 	if err != nil {

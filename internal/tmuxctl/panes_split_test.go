@@ -15,10 +15,11 @@ import (
 // must surface a usable `%N` id plus the 0-based index. This is the
 // shape every chained tool (pane_select, send_keys) relies on.
 func TestSplitPane_VerticalCreatesSecondPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "spv", Command: "/bin/sh", Width: 80, Height: 24,
@@ -54,10 +55,11 @@ func TestSplitPane_VerticalCreatesSecondPane(t *testing.T) {
 // but exercises the -h flag — same end-state assertion (panes==2)
 // because tmux exposes the same #{pane_id} surface either way.
 func TestSplitPane_HorizontalCreatesSecondPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "sph", Command: "/bin/sh", Width: 100, Height: 30,
@@ -88,10 +90,11 @@ func TestSplitPane_HorizontalCreatesSecondPane(t *testing.T) {
 // catches the argv-ordering bug where the command would be appended
 // before -t and tmux would interpret it as a target.
 func TestSplitPane_RunsCommand(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "spc", Command: "/bin/sh", Width: 80, Height: 24,
@@ -133,10 +136,11 @@ func TestSplitPane_RunsCommand(t *testing.T) {
 // CodeSessionNotFound — the same contract every other tmuxctl method
 // upholds.
 func TestSplitPane_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, session
 	// missing" rather than "no server" (different stderr shape).
@@ -160,10 +164,11 @@ func TestSplitPane_MissingSessionWrapsSentinel(t *testing.T) {
 // TestSplitPane_RejectsEmptySession locks the up-front guard. tmux
 // would otherwise resolve "" to whatever it considers current.
 func TestSplitPane_RejectsEmptySession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	_, err := c.SplitPane(ctx, SplitOptions{Direction: "vertical"})
 	if err == nil {
@@ -179,10 +184,11 @@ func TestSplitPane_RejectsEmptySession(t *testing.T) {
 // with a CodeInvalidParams reply, but the controller still refuses
 // rather than silently passing nothing to tmux.
 func TestSplitPane_RejectsBadDirection(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "bd", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)

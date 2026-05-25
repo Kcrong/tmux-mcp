@@ -131,6 +131,23 @@ type serveConfig struct {
 	// intentionally not gated — a read-only client can still discover
 	// the full surface and choose which tools to invoke.
 	readOnly bool
+	// logger is the slog handle the dispatcher uses for protocol-level
+	// records (parse errors, shutdown drain timeouts) and as the parent
+	// of every per-request reqLogger. nil means fall back to
+	// slog.Default() — that is the historical behaviour and keeps the
+	// option non-breaking. Tests inject a buffered logger here so
+	// concurrent Serve invocations never see each other's records.
+	logger *slog.Logger
+}
+
+// baseLogger returns cfg.logger when set, slog.Default() otherwise. It is
+// the single place the dispatcher consults so swapping the default and
+// re-deriving reqLogger / fallback paths happens in lockstep.
+func (c *serveConfig) baseLogger() *slog.Logger {
+	if c != nil && c.logger != nil {
+		return c.logger
+	}
+	return slog.Default()
 }
 
 // WithMaxConcurrentCalls caps how many tools/call frames may be
@@ -263,6 +280,17 @@ func WithToolsListChangedNotifier(setter func(notify func())) ServeOption {
 	return func(c *serveConfig) { c.installListChanged = setter }
 }
 
+// WithServeLogger injects the slog.Logger the dispatcher should use as
+// the base for protocol-level records (parse errors, shutdown drain
+// timeouts) and as the parent of every per-request reqLogger. Pass nil
+// to fall back to slog.Default(). cmd/tmux-mcp wires its
+// newLogHandler-derived logger here so the dispatcher's records share
+// the operator-selected handler instead of relying on slog.SetDefault
+// process-global state.
+func WithServeLogger(lg *slog.Logger) ServeOption {
+	return func(c *serveConfig) { c.logger = lg }
+}
+
 // Serve runs the JSON-RPC dispatch loop on a line-delimited reader and
 // writer until the reader hits EOF or the context is cancelled.
 //
@@ -289,10 +317,14 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 	for _, o := range opts {
 		o(&cfg)
 	}
-	limiter := newCallLimiter(cfg.maxConcurrentCalls)
+	baseLogger := cfg.baseLogger()
+	limiter := newCallLimiter(cfg.maxConcurrentCalls, baseLogger)
 	audit := cfg.audit
+	audit.SetLogger(baseLogger)
 	reaper := cfg.reaper
+	reaper.SetLogger(baseLogger)
 	metrics := cfg.metrics
+	metrics.SetLogger(baseLogger)
 	r := bufio.NewReader(in)
 	var writeMu sync.Mutex
 	// dispatchCtx is the parent of every request-scoped context Serve
@@ -532,7 +564,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 					}
 				}
 			case <-t.C:
-				slog.Warn("shutdown drain timed out", "timeout", cfg.shutdownTimeout)
+				cfg.baseLogger().Warn("shutdown drain timed out", "timeout", cfg.shutdownTimeout)
 				return ErrShutdownTimedOut
 			case f := <-frames:
 				rejectFrame(f)
@@ -577,12 +609,12 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		}
 		var req rpcRequest
 		if jerr := json.Unmarshal(line, &req); jerr != nil {
-			slog.Warn("invalid request", "err", jerr)
+			cfg.baseLogger().Warn("invalid request", "err", jerr)
 			send(rpcResponse{Error: &rpcError{Code: codeParseError, Message: jerr.Error()}})
 			continue
 		}
 		if req.JSONRPC != "2.0" || req.Method == "" {
-			slog.Warn("invalid request", "method", req.Method, "jsonrpc", req.JSONRPC)
+			cfg.baseLogger().Warn("invalid request", "method", req.Method, "jsonrpc", req.JSONRPC)
 			send(rpcResponse{ID: req.ID, Error: &rpcError{Code: codeInvalidRequest, Message: "expected jsonrpc=2.0 with method"}})
 			continue
 		}
@@ -604,7 +636,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, h Handler, opts ...
 		// to the audit sink so audit records and the structured log
 		// stream share a correlation key.
 		rid := newRequestID()
-		reqLogger := slog.Default().With("rid", rid, "method", req.Method)
+		reqLogger := cfg.baseLogger().With("rid", rid, "method", req.Method)
 		// Derive from dispatchCtx (not ctx) so a stdin EOF cancels the
 		// handler's view of the world even when the parent context
 		// itself is still alive. Signal-driven shutdown reaches the

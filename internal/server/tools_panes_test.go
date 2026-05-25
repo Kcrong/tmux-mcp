@@ -14,10 +14,11 @@ import (
 // returns the active pane of a freshly created session, with the fields
 // we expect downstream agents to switch on.
 func TestHandle_ListPanes_AfterSessionCreate(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -62,10 +63,11 @@ func TestHandle_ListPanes_AfterSessionCreate(t *testing.T) {
 // TestHandle_ListPanes_NoArgs_ListsAllPanes proves the empty-session
 // branch (server-wide -a listing) works through the tool surface.
 func TestHandle_ListPanes_NoArgs_ListsAllPanes(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -90,10 +92,11 @@ func TestHandle_ListPanes_NoArgs_ListsAllPanes(t *testing.T) {
 // TestHandle_PaneSelect_AcceptsTarget confirms the happy path: a
 // "session:window.pane" target is accepted by the tool surface.
 func TestHandle_PaneSelect_AcceptsTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -123,10 +126,11 @@ func TestHandle_PaneSelect_AcceptsTarget(t *testing.T) {
 // that pane_select against an unknown session surfaces
 // CodeSessionNotFound rather than the generic internal-error code.
 func TestHandle_PaneSelect_MissingTargetMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so the dispatcher hits
 	// the "server is up but the named session does not exist" branch.
@@ -156,6 +160,7 @@ func TestHandle_PaneSelect_MissingTargetMapsCode(t *testing.T) {
 // caller — the schema lists "target" as required, but the handler
 // must also reject the empty string at runtime.
 func TestHandle_PaneSelect_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -174,6 +179,7 @@ func TestHandle_PaneSelect_RejectsEmptyTarget(t *testing.T) {
 // TestHandle_ToolsList_IncludesPaneTools makes sure tools/list
 // advertises the new tools so MCP clients can discover them.
 func TestHandle_ToolsList_IncludesPaneTools(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

@@ -48,6 +48,12 @@ var readOnlyTools = map[string]struct{}{
 	// only ever runs `tmux list-windows -F ...` under the hood and
 	// never mutates server state.
 	"choose_tree": {},
+	// find_window is a pure search over already-existing windows: it
+	// runs `tmux list-windows -F … -f <filter>` and returns the matching
+	// rows, never mutating tmux state. Belongs in the read-only
+	// allowlist alongside list_windows so an inspection-only agent can
+	// still locate a target by name / title / content.
+	"find_window": {},
 	// Buffer / option / message inspectors. show_buffer and
 	// show_options are spec-named for forward compatibility — neither
 	// is registered today, but adding them here means the policy is

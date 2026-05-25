@@ -589,6 +589,94 @@ discover a target before reading its format-only fields.
 
 ---
 
+## `find_window`
+
+Search for windows whose name, pane title, or visible pane content
+matches a query. Functionally `tmux find-window` for a headless server
+— tmux's own `find-window` requires a client attached, so the boundary
+implements the same matching semantics on top of `tmux list-windows -F
+… -f <filter>` and returns the matching rows directly. Useful when an
+agent is juggling many sessions and wants to locate "the build window"
+or "the pane currently showing an error" without enumerating every
+session/window pair client-side.
+
+By default the search runs across all three scopes (the same `-CNT`
+default tmux uses); set any of the `*_only` flags to restrict, or
+combine them to compose a union (matches in any selected scope are
+returned). `regex` flips matching from fnmatch-style globbing to a
+regular expression (`-r`). `target`, when supplied, scopes the search
+to a single tmux session (`-t`); otherwise every window on the server
+is considered (`-a`).
+
+### Input
+
+| Field          | Type    | Required | Default | Notes                                                                         |
+| -------------- | ------- | -------- | ------- | ----------------------------------------------------------------------------- |
+| `match`        | string  | yes      | —       | non-empty pattern. fnmatch substring by default; regex when `regex=true`.     |
+| `regex`        | boolean | no       | `false` | treat `match` as a regular expression (`-r`).                                 |
+| `name_only`    | boolean | no       | `false` | restrict to the window name (`-N`). Combine with the other `*_only` flags.   |
+| `title_only`   | boolean | no       | `false` | restrict to the window's pane title (`-T`).                                  |
+| `content_only` | boolean | no       | `false` | restrict to visible pane content (`-C`).                                     |
+| `target`       | string  | no       | —       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to search every session. |
+
+The schema sets `additionalProperties: false`, so any field other than
+the documented ones is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block with a flat object keyed by `matches`:
+
+```jsonc
+{
+  "matches": [
+    { "session": "demo",  "window_index": 1, "window_name": "build" },
+    { "session": "build", "window_index": 0, "window_name": "build" }
+  ]
+}
+```
+
+| Field          | Type    | Notes                                                                              |
+| -------------- | ------- | ---------------------------------------------------------------------------------- |
+| `session`      | string  | Session the matching window lives in. Combine with `window_index` to form a `session:index` target. |
+| `window_index` | integer | Window index inside its session (0-based).                                         |
+| `window_name`  | string  | Whatever tmux assigned (caller-supplied `-n`, or the auto label).                  |
+
+A query that matches zero windows returns `{"matches": []}` (an empty
+array, not `null`) so callers branching on `matches.length === 0` do
+not have to also handle the null shape.
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `match` missing/empty, `target` malformed, or an unknown field sent. |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`).  |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// substring across name/title/content (default scope, every session)
+{ "match": "error" }
+
+// regex anchored to the window name, scoped to one session
+{ "match": "^build_", "regex": true, "name_only": true, "target": "demo" }
+
+// content-only search for a phrase visible on a pane
+{ "match": "panic:", "content_only": true }
+```
+
+A typical chain looks like: locate the matching window, focus it, then
+drive it.
+
+```jsonc
+{ "name": "find_window",   "arguments": { "match": "build", "name_only": true, "target": "demo" } }
+{ "name": "window_select", "arguments": { "session": "demo", "target": "1" } }
+{ "name": "capture",       "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `send_keys`
 
 Type into a session. Each entry of `keys` is interpreted by tmux: bare
@@ -3065,6 +3153,83 @@ Pair with `session_list` to find live sessions, then walk the tree:
 ```jsonc
 { "name": "session_list", "arguments": {} }
 { "name": "choose_tree",  "arguments": { "scope": "session", "session": "demo" } }
+```
+
+---
+
+## `link_window`
+
+Share a window across sessions in place via
+`tmux link-window -s <src_session>:<src_window> -t <dst_session>:<dst_window>`.
+Unlike `window_move` (which relocates and removes the source) and
+`swap_window` (which trades two windows of the same session),
+`link_window` leaves the source intact: the same `#{window_id}` is
+reachable from both sessions, so a long-running build window can be
+exposed in a "monitor" session without losing the foreground in the
+working session.
+
+### Input
+
+| Field         | Type    | Required | Default | Notes                                                                              |
+| ------------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `src_session` | string  | yes      | —       | source session name; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `src_window`  | string  | yes      | —       | source window name (1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`)             |
+| `dst_session` | string  | yes      | —       | destination session name; same regex/length policy as `src_session`                |
+| `dst_window`  | string  | yes      | —       | destination window name (same regex/length policy as `src_window`) or numeric index |
+| `kill`        | boolean | no       | `false` | when `true`, overwrite an existing dst window instead of erroring (tmux's `-k` flag) |
+
+The `(src_session, src_window)` and `(dst_session, dst_window)` pairs
+must differ — passing the same `<session>:<window>` rejects with
+`-32602` ("src and dst must differ") before tmux is consulted, so the
+boundary surfaces a more informative error than tmux's own no-op
+refusal. The schema sets `additionalProperties: false`, so any unknown
+field is rejected up front (a typo like `"src_win"` fails fast instead
+of silently producing a partial target).
+
+`kill=true` is the right setting when an agent wants to repeatedly
+expose the latest build into a fixed monitor slot — without it tmux
+refuses the call with "index in use" once the slot is occupied.
+`kill=false` (the default) is safer for one-shot links because it
+prevents an accidental overwrite of a window the user might still be
+attached to.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "linked": true, "dst": "monitor:1" }
+```
+
+`dst` echoes the destination handle in the form the caller can hand
+straight to `list_windows` / `send_keys` / `window_select` next, so a
+follow-up step does not have to reconstruct the colon-joined target
+itself. The src is omitted because the caller already supplied it.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `src_session`, `src_window`, `dst_session`, or `dst_window`; both pairs equal; or an unknown field was sent. |
+| `-32000` | A referenced session does not exist on this server, or one of the targets does not match a window (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the link (e.g. `kill=false` with the dst slot already in use, or other unexpected tmux failure). |
+
+### Example
+
+```jsonc
+{
+  "src_session": "build", "src_window": "watch",
+  "dst_session": "monitor", "dst_window": "1",
+  "kill": true
+}
+```
+
+Pair with `list_windows` against the destination session to confirm
+the linked window landed in the expected slot:
+
+```jsonc
+{ "name": "link_window",  "arguments": { "src_session": "build", "src_window": "watch", "dst_session": "monitor", "dst_window": "1" } }
+{ "name": "list_windows", "arguments": { "session": "monitor" } }
 ```
 
 ---

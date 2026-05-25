@@ -15,10 +15,11 @@ import (
 // check are intentionally loose ("looks like a real session") because
 // the exact values depend on the tmux version on PATH.
 func TestDescribeSession_HappyPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	const name = "describe_happy"
 	if err := c.CreateSession(ctx, SessionSpec{
@@ -62,10 +63,11 @@ func TestDescribeSession_HappyPath(t *testing.T) {
 // errs.ErrSessionNotFound so the dispatcher can map it to
 // CodeSessionNotFound.
 func TestDescribeSession_UnknownReturnsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so we exercise the
 	// "server up, named session missing" branch (a fresh controller
@@ -86,10 +88,11 @@ func TestDescribeSession_UnknownReturnsSentinel(t *testing.T) {
 // TestDescribeSession_EmptyNameRejected guards the cheap input check
 // the method performs before shelling out to tmux.
 func TestDescribeSession_EmptyNameRejected(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if _, err := c.DescribeSession(ctx, ""); err == nil {
 		t.Fatal("expected error for empty session name")
@@ -100,10 +103,11 @@ func TestDescribeSession_EmptyNameRejected(t *testing.T) {
 // path: split a window so the session has more than one pane and assert
 // DescribeSession picks that up.
 func TestDescribeSession_TracksMultiplePanes(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	const name = "describe_panes"
 	if err := c.CreateSession(ctx, SessionSpec{Name: name, Command: "/bin/sh", Width: 80, Height: 24}); err != nil {

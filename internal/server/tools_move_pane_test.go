@@ -18,10 +18,11 @@ import (
 // logical (caller-supplied) src/dst echoes so a -session-prefix
 // deployment never leaks the prefixed identity.
 func TestHandle_MovePane_RelocatesAcrossWindows(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "mp", "command": "/bin/sh", "width": 80, "height": 24,
@@ -86,6 +87,7 @@ func TestHandle_MovePane_RelocatesAcrossWindows(t *testing.T) {
 // the empty string at runtime so a half-formed call cannot leak a
 // stray "" past the regex.
 func TestHandle_MovePane_RejectsEmptySrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -104,6 +106,7 @@ func TestHandle_MovePane_RejectsEmptySrc(t *testing.T) {
 // TestHandle_MovePane_RejectsEmptyDst mirrors the src guard for the
 // destination argument so tmux never sees a "-t" without a value.
 func TestHandle_MovePane_RejectsEmptyDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -123,6 +126,7 @@ func TestHandle_MovePane_RejectsEmptyDst(t *testing.T) {
 // stray quote / shell metachar must not slip through to the tmux argv,
 // even though the boundary already guards `session` fields elsewhere.
 func TestHandle_MovePane_RejectsBadSrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -145,6 +149,7 @@ func TestHandle_MovePane_RejectsBadSrc(t *testing.T) {
 // destination side so a stray quote / shell metachar can never slip
 // through on either axis.
 func TestHandle_MovePane_RejectsBadDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -168,10 +173,11 @@ func TestHandle_MovePane_RejectsBadDst(t *testing.T) {
 // CodeSessionNotFound (-32000), mirroring pane_swap / pane_break /
 // pane_join.
 func TestHandle_MovePane_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor a real session so the dispatcher hits the "server up,
 	// session missing" branch — without it tmux emits a different
@@ -210,10 +216,11 @@ func TestHandle_MovePane_MissingSessionMapsCode(t *testing.T) {
 // before sending the call. Here we only assert that the *known* fields
 // reach the handler unchanged when the optional booleans are absent.
 func TestHandle_MovePane_AcceptsOptionalsAbsent(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "mpopt", "command": "/bin/sh", "width": 80, "height": 24,
@@ -239,6 +246,7 @@ func TestHandle_MovePane_AcceptsOptionalsAbsent(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via tools/list,
 // and pins the strict additionalProperties / required contract.
 func TestHandle_ToolsList_IncludesMovePane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

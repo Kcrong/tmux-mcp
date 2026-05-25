@@ -13,10 +13,11 @@ import (
 // the JSON-RPC dispatcher: create a session, describe it, then assert
 // the response envelope decodes cleanly and every field looks sensible.
 func TestSessionDescribe_HappyPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -82,10 +83,11 @@ func TestSessionDescribe_HappyPath(t *testing.T) {
 // must be errs.CodeSessionNotFound (-32000) so MCP clients can branch
 // on a stable code rather than the (version-specific) tmux stderr text.
 func TestSessionDescribe_UnknownSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so the controller
 	// hits the "server up, named session missing" branch (a fresh
@@ -118,6 +120,7 @@ func TestSessionDescribe_UnknownSessionMapsCode(t *testing.T) {
 // path runs before any tmux call is made — bad names yield the standard
 // JSON-RPC invalid-params code.
 func TestSessionDescribe_RejectsInvalidName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 
@@ -137,6 +140,7 @@ func TestSessionDescribe_RejectsInvalidName(t *testing.T) {
 // TestSessionDescribe_ListedInTools confirms the init()-time
 // registration actually wired session_describe into tools/list.
 func TestSessionDescribe_ListedInTools(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)
