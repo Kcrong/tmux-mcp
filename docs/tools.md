@@ -1577,6 +1577,76 @@ and then promote it into a window of its own:
 
 ---
 
+## `move_pane`
+
+Relocate a single pane to a different slot, window, or session via
+`tmux move-pane -s <src> -t <dst>` (with `-h` / `-b` / `-d` selected by
+the boolean knobs). Distinct from
+[`pane_swap`](#pane_swap) (which trades two existing panes in place,
+leaving counts unchanged) and
+[`pane_break`](#pane_break) (which detaches a pane into its own
+brand-new window): `move_pane` takes one source pane and re-homes it
+next to the destination, splitting the destination to make room. The
+source pane keeps its `#{pane_id}`, contents, and running process —
+only the layout slot changes — so follow-up `pane_select` /
+`send_keys` calls against the moved pane see the new placement
+immediately.
+
+When the donor window has no remaining panes after the move, tmux
+reaps it: a `list_windows` call after the move may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                          |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------ |
+| `src`        | string  | yes      | Source pane target (`session`, `session:window`, `session:window.pane`, or `%N`) |
+| `dst`        | string  | yes      | Destination pane target (same target forms as `src`)                           |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.     |
+| `before`     | boolean | no       | When true, insert the moved pane before the destination (`-b`); default is after. |
+| `no_focus`   | boolean | no       | When true, do not change the active pane after the move (`-d`).                |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+JSON block: `{"moved": true, "src": "<src>", "dst": "<dst>"}`. The
+echoed `src` / `dst` are the logical (caller-supplied) values, so a
+`-session-prefix` deployment never leaks the prefixed identity back to
+the caller.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the move for any other reason.                                                        |
+
+### Example
+
+```jsonc
+// Default: move into the destination window with a top/bottom split,
+// inserted after the destination, focus follows.
+{ "src": "demo:1.0", "dst": "demo:0.0" }
+
+// Horizontal split, place moved pane before destination, leave focus alone.
+{ "src": "demo:1.0", "dst": "demo:0.0", "horizontal": true, "before": true, "no_focus": true }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "move_pane",    "arguments": { "src": "demo:1.0", "dst": "demo:0.0", "no_focus": true } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `respawn_pane`
 
 Restart the command running in an existing pane via
