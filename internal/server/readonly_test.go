@@ -131,6 +131,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		// silently flip the policy by adding the name to readOnlyTools.
 		"delete_buffer",
 		"command_prompt",
+		"confirm_before",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
