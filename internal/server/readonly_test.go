@@ -64,6 +64,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{
 		"send_keys",
+		"send_prefix",
 		"session_create",
 		"session_kill",
 		"session_rename",

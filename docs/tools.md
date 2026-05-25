@@ -711,6 +711,41 @@ Status text block: `ok`.
 
 ---
 
+## `send_prefix`
+
+Deliver tmux's configured prefix key (default `C-b`, or `C-a` /
+whatever the running server has bound) to a target pane via
+`tmux send-prefix [-2] -t <target>`. Useful when an inner TUI (vim,
+htop, weechat, …) running inside the pane has captured the prefix
+chord for its own purposes and an agent needs to forward the literal
+prefix keystroke through to that inner program. Set `secondary: true`
+to deliver the secondary prefix (`-2`, configured via `prefix2`).
+
+### Input
+
+| Field       | Type    | Required | Default | Notes                                                                       |
+| ----------- | ------- | -------- | ------- | --------------------------------------------------------------------------- |
+| `target`    | string  | yes      | —       | pane target: `"session"`, `"session:window"`, or `"session:window.pane"` |
+| `secondary` | boolean | no       | `false` | when `true`, send the secondary prefix (`-2`) instead of the primary one    |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+- `-32602` — missing/malformed `target`.
+- `-32000` — session or pane does not exist.
+- `-32603` — tmux send-prefix failed.
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1", "secondary": false }
+```
+
+---
+
 ## `capture`
 
 Read the visible pane (or full scrollback) as text. With `ansi: true`
