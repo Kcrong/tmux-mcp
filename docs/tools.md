@@ -2078,6 +2078,68 @@ the layout actually flipped:
 
 ---
 
+## `previous_window`
+
+Move the targeted session's active window pointer one slot backward
+via `tmux previous-window -t <target>`. tmux wraps from index 0 to
+the highest-numbered window so a session sitting on its first window
+does not refuse the call — it lands on the last one instead. Useful
+for an agent stepping backward through a sequence of sibling windows
+without having to enumerate them via `list_windows` first.
+
+Sibling of `next_window`; the two tools are deliberately symmetric so
+an agent that drives one does not need to relearn the schema for the
+other. Mutates state (it shifts the session's active-window pointer)
+so it is **not** allowed under `-read-only`.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                                                                              |
+| ------------ | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `target`     | string  | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `with_alert` | boolean | no       | `false` | when `true`, tmux skips windows that are not alert-flagged and lands on the previous one that *is* (`-a`) |
+
+The schema sets `additionalProperties: false`, so any field other than
+`target` / `with_alert` is rejected with `-32602` (invalid params)
+before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "moved": true }
+```
+
+The boundary deliberately does not echo which window now carries the
+active flag — a follow-up `list_windows` is one call away if the
+caller wants to confirm the new slot.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.                            |
+| `-32000` | `target` does not name a session on this server (`errs.ErrSessionNotFound`).       |
+| `-32603` | tmux refused the call for an unexpected reason.                                    |
+
+### Example
+
+```jsonc
+{ "target": "demo" }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the active flag actually flipped:
+
+```jsonc
+{ "name": "list_windows",    "arguments": { "session": "demo" } }
+{ "name": "previous_window", "arguments": { "target": "demo" } }
+{ "name": "list_windows",    "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `choose_tree`
 
 Snapshot the (session, window) tree this server's tmux holds, in the
