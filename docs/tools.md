@@ -4610,6 +4610,95 @@ it back once, then drop it so the buffer table stays small.
 { "name": "set_buffer",    "arguments": { "data": "the value", "name": "shared" } }
 { "name": "show_buffer",   "arguments": { "name": "shared" } }
 { "name": "delete_buffer", "arguments": { "name": "shared" } }
+## `choose_buffer`
+
+Open tmux's interactive paste-buffer chooser inside the target pane via
+`tmux choose-buffer [-N] [-Z] [-r] [-t TARGET-PANE] [-F FORMAT]
+[-f FILTER] [-K KEY-FORMAT] [-O SORT-ORDER] [TEMPLATE]`. The pane
+enters tmux's `buffer-mode` (`#{?pane_in_mode,1,0}` flips to `1` and
+`#{pane_mode}` reads `buffer-mode`) so a follow-up `send_keys` (or a
+real client attached to the server) can step through the buffer list.
+
+Unlike `choose_tree`, this tool does not synthesise a structured
+snapshot — it is a "fire-and-forget" entrance into tmux's native
+picker. The boundary forwards the eight optional flags verbatim
+(plus the positional `template`) so an agent can shape the chooser's
+row presentation, sort order, and per-row key shortcut without
+re-implementing the navigation UI on the JSON-RPC side.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                              |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target`     | string  | no       | optional pane target (`session`, `session:window`, `session:window.pane`, or `%N`). Omit to let tmux resolve the current pane.                     |
+| `format`     | string  | no       | tmux `-F FORMAT` per-row template (e.g. `#{buffer_name}`). Capped at 4 KiB; must not contain newlines.                                             |
+| `filter`     | string  | no       | tmux `-f FILTER` Boolean format that prunes the row set (e.g. `#{>=:#{buffer_size},10}`). Capped at 4 KiB; must not contain newlines.              |
+| `key_format` | string  | no       | tmux `-K KEY-FORMAT` per-row key-shortcut template (alnum, dot, dash, underscore — same character class tmux uses for key descriptors).            |
+| `sort_order` | string  | no       | tmux `-O SORT-ORDER`; one of `"time"`, `"name"`, `"size"`.                                                                                          |
+| `template`   | string  | no       | positional TEMPLATE — the tmux command run against the selected buffer (e.g. `paste-buffer -b %%`). Capped at 4 KiB; must not contain newlines.    |
+| `no_preview` | boolean | no       | when true, pass `-N` so the chooser does not render a preview of the selected buffer.                                                              |
+| `zoom`       | boolean | no       | when true, pass `-Z` so the chooser pane is zoomed for the duration of the picker.                                                                 |
+| `reverse`    | boolean | no       | when true, pass `-r` so the chooser lists rows in reverse sort order.                                                                              |
+
+The schema sets `additionalProperties: false`, so any field other
+than the nine documented above is rejected with `-32602` before tmux
+is consulted.
+
+### Output
+
+JSON text block carrying a single boolean flag:
+
+```jsonc
+{
+  "entered": true
+}
+```
+
+`entered=true` indicates `tmux choose-buffer` returned cleanly and
+the target pane has been put into buffer-mode. There is no failure
+shape: a non-zero tmux exit (e.g. unknown target, no server running)
+is surfaced via the JSON-RPC error envelope below instead of via a
+`false` value here.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `target` outside the regex/length policy; `format` / `filter` / `template` contains newlines or exceeds 4 KiB; `key_format` outside the alnum/dot/dash class; `sort_order` not in {time, name, size}; or an unknown field on `arguments`. |
+| `-32000` | `target` does not resolve to an existing pane, or no tmux server is running on the controller's socket (both wrap `errs.ErrSessionNotFound`).            |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                                                                         |
+
+### Examples
+
+```jsonc
+// Drop the demo session's pane into the buffer chooser, no flags.
+{ "target": "demo" }
+
+// Limit the chooser to buffers larger than 10 bytes, sorted by size.
+{
+  "target":     "demo",
+  "filter":     "#{>=:#{buffer_size},10}",
+  "sort_order": "size"
+}
+
+// Zoom the chooser pane and skip the buffer preview, then run
+// `paste-buffer -b %%` on whichever buffer the user selects.
+{
+  "target":     "demo:0.0",
+  "no_preview": true,
+  "zoom":       true,
+  "template":   "paste-buffer -b %%"
+}
+```
+
+Pair with `set_buffer` and `display_message` to verify the chooser
+landed:
+
+```jsonc
+{ "name": "set_buffer",      "arguments": { "data": "snippet" } }
+{ "name": "choose_buffer",   "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "format": "#{pane_mode}", "session": "demo" } }
+// → { "value": "buffer-mode" }
 ```
 
 ---

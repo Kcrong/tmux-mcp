@@ -850,6 +850,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.chooseTree(ctx, call.Arguments)
 	case "refresh_client":
 		return t.refreshClient(ctx, call.Arguments)
+	case "choose_buffer":
+		return t.chooseBuffer(ctx, call.Arguments)
 	case "show_options":
 		return t.showOptions(ctx, call.Arguments)
 	case "set_window_option":

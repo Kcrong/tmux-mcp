@@ -133,6 +133,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"delete_buffer",
 		"command_prompt",
 		"confirm_before",
+		"choose_buffer",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
