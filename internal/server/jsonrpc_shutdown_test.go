@@ -80,7 +80,7 @@ func TestServe_ShutdownTimeout_DrainCompletes(t *testing.T) {
 // teardown.
 func TestServe_ShutdownTimeout_Exceeded(t *testing.T) {
 	t.Parallel()
-	logs := withCapturedLogs(t)
+	logs, withLogger := withCapturedLogs(t)
 
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
@@ -102,7 +102,7 @@ func TestServe_ShutdownTimeout_Exceeded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, in, w, handler, WithShutdownTimeout(100*time.Millisecond))
+		done <- Serve(ctx, in, w, handler, WithShutdownTimeout(100*time.Millisecond), withLogger)
 	}()
 
 	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"stuck"}` + "\n"))

@@ -28,6 +28,7 @@ func TestOpenLogOutput_DefaultStderr(t *testing.T) {
 	// "operator took the default" and "operator passed -log-output=stderr".
 	for _, target := range []string{"", LogOutputStderr} {
 		t.Run("target="+target, func(t *testing.T) {
+			t.Parallel()
 			w, closer, err := openLogOutput(target, stderr, stdout, 0, 0)
 			if err != nil {
 				t.Fatalf("openLogOutput(%q): %v", target, err)
@@ -214,6 +215,7 @@ func TestOpenLogOutput_PermissionDenied(t *testing.T) {
 // unwinds the loop, then assert that record made it to the file
 // (and not to stderr).
 func TestRun_LogOutputFile_EndToEnd(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -277,6 +279,7 @@ func TestRun_LogOutputFile_EndToEnd(t *testing.T) {
 // inside the test, so instead we verify the file is writable to
 // completion (re-open and append works after run() returns).
 func TestRun_LogOutputFile_DryRun(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}

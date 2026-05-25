@@ -8,6 +8,7 @@ import (
 )
 
 func TestEmitVersionJSON(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	if err := emitVersionJSON(&buf, "v1.2.3", "go1.24.6"); err != nil {
 		t.Fatalf("emitVersionJSON: %v", err)
@@ -32,6 +33,7 @@ func TestEmitVersionJSON(t *testing.T) {
 }
 
 func TestEmitVersionJSONFieldsPresent(t *testing.T) {
+	t.Parallel()
 	// Decode into a generic map to confirm every advertised key is
 	// present in the output even when its value is the empty string.
 	var buf bytes.Buffer

@@ -35,10 +35,11 @@ func newCtl(t *testing.T) *Controller {
 }
 
 func TestSessionLifecycle(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "alpha", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -60,10 +61,11 @@ func TestSessionLifecycle(t *testing.T) {
 }
 
 func TestSendKeysAndCapture(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name:    "echo",
@@ -87,10 +89,11 @@ func TestSendKeysAndCapture(t *testing.T) {
 }
 
 func TestWaitForText(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "wait", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -108,10 +111,11 @@ func TestWaitForText(t *testing.T) {
 }
 
 func TestWaitForText_TimesOut(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "to", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -134,10 +138,11 @@ func TestWaitForText_TimesOut(t *testing.T) {
 // session via the typed sentinel — relied on by the dispatcher to emit
 // CodeSessionNotFound on the wire.
 func TestKillSession_UnknownWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	// Create-then-kill so the tmux server is definitely up; then ask it
 	// to kill a name that doesn't exist.
 	if err := c.CreateSession(ctx, SessionSpec{Name: "real", Command: "/bin/sh"}); err != nil {
@@ -155,10 +160,11 @@ func TestKillSession_UnknownWrapsSentinel(t *testing.T) {
 // TestWaitForStable_TimesOutWrapsSentinel confirms the WaitForStable
 // timeout path also wraps the typed sentinel.
 func TestWaitForStable_TimesOutWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "ws", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -179,10 +185,11 @@ func TestWaitForStable_TimesOutWrapsSentinel(t *testing.T) {
 }
 
 func TestResize(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "rs", Command: "/bin/sh", Width: 80, Height: 24}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -193,10 +200,11 @@ func TestResize(t *testing.T) {
 }
 
 func TestListSessions_EmptyOnFreshController(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	names, err := c.ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
@@ -209,6 +217,7 @@ func TestListSessions_EmptyOnFreshController(t *testing.T) {
 // TestNewWithSocket_HonoursExplicitPath verifies the controller's socket
 // matches the caller-supplied path verbatim (no MkdirTemp shadow).
 func TestNewWithSocket_HonoursExplicitPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	want := filepath.Join(dir, "tmux.sock")
@@ -231,6 +240,7 @@ func TestNewWithSocket_HonoursExplicitPath(t *testing.T) {
 // deployments rely on this so that a restart does not race against a
 // vanishing /run/tmux-mcp directory.
 func TestNewWithSocket_ParentSurvivesShutdown(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "tmux.sock")
@@ -245,6 +255,7 @@ func TestNewWithSocket_ParentSurvivesShutdown(t *testing.T) {
 }
 
 func TestNewWithSocket_RejectsRelativePath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	_, err := NewWithSocket("relative/sock")
 	if err == nil {
@@ -256,6 +267,7 @@ func TestNewWithSocket_RejectsRelativePath(t *testing.T) {
 }
 
 func TestNewWithSocket_RejectsMissingParent(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist", "sock")
@@ -269,6 +281,7 @@ func TestNewWithSocket_RejectsMissingParent(t *testing.T) {
 }
 
 func TestNewWithSocket_RejectsParentNotDirectory(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	// A regular file in place of the parent directory.
@@ -288,6 +301,7 @@ func TestNewWithSocket_RejectsParentNotDirectory(t *testing.T) {
 // TestNew_OwnsScratchDir confirms the default New() path still uses an
 // MkdirTemp-backed directory and cleans it up on Shutdown.
 func TestNew_OwnsScratchDir(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c, err := New()
 	if err != nil {
@@ -312,6 +326,7 @@ func TestNew_OwnsScratchDir(t *testing.T) {
 // PATH (and report a different version) or fail with the LookPath
 // error.
 func TestWithBinary_HonoursExplicitPath(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake tmux script needs unix-like shell")
 	}
@@ -332,6 +347,7 @@ func TestWithBinary_HonoursExplicitPath(t *testing.T) {
 // without an extra branch. We just confirm the controller still
 // constructs successfully when tmux is available on PATH.
 func TestWithBinary_EmptyFallsBackToPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c, err := NewWithSocket("", WithBinary(""))
 	if err != nil {
@@ -348,6 +364,7 @@ func TestWithBinary_EmptyFallsBackToPath(t *testing.T) {
 // operator immediately sees the mistake instead of an obscure exec
 // failure once the working directory shifts.
 func TestWithBinary_RejectsRelativePath(t *testing.T) {
+	t.Parallel()
 	_, err := NewWithSocket("", WithBinary("relative/tmux"))
 	if err == nil {
 		t.Fatal("expected error for relative tmux binary path")
@@ -362,6 +379,7 @@ func TestWithBinary_RejectsRelativePath(t *testing.T) {
 // rather than getting swallowed and re-emerging downstream as a
 // confusing "fork/exec" failure.
 func TestWithBinary_RejectsMissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "no-such-tmux")
 	_, err := NewWithSocket("", WithBinary(missing))
@@ -381,6 +399,7 @@ func TestWithBinary_RejectsMissingFile(t *testing.T) {
 // supplied path is rejected up front rather than producing a confusing
 // permission error at exec time.
 func TestWithBinary_RejectsDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, err := NewWithSocket("", WithBinary(dir))
 	if err == nil {
@@ -396,6 +415,7 @@ func TestWithBinary_RejectsDirectory(t *testing.T) {
 // Without this, exec'ing it later would surface as "permission denied"
 // from the kernel — much further from the operator's mistake.
 func TestWithBinary_RejectsNonExecutableFile(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits don't map cleanly on windows")
 	}
@@ -419,6 +439,7 @@ func TestWithBinary_RejectsNonExecutableFile(t *testing.T) {
 // fake-tmux script that prints a sentinel "tmux next-9.9" banner: if
 // the override were ignored the returned version would not match.
 func TestProbeVersionWithBinary_UsesOverride(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake tmux script needs unix-like shell")
 	}
@@ -437,6 +458,7 @@ func TestProbeVersionWithBinary_UsesOverride(t *testing.T) {
 // any subprocess is spawned, so a bogus -tmux-bin value can never
 // hang the liveness check on a misconfigured PATH.
 func TestProbeVersionWithBinary_RejectsRelative(t *testing.T) {
+	t.Parallel()
 	_, err := ProbeVersionWithBinary(context.Background(), "relative/tmux")
 	if err == nil {
 		t.Fatal("expected error for relative tmux binary path")
@@ -451,6 +473,7 @@ func TestProbeVersionWithBinary_RejectsRelative(t *testing.T) {
 // (i.e. tmux looked up on $PATH). This is what main.go relies on when
 // -tmux-bin is not set.
 func TestProbeVersionWithBinary_EmptyFallsBackToPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	got, err := ProbeVersionWithBinary(context.Background(), "")
 	if err != nil {
@@ -473,6 +496,7 @@ func TestProbeVersionWithBinary_EmptyFallsBackToPath(t *testing.T) {
 // the run() code path that prepends "-f <path>" before the subcommand
 // verb.
 func TestWithConfigPath_HonoursExplicitPath(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "tmux.conf")
@@ -496,6 +520,7 @@ func TestWithConfigPath_HonoursExplicitPath(t *testing.T) {
 // "" so the run() path continues to omit -f from argv (i.e. tmux uses
 // its own defaults / ~/.tmux.conf).
 func TestWithConfigPath_EmptyKeepsLegacyBehaviour(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c, err := NewWithSocket("", WithConfigPath(""))
 	if err != nil {
@@ -513,6 +538,7 @@ func TestWithConfigPath_EmptyKeepsLegacyBehaviour(t *testing.T) {
 // "tmux: file is a directory" or "no such file" failure once the
 // working directory shifts.
 func TestWithConfigPath_RejectsRelativePath(t *testing.T) {
+	t.Parallel()
 	_, err := NewWithSocket("", WithConfigPath("relative/tmux.conf"))
 	if err == nil {
 		t.Fatal("expected error for relative tmux config path")
@@ -527,6 +553,7 @@ func TestWithConfigPath_RejectsRelativePath(t *testing.T) {
 // getting swallowed and re-emerging downstream as a confusing tmux
 // stderr per call.
 func TestWithConfigPath_RejectsMissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "no-such.conf")
 	_, err := NewWithSocket("", WithConfigPath(missing))
@@ -543,6 +570,7 @@ func TestWithConfigPath_RejectsMissingFile(t *testing.T) {
 // `-f <dir>` ("file is a directory") only surfaces at command time,
 // far from the operator's mistake.
 func TestWithConfigPath_RejectsDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, err := NewWithSocket("", WithConfigPath(dir))
 	if err == nil {
@@ -562,6 +590,7 @@ func TestWithConfigPath_RejectsDirectory(t *testing.T) {
 // sentinel value is picked deliberately to be different from tmux's
 // default (500) so we cannot accidentally match an unrelated default.
 func TestWithConfigPath_LoadsCustomOptions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "tmux.conf")

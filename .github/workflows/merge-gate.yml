@@ -1,0 +1,106 @@
+name: merge-gate
+
+# Single required check that aggregates every gate workflow's conclusion
+# onto the head SHA. Branch protection only needs to require `merge-gate` —
+# adding/removing upstream workflows then doesn't churn protection rules.
+#
+# Trigger fires on every upstream completion. Each invocation re-evaluates
+# the full set, so the final upstream completion latches the gate.
+#
+# Every required workflow now runs with a direct pull_request / push
+# trigger (security and stress are invoked as reusable workflows from
+# CI, so their runs are still keyed to the PR head SHA via the parent
+# CI run). That means a single head_sha lookup finds them all.
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - pr-title
+      - actionlint
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+  pull-requests: read
+  statuses: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only react to runs that are actually attached to a PR or main push.
+    # Skips fork PRs that we couldn't gate anyway.
+    if: >
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event.workflow_run.event == 'push' ||
+      github.event.workflow_run.event == 'merge_group'
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const required = ['CI', 'pr-title', 'actionlint'];
+            const sha = context.payload.workflow_run.head_sha;
+
+            // Pull every run for this SHA. The list endpoint returns
+            // newest first, so the first match per workflow_name wins.
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head_sha: sha,
+                per_page: 100,
+              },
+            );
+            const latest = new Map();
+            for (const r of runs) {
+              if (!latest.has(r.name)) latest.set(r.name, r);
+            }
+
+            const failing = [];
+            let pending = false;
+
+            for (const name of required) {
+              const r = latest.get(name);
+              if (!r) {
+                // Workflow never ran for this SHA. Could be paths-ignore'd
+                // (md-only PR for CI; non-PR push for pr-title) — treat as
+                // pass; the path/event filter is an intentional skip.
+                continue;
+              }
+              if (r.status !== 'completed') {
+                pending = true;
+                continue;
+              }
+              const conclusion = r.conclusion;
+              // success / skipped / neutral all count as pass.
+              if (['success', 'skipped', 'neutral'].includes(conclusion)) continue;
+              failing.push(`${name}: ${conclusion}`);
+            }
+
+            let state, description;
+            if (pending) {
+              state = 'pending';
+              description = 'Waiting on upstream workflows';
+            } else if (failing.length > 0) {
+              state = 'failure';
+              description = `Failing: ${failing.join(', ')}`.slice(0, 140);
+            } else {
+              state = 'success';
+              description = 'All required workflows passed';
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'merge-gate',
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+            core.info(`merge-gate → ${state}: ${description}`);

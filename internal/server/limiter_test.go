@@ -24,13 +24,13 @@ func TestCallLimiter_NoOpWhenLimitZero(t *testing.T) {
 	t.Parallel()
 
 	for _, limit := range []int{0, -1, -100} {
-		l := newCallLimiter(limit)
+		l := newCallLimiter(limit, nil)
 		if l != nil {
-			t.Fatalf("newCallLimiter(%d): expected nil, got %p", limit, l)
+			t.Fatalf("newCallLimiter(%d, nil): expected nil, got %p", limit, l)
 		}
 	}
 
-	l := newCallLimiter(0)
+	l := newCallLimiter(0, nil)
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -77,7 +77,7 @@ func TestCallLimiter_EnforcesConcurrencyCeiling(t *testing.T) {
 		acquireTimeout = 5 * time.Second
 	)
 
-	l := newCallLimiter(limit)
+	l := newCallLimiter(limit, nil)
 
 	var (
 		current atomic.Int32
@@ -159,7 +159,7 @@ func TestCallLimiter_EnforcesConcurrencyCeiling(t *testing.T) {
 func TestCallLimiter_ContextCancellationUnblocksCaller(t *testing.T) {
 	t.Parallel()
 
-	l := newCallLimiter(1)
+	l := newCallLimiter(1, nil)
 
 	// Hold the only slot from a separate goroutine so the test goroutine
 	// can run the cancellation path in the foreground.
@@ -447,7 +447,7 @@ func intStr(n int) string {
 func TestCallLimiter_DeadlineCancellationWrapsDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
-	l := newCallLimiter(1)
+	l := newCallLimiter(1, nil)
 
 	holderRelease := make(chan struct{})
 	holderDone := make(chan struct{})

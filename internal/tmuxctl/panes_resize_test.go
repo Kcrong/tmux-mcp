@@ -18,10 +18,11 @@ import (
 // bottom pane taller — so the post-resize height should be greater
 // than the baseline.
 func TestResizePane_ChangesPaneHeight(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "rp", Command: "/bin/sh", Width: 120, Height: 40,
@@ -85,10 +86,11 @@ func TestResizePane_ChangesPaneHeight(t *testing.T) {
 // be able to errors.Is into errs.ErrSessionNotFound regardless of which
 // exact phrase tmux emitted ("can't find pane" vs "session not found").
 func TestResizePane_MissingTargetWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -110,10 +112,11 @@ func TestResizePane_MissingTargetWrapsSentinel(t *testing.T) {
 // CodeInvalidParams, but the controller still refuses rather than
 // passing a bogus flag to tmux.
 func TestResizePane_RejectsBadDirection(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	err := c.ResizePane(ctx, "anywhere:0.0", "diagonal", 5)
 	if err == nil {
@@ -127,10 +130,11 @@ func TestResizePane_RejectsBadDirection(t *testing.T) {
 // TestResizePane_RejectsEmptyTarget locks the up-front guard. tmux
 // would otherwise resolve "" to whatever pane it considers current.
 func TestResizePane_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.ResizePane(ctx, "", "up", 5)
 	if err == nil {
 		t.Fatal("expected error for empty target")
@@ -144,10 +148,11 @@ func TestResizePane_RejectsEmptyTarget(t *testing.T) {
 // resize-pane with a zero step is a no-op tmux silently accepts, which
 // is almost never what the caller meant.
 func TestResizePane_RejectsZeroAmount(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.ResizePane(ctx, "demo:0.0", "up", 0)
 	if err == nil {
 		t.Fatal("expected error for zero amount")

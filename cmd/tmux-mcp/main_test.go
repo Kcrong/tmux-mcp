@@ -173,6 +173,7 @@ func TestSnapshotTTLFlag_AcceptedAndDocumented(t *testing.T) {
 // tmuxctl.NewWithSocket bubbles up through main.run, so users see the
 // error message instead of a confused "no server running" later.
 func TestRelativeSocketRejected(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -232,6 +233,7 @@ func TestParseLogLevel(t *testing.T) {
 // "ok\ttmux=<v>\ttmux-mcp=<v>" line on stdout, writes nothing on
 // stderr, and returns nil so the binary exits 0.
 func TestProbeFlag(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -282,6 +284,7 @@ func TestRunProbeFailure(t *testing.T) {
 // PATH so we can assert the exact tab-delimited shape and field order
 // without spinning up a subprocess. Skips when tmux is unavailable.
 func TestRunProbeSuccess(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -314,6 +317,7 @@ func TestRunProbeSuccess(t *testing.T) {
 // non-zero. Silently running with audit disabled would betray the
 // operator's expectation that audit is on.
 func TestAuditLogBadPathFailsStartup(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -375,6 +379,7 @@ func TestMaxResponseBytesInUsage(t *testing.T) {
 // malformed request line on stdin must produce a JSON-formatted slog
 // record on stderr (and stdout must stay valid JSON-RPC).
 func TestDebugLevelEmitsJSONLogs(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	// "not json\n" gets stdin EOF after one line, so Serve returns and
 	// run() unwinds cleanly. The malformed line trips the "invalid
@@ -414,6 +419,7 @@ func TestDebugLevelEmitsJSONLogs(t *testing.T) {
 // -log-level=debug auto-promotes to JSON, and unknown values produce a
 // wrapped errInvalidLogFormat sentinel.
 func TestResolveLogFormat(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		raw      string
@@ -629,6 +635,7 @@ func TestLogSourceFlag_AcceptedAndDocumented(t *testing.T) {
 // explicitly (even at debug), the handler installed must be the text
 // handler — confirmed by stderr lines that are NOT valid JSON.
 func TestLogFormatTextEmitsTextLogs(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"-log-level=debug", "-log-format=text"},
 		strings.NewReader("not json\n"), &stdout, &stderr)
@@ -661,6 +668,7 @@ func TestLogFormatTextEmitsTextLogs(t *testing.T) {
 // real reason the flag exists: log aggregation pipelines need a
 // stable, parseable shape regardless of the configured level.
 func TestLogFormatJSONOverridesAtInfo(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"-log-format=json"}, strings.NewReader("not json\n"), &stdout, &stderr)
 	if err != nil {
@@ -691,6 +699,7 @@ func TestLogFormatJSONOverridesAtInfo(t *testing.T) {
 // leaves stdout untouched so an MCP client never sees a stray frame
 // during a misconfigured launch.
 func TestInvalidLogFormatRejected(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"-log-format=yaml"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
@@ -717,6 +726,7 @@ func TestInvalidLogFormatRejected(t *testing.T) {
 // shape mirrors -probe so callers can pattern-match on a stable prefix
 // ("dry-run ok\ttmux=…\ttmux-mcp=…\n").
 func TestDryRun_Success(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -774,6 +784,7 @@ func TestDryRun_InvalidLogFormat(t *testing.T) {
 // is surfaced rather than swallowed. The whole point of -dry-run is to
 // fail loudly when the config is wrong.
 func TestDryRun_InvalidSocket(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -818,6 +829,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // fell through to server.Serve, the frame buffered in stdin would be
 // drained and the counter would be non-zero.
 func TestDryRun_DoesNotReadStdin(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -869,6 +881,7 @@ func TestDryRunFlag_AcceptedAndDocumented(t *testing.T) {
 // stdin is consumed. This is the typo guard — silently disabling a
 // tool because of a mistyped name would betray operator intent.
 func TestAllowlistFlag_UnknownAborts(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -969,6 +982,7 @@ func TestTmuxBinFlag_RejectsNonexistent(t *testing.T) {
 // no override is the cleanest end-to-end signal that the empty
 // default did not regress.
 func TestTmuxBinFlag_EmptyKeepsPathBehaviour(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -1087,6 +1101,7 @@ func TestSessionPrefixFlag_AcceptedAndDocumented(t *testing.T) {
 // -dry-run with no -session-prefix must succeed end-to-end so existing
 // deployments see no behaviour change.
 func TestSessionPrefixFlag_EmptyAcceptedAtDryRun(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -1106,11 +1121,13 @@ func TestSessionPrefixFlag_EmptyAcceptedAtDryRun(t *testing.T) {
 // startup hook the prefix depends on (tmux init, audit open, tool
 // surface build) without committing to the JSON-RPC loop.
 func TestSessionPrefixFlag_ValidAcceptedAtDryRun(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
 	for _, p := range []string{"agent_alice_", "agent_alice", "Agent42_", "a"} {
 		t.Run(p, func(t *testing.T) {
+			t.Parallel()
 			var stdout, stderr bytes.Buffer
 			err := run([]string{"-dry-run", "-session-prefix=" + p}, strings.NewReader(""), &stdout, &stderr)
 			if err != nil {
@@ -1182,6 +1199,7 @@ func TestTmuxConfigPathFlag_RejectsNonexistent(t *testing.T) {
 // loop, so a successful dry-run with no override is the cleanest
 // end-to-end signal that the empty default did not regress.
 func TestTmuxConfigPathFlag_EmptyKeepsLegacyBehaviour(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -1243,6 +1261,7 @@ func TestTmuxConfigPathFlag_WinsOverEnv(t *testing.T) {
 // it a regression that always rejects (or always accepts) the flag
 // would only surface in the package-level tmuxctl tests.
 func TestTmuxConfigPathFlag_ValidPathAcceptedAtDryRun(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}

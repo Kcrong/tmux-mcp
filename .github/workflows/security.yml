@@ -1,0 +1,106 @@
+name: security
+
+# Reusable workflow invoked from ci.yml. Runs CodeQL, govulncheck, and
+# gosec in parallel against the calling job's checkout SHA.
+#
+# Why workflow_call (not workflow_run):
+#   * jobs surface in the PR Checks UI under the parent CI run, so authors
+#     can see security state without leaving the PR
+#   * the caller can `needs:` this workflow, so a CI failure (lint / test)
+#     skips security automatically — no preflight gate needed
+#   * iterating on this file inside a PR actually exercises the new YAML;
+#     workflow_run loaded from the default branch made that impossible
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        with:
+          languages: go
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        with:
+          category: '/language:go'
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: govulncheck
+        run: |
+          set -eux
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  gosec:
+    # Informational: findings upload to the Security tab, but the job does
+    # not fail on findings. Drop `|| true` once the baseline is clean.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install gosec
+        run: |
+          set -eux
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
+          "$(go env GOPATH)/bin/gosec" -version
+
+      - name: Run gosec (SARIF)
+        run: |
+          set -eux
+          "$(go env GOPATH)/bin/gosec" -no-fail -fmt sarif -out gosec.sarif ./... || true
+          "$(go env GOPATH)/bin/gosec" -fmt text ./... || true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: gosec-sarif
+          path: gosec.sarif
+          if-no-files-found: ignore
+          retention-days: 14
