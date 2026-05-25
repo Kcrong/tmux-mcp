@@ -2379,6 +2379,82 @@ that produced it.
 
 ---
 
+## `set_window_option`
+
+Set or clear a tmux **window** option via
+`tmux set-window-option [-aFgoqu] [-t TARGET] OPTION VALUE`. Window
+options live on tmux's per-window table — `synchronize-panes`,
+`automatic-rename`, `mode-keys`, `pane-border-format`, etc. — distinct
+from server / session option scopes. This tool is the write counterpart
+to `show_options` with `scope=window`: read with one, write with the
+other.
+
+### Input
+
+| Field           | Type    | Required                                       | Default | Notes                                                                                                  |
+| --------------- | ------- | ---------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `name`          | string  | yes                                            | —       | option name; len 1-64, regex `^[A-Za-z][A-Za-z0-9_-]*$`                                                |
+| `value`         | string  | yes when `unset` is `false`                    | —       | option value; len 0-4096, no NUL, no C0 controls except `\t` / `\n` / `\r`                             |
+| `target`        | string  | yes when `global` is `false`                   | —       | window target, typically `SESSION:WINDOW`; same regex/length policy as other window-targeting tools     |
+| `append`        | boolean | no                                             | `false` | when `true`, append to a string-list option (`-a`); ignored otherwise                                  |
+| `format_expand` | boolean | no                                             | `false` | when `true`, run the value through tmux's `#{format}` substitution before storing (`-F`)               |
+| `global`        | boolean | no                                             | `false` | when `true`, modify the global window-options table (`-g`); `target` is then optional                  |
+| `allow_missing` | boolean | no                                             | `false` | when `true`, suppress unknown-option diagnostics (`-q`); useful for forward/backward compatible config |
+| `unset`         | boolean | no                                             | `false` | when `true`, clear the override (`-u`); `value` is ignored and may be omitted                          |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected at the schema layer.
+
+### Output
+
+JSON text block:
+
+```jsonc
+// Normal set:
+{ "set": true, "unset": false, "name": "synchronize-panes" }
+
+// Unset (clearing an override):
+{ "set": false, "unset": true, "name": "synchronize-panes" }
+```
+
+The boundary deliberately does not echo the resolved value back —
+follow up with `show_options` (`scope=window`) when you need to confirm
+what tmux actually stored.
+
+### Errors
+
+| Code     | Cause                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name`; missing `value` when `unset=false`; oversized value; NUL/control character in value; missing `target` when `global=false`. |
+| `-32000` | Referenced session/window does not exist on this server (`errs.ErrSessionNotFound`).                                                           |
+| `-32603` | tmux refused the call for any other reason (e.g. unknown option without `allow_missing=true`, version mismatch).                               |
+
+### Examples
+
+```jsonc
+// Enable synchronize-panes for the active window of session "demo".
+{ "target": "demo:0", "name": "synchronize-panes", "value": "on" }
+
+// Append to the pane-border-format string-list option.
+{ "target": "demo:0", "name": "pane-border-format", "value": "+EXTRA", "append": true }
+
+// Modify the global window-options table (no target needed under global=true).
+{ "name": "mode-keys", "value": "vi", "global": true }
+
+// Clear a per-window override.
+{ "target": "demo:0", "name": "synchronize-panes", "unset": true }
+```
+
+Pair with `show_options` (`scope=window`) before and after a write
+when you want to confirm the option actually landed:
+
+```jsonc
+{ "name": "set_window_option", "arguments": { "target": "demo:0", "name": "synchronize-panes", "value": "on" } }
+{ "name": "show_options",      "arguments": { "scope": "window", "session": "demo", "window": "0" } }
+```
+
+---
+
 ## `swap_window`
 
 Exchange two windows of the same session in place via
