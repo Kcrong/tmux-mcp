@@ -1612,6 +1612,84 @@ the teardown landed:
 
 ---
 
+## `refresh_client`
+
+Force a tmux client redraw via `tmux refresh-client [-S] [-t <client>]`.
+Useful when an agent has rewritten an option that affects what the
+client renders (for example `status-format`, `status-style`,
+`window-status-format`) and wants the change to take effect
+immediately rather than on the next tmux render tick. This is a
+**mutating** tool — it changes what the client's terminal displays —
+so a `-read-only` deployment rejects it with `-32005`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                                                              |
+| ------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `client`      | string  | no       | tmux client name (the path-like key shown in `list_clients`, e.g. `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Omit to refresh every attached client. |
+| `status_only` | boolean | no       | When `true`, pass `-S` to redraw only the status line (cheaper than a full screen redraw). Defaults to `false`.                    |
+
+The schema sets `additionalProperties: false`, so any field other than
+`client` / `status_only` is rejected with `-32602` (invalid params)
+before tmux is consulted — a typo like `"clinet"` fails fast instead
+of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `refreshed`:
+
+```jsonc
+{ "refreshed": true }
+```
+
+| Field       | Type    | Notes                                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------------ |
+| `refreshed` | boolean | Always `true` on success. The shape leaves room for future extensions without breaking callers that read only the boolean. |
+
+A headless server with nothing attached returns `{"refreshed": true}`
+— a clean success rather than an error — so callers can fire-and-
+forget a refresh without first running `list_clients` to know whether
+there is anything to refresh. The boundary swallows tmux's
+`no current client` stderr in this case; any other tmux failure
+surfaces as `-32603`.
+
+### Errors
+
+| Code     | Cause                                                                            |
+| -------- | -------------------------------------------------------------------------------- |
+| `-32602` | Malformed args (bad regex / over the length cap on `client`) or an unknown field on the schema. |
+| `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
+| `-32005` | Server is running in `-read-only` mode (this tool mutates client state).                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+
+### Examples
+
+```jsonc
+// refresh every attached client (full redraw)
+{}
+
+// status-line refresh only — fastest path after a status-format change
+{ "status_only": true }
+
+// scope to a single client (e.g. after `list_clients` returned its TTY)
+{ "client": "/dev/pts/0" }
+
+// status-line refresh, scoped to one terminal
+{ "client": "/dev/pts/0", "status_only": true }
+```
+
+Pair with `set-option`-style introspection to redraw immediately after
+rewriting a status variable:
+
+```jsonc
+{ "name": "display_message",  "arguments": { "format": "#{status-format[0]}" } }
+// agent flips the option via shell / a future set_options tool
+{ "name": "refresh_client",   "arguments": { "status_only": true } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
