@@ -71,8 +71,9 @@ func eventuallyEnvHandler(t *testing.T, ctx context.Context, tools *Tools, sessi
 // end-to-end through the dispatcher: session_create → if_shell with
 // `/bin/true` → assert via display_message that the then-branch's
 // set-environment landed.
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestHandle_IfShell_TrueBranchRuns(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -121,8 +122,9 @@ func TestHandle_IfShell_TrueBranchRuns(t *testing.T) {
 // land. Verifies that the dispatcher actually forwards else_command
 // to the controller (a regression that dropped it would surface here
 // because IF_BRANCH would stay unset / empty).
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestHandle_IfShell_FalseBranchRuns(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -162,8 +164,9 @@ func TestHandle_IfShell_FalseBranchRuns(t *testing.T) {
 // must do nothing. We seed IF_BRANCH with a sentinel up front via a
 // directly-issued display_message + set-environment combination, then
 // verify the marker survives the if_shell call.
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestHandle_IfShell_FalseBranchNoElseIsNoop(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -56,8 +56,9 @@ func eventuallyEnv(t *testing.T, ctx context.Context, c *Controller, session, na
 // `set-environment` a sentinel marker we then read back via
 // `show-environment` — the same trick the agent itself uses to "tee"
 // observable state into tmux.
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestIfShell_TrueBranchRuns(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -87,8 +88,9 @@ func TestIfShell_TrueBranchRuns(t *testing.T) {
 // ELSE_TMUX_COMMAND. Same set-environment / show-environment trick
 // pins which branch actually ran — the test is deliberately structured
 // so a regression that swapped the branches would fail here.
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestIfShell_FalseBranchRuns(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -119,8 +121,9 @@ func TestIfShell_FalseBranchRuns(t *testing.T) {
 // before the call and assert the post-call value is unchanged — a
 // regression that accidentally dispatched the then-branch (or kept a
 // stale elseCommand from a previous call) would fail here.
+//
+//nolint:tparallel,paralleltest // serial on purpose to avoid macOS arm64 if-shell dispatch starvation
 func TestIfShell_NoElseBranchIsNoop(t *testing.T) {
-	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
