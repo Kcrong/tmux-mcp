@@ -71,6 +71,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"clear_history",
 		"clock_mode",
 		"run_shell",
+		"display_popup",
 		"send_signal",
 		"resize",
 		"pane_select",
