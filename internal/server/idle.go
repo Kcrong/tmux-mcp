@@ -70,6 +70,12 @@ type IdleReaper struct {
 	// clock is the time source the reaper uses. Tests inject a fake;
 	// production gets [realClock].
 	clock Clock
+	// logger is the slog handle reap events use. nil falls back to
+	// slog.Default(); Serve injects the operator's logger via
+	// SetLogger so reap diagnostics land on the same sink as the rest
+	// of the server's structured logs without going through process-
+	// global slog.SetDefault.
+	logger *slog.Logger
 }
 
 // NewIdleReaper constructs a reaper for the given timeout. timeout <= 0
@@ -98,6 +104,27 @@ func (r *IdleReaper) withClock(c Clock) *IdleReaper {
 	}
 	r.clock = c
 	return r
+}
+
+// SetLogger injects the slog handle the reaper uses for reap-event
+// diagnostics. Safe on nil. Pass nil to revert to slog.Default().
+//
+// Call before [IdleReaper.Run] starts the goroutine — Serve() arranges
+// this so the write happens-before any Reap reads logger via log(),
+// which keeps the read on the hot path lock-free.
+func (r *IdleReaper) SetLogger(lg *slog.Logger) {
+	if r == nil {
+		return
+	}
+	r.logger = lg
+}
+
+// log returns the configured logger or slog.Default() as fallback.
+func (r *IdleReaper) log() *slog.Logger {
+	if r != nil && r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }
 
 // Touch records activity for the named session. Called by the
@@ -175,8 +202,9 @@ func (r *IdleReaper) Reap(ctx context.Context, now time.Time) {
 		delete(r.lastActivity, name)
 	}
 	r.mu.Unlock()
+	lg := r.log()
 	for _, v := range victims {
-		slog.Info("reaping idle session", "session", v.name, "idle", v.idle)
+		lg.Info("reaping idle session", "session", v.name, "idle", v.idle)
 		// Per-victim context so a wedged kill cannot block the next
 		// one. The reaper's own ctx (Serve's lifetime) bounds the
 		// outer loop; this just bounds an individual call.
@@ -184,7 +212,7 @@ func (r *IdleReaper) Reap(ctx context.Context, now time.Time) {
 		err := r.kill(killCtx, v.name)
 		cancel()
 		if err != nil {
-			slog.Info("reaping idle session failed",
+			lg.Info("reaping idle session failed",
 				"session", v.name, "err", err)
 		}
 	}

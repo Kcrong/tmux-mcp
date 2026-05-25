@@ -39,6 +39,11 @@ type Audit struct {
 	// closer is the underlying *os.File for file targets, nil for
 	// stderr (we don't own stderr's lifetime).
 	closer io.Closer
+	// logger is the slog handle used for diagnostic records (marshal /
+	// write failures). nil means fall back to slog.Default(); callers
+	// inject the operator's logger via SetLogger so diagnostics land on
+	// the same sink as the rest of the server's structured logs.
+	logger *slog.Logger
 }
 
 // OpenAudit returns an [Audit] writing to path. The two special cases:
@@ -69,6 +74,25 @@ func OpenAudit(path string, stderr io.Writer) (*Audit, error) {
 	}
 	bw := bufio.NewWriter(f)
 	return &Audit{w: bw, flusher: bw, closer: f}, nil
+}
+
+// SetLogger injects the slog handle used for diagnostic records (marshal
+// or write failures). Safe to call on nil. Pass nil to revert to
+// slog.Default().
+func (a *Audit) SetLogger(lg *slog.Logger) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.logger = lg
+}
+
+func (a *Audit) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
 }
 
 // Close flushes any buffered records and closes the underlying file.
@@ -152,17 +176,17 @@ func (a *Audit) Record(rid, tool string, args json.RawMessage, dur time.Duration
 		// (an un-marshalable type slipped into auditRecord). Log to
 		// the regular slog stream instead of dropping silently so the
 		// gap is at least diagnosable.
-		slog.Error("audit marshal failed", "err", err, "rid", rid, "tool", tool)
+		a.log().Error("audit marshal failed", "err", err, "rid", rid, "tool", tool)
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if _, err := a.w.Write(line); err != nil {
-		slog.Error("audit write failed", "err", err, "rid", rid, "tool", tool)
+		a.log().Error("audit write failed", "err", err, "rid", rid, "tool", tool)
 		return
 	}
 	if _, err := a.w.Write([]byte{'\n'}); err != nil {
-		slog.Error("audit write failed", "err", err, "rid", rid, "tool", tool)
+		a.log().Error("audit write failed", "err", err, "rid", rid, "tool", tool)
 	}
 }
 
