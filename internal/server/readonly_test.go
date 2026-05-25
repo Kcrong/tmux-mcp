@@ -30,12 +30,15 @@ func TestIsReadOnlyTool_AllowlistMembers(t *testing.T) {
 		"list_windows",
 		"list_clients",
 		"list_buffers",
+		"list_keys",
+		"choose_tree",
 		"show_buffer",
 		"show_options",
 		"display_message",
 		"show_message",
 		"session_describe",
 		"session_inspect",
+		"has_session",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -61,6 +64,8 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"session_kill",
 		"session_rename",
 		"kill_all_sessions",
+		"start_server",
+		"kill_server",
 		"clear_history",
 		"send_signal",
 		"resize",
@@ -71,6 +76,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"pane_join",
 		"pane_resize",
 		"pane_break",
+		"move_pane",
 		"window_create",
 		"window_kill",
 		"window_select",

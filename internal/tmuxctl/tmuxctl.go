@@ -25,6 +25,12 @@ import (
 type Controller struct {
 	socket string
 	bin    string
+	// configPath is the absolute path to a tmux.conf file that should be
+	// loaded for every tmux invocation. Empty = no -f argument (tmux
+	// uses its built-in defaults plus ~/.tmux.conf). Validated at
+	// construction time so a misconfigured value fails fast rather than
+	// poisoning every later tmux call.
+	configPath string
 	// ownsDir is true when the controller created its own scratch
 	// directory under MkdirTemp and is therefore responsible for
 	// removing it on Shutdown. When the caller supplied an explicit
@@ -46,6 +52,12 @@ type controllerOpts struct {
 	// be an absolute path to an existing executable; validation happens
 	// in [NewWithSocket] / [New] before any tmux command is dispatched.
 	bin string
+	// configPath pins the tmux.conf file passed to every tmux invocation
+	// via `-f <path>`. Empty = no -f argument (tmux uses its built-in
+	// defaults plus ~/.tmux.conf). When non-empty it must be an absolute
+	// path to an existing regular file; validation happens in
+	// [NewWithSocket] / [New] before any tmux command is dispatched.
+	configPath string
 }
 
 // WithBinary pins the tmux executable the controller will invoke for
@@ -66,6 +78,28 @@ type controllerOpts struct {
 // immediately sees which binary tmux-mcp tried to use.
 func WithBinary(path string) Option {
 	return func(o *controllerOpts) { o.bin = path }
+}
+
+// WithConfigPath pins a tmux.conf file the controller will load for
+// every tmux invocation via `-f <path>`. Pass an absolute path. Empty
+// values are ignored so callers can forward a possibly-empty CLI flag
+// without an extra branch — the controller falls back to tmux's
+// built-in defaults (and ~/.tmux.conf) in that case.
+//
+// The path is validated at construction time:
+//   - must be absolute (relative paths are rejected up front for the
+//     same reason the -socket and -tmux-bin flags reject them — they
+//     hide where the file actually lives once the working directory
+//     shifts);
+//   - must resolve to an existing regular file ([os.Stat] succeeds and
+//     the entry is not a directory or other irregular type).
+//
+// Validation runs at server start so a misconfiguration fails fast
+// rather than poisoning every later tmux call. A failed validation
+// surfaces the path verbatim so the operator immediately sees which
+// file tmux-mcp tried to use.
+func WithConfigPath(path string) Option {
+	return func(o *controllerOpts) { o.configPath = path }
 }
 
 // New creates a Controller with a private tmux socket under a fresh
@@ -95,6 +129,16 @@ func NewWithSocket(socket string, opts ...Option) (*Controller, error) {
 		}
 	}
 	bin, err := resolveTmuxBin(cfg.bin)
+	if err != nil {
+		return nil, err
+	}
+	// Validate the config path up front so a misconfigured -f surfaces
+	// as a single clean diagnostic before any tmux command is dispatched
+	// (otherwise every later run() would fail with the same error). The
+	// empty default short-circuits the validation so the legacy
+	// "tmux uses its own defaults / ~/.tmux.conf" behaviour stays
+	// byte-identical for deployments that don't set the flag.
+	configPath, err := resolveTmuxConfigPath(cfg.configPath)
 	if err != nil {
 		return nil, err
 	}
@@ -129,16 +173,17 @@ func NewWithSocket(socket string, opts ...Option) (*Controller, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("socket parent %q is not a directory", parent)
 		}
-		return &Controller{bin: bin, socket: socket, ownsDir: false}, nil
+		return &Controller{bin: bin, socket: socket, configPath: configPath, ownsDir: false}, nil
 	}
 	dir, err := os.MkdirTemp("", "tmux-mcp-*")
 	if err != nil {
 		return nil, err
 	}
 	return &Controller{
-		bin:     bin,
-		socket:  filepath.Join(dir, "sock"),
-		ownsDir: true,
+		bin:        bin,
+		socket:     filepath.Join(dir, "sock"),
+		configPath: configPath,
+		ownsDir:    true,
 	}, nil
 }
 
@@ -195,10 +240,60 @@ func resolveTmuxBin(override string) (string, error) {
 	return override, nil
 }
 
+// resolveTmuxConfigPath validates the operator-supplied -f argument
+// before any tmux invocation. override is the value coming from
+// [WithConfigPath] / the -tmux-config-path CLI flag; an empty string
+// means "no operator override, use tmux's built-in defaults plus
+// ~/.tmux.conf" — the empty default flows through unchanged.
+//
+// When override is non-empty the function runs the operator-facing
+// validation contract documented on [WithConfigPath]: absolute path,
+// path exists, path is a regular file (not a directory). Failure
+// surfaces the supplied path verbatim ("tmux config path %q ...") so
+// the diagnostic immediately points at the wrong knob — there's no
+// point hiding which file tmux-mcp actually tried to load.
+func resolveTmuxConfigPath(override string) (string, error) {
+	if override == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(override) {
+		return "", fmt.Errorf(
+			"tmux config path %q must be absolute "+
+				"(e.g. /etc/tmux-mcp/tmux.conf)",
+			override,
+		)
+	}
+	info, err := os.Stat(override)
+	if err != nil {
+		return "", fmt.Errorf("tmux config path %q: %w", override, err)
+	}
+	// Reject a directory at the supplied path early — a directory is
+	// never a valid tmux.conf, and tmux's own error for `-f <dir>`
+	// ("file is a directory") only surfaces at command time, far from
+	// the operator's mistake.
+	if info.IsDir() {
+		return "", fmt.Errorf("tmux config path %q is a directory, not a file", override)
+	}
+	// Mode().IsRegular() rejects symlinks too in principle, but Stat
+	// already followed the symlink, so this only refuses pipes /
+	// sockets / device nodes — bizarre paths for a tmux.conf that
+	// would only confuse tmux at command time.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("tmux config path %q is not a regular file (mode %s)", override, info.Mode())
+	}
+	return override, nil
+}
+
 // Socket returns the absolute path tmux is talking to via `-S`. Useful
 // for diagnostics and tests that want to assert the controller honoured
 // an explicit socket path.
 func (c *Controller) Socket() string { return c.socket }
+
+// ConfigPath returns the absolute tmux.conf path the controller
+// injects into every tmux invocation via `-f`, or the empty string
+// when no override is configured. Useful for diagnostics and tests
+// that want to assert the controller picked up [WithConfigPath].
+func (c *Controller) ConfigPath() string { return c.configPath }
 
 // Shutdown kills the entire private tmux server. When the controller
 // owns its scratch directory (the [New] case) it is also removed.
@@ -260,8 +355,16 @@ func (c *Controller) runWithStdin(ctx context.Context, data string, args ...stri
 func (c *Controller) runWithStdinReader(ctx context.Context, stdin io.Reader, args ...string) (string, error) {
 	// -S takes an absolute socket path (whereas -L names a socket inside
 	// /tmp/tmux-<uid>/). We control the path explicitly so multiple
-	// servers can coexist on the same host.
-	full := append([]string{"-S", c.socket}, args...)
+	// servers can coexist on the same host. -f, when configured, must
+	// also precede the subcommand verb — tmux parses "server flags" in
+	// argv up to the first non-flag token, so injecting them between
+	// the binary and the verb is the only argv shape tmux accepts.
+	full := make([]string, 0, 4+len(args))
+	full = append(full, "-S", c.socket)
+	if c.configPath != "" {
+		full = append(full, "-f", c.configPath)
+	}
+	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, c.bin, full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -340,10 +443,17 @@ func (c *Controller) ListSessions(ctx context.Context) ([]string, error) {
 	if err != nil {
 		// Either tmux exited cleanly with "no server running on ...",
 		// or — when the socket file does not yet exist — the client
-		// fails to connect at all. Both cases just mean "zero sessions".
+		// fails to connect at all. The "server exited unexpectedly"
+		// phrase is the third variant: it surfaces when a list-sessions
+		// races a kill-server and the client noticed the daemon
+		// disappeared mid-call. All four phrases mean the same thing
+		// at this layer: zero sessions. Treat them uniformly so callers
+		// (kill_server's snapshot bookkeeping, agent recovery loops)
+		// don't have to substring-match tmux's version-dependent stderr.
 		msg := err.Error()
 		if strings.Contains(msg, "no server running") ||
 			strings.Contains(msg, "error connecting") ||
+			strings.Contains(msg, "server exited unexpectedly") ||
 			strings.Contains(msg, "No such file or directory") {
 			return nil, nil
 		}

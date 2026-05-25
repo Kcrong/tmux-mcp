@@ -21,6 +21,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-log-rotate-keep`         | `5`                             | —                   | Maximum count of rotated archive files retained on disk alongside `-log-output`. After a rollover, the oldest archives (by mtime) are deleted once the count exceeds K. Ignored when `-log-rotate-size=0`. |
 | `-socket`                  | fresh tempdir under `$TMPDIR`   | `TMUX_MCP_SOCKET`   | Absolute path for the private tmux socket. Parent directory must already exist. Flag wins over env var.           |
 | `-tmux-bin`                | `""` (resolve `tmux` from `$PATH`) | `TMUX_MCP_TMUX_BIN` | Absolute path to the tmux executable. Empty default keeps the legacy PATH lookup. When set the path must be absolute and point at an existing executable file; startup fails with `tmux binary "<path>" not executable: …` otherwise. Flag wins over env var. See **`-tmux-bin`** below. |
+| `-tmux-config-path`        | `""` (tmux's built-in defaults)    | `TMUX_MCP_TMUX_CONFIG_PATH` | Absolute path to a `tmux.conf` file passed to every tmux invocation via `-f <path>`, so options the file declares (e.g. `set -g escape-time 17`) take effect for every session this server creates. Empty default keeps the legacy "tmux uses its built-in defaults plus `~/.tmux.conf`" behaviour. When set the path must be absolute and point at an existing regular file; startup fails with `tmux config path "<path>" …` otherwise — a single clean diagnostic instead of poisoning every later tmux call. Flag wins over env var. See **`-tmux-config-path`** below. |
 | `-max-concurrent-calls`    | `64`                            | —                   | Cap simultaneously-executing `tools/call` frames. Excess callers wait (back-pressure rather than failure). `0` disables the cap (unbounded goroutines). |
 | `-max-response-bytes`      | `0` (disabled)                  | —                   | Hard ceiling on the marshalled JSON-RPC response body in bytes. When a reply exceeds the cap, the server replaces it with a typed JSON-RPC error (code `-32010`) so a misbehaving tool (e.g. `capture_pane` on a 10MB scrollback) cannot dump a multi-megabyte frame onto an MCP client whose reader can't tolerate it. Clients see the error, not a truncated payload. The audit + metrics records still fire with the oversize sentinel. `0` disables the ceiling (the historical behaviour). |
 | `-audit-log`               | disabled                        | —                   | Path for JSONL audit records. `stderr` shares the slog stream; any other value is opened append-only at mode 0600. Records carry `args_size_bytes` only — never argument *content*. |
@@ -29,7 +30,7 @@ vars; pass `tmux-mcp -help` to print the canonical usage block.
 | `-session-idle-timeout`    | `0` (disabled)                  | —                   | Auto-kill any session that has had no `tools/call` activity for at least this duration. Activity is any `tools/call` referencing the session by name; `session_list` and `kill_all_sessions` are explicitly excluded. Negative values are rejected at startup (exit 2). |
 | `-allowlist`               | `""` (no filter)                | —                   | Comma-separated tool names. When set, only those names appear in `tools/list` and are dispatchable via `tools/call`; every other tool is rejected with `-32601` (methodNotFound). Unknown names abort startup with `unknown tools in -allowlist: …`. Useful for least-privilege deployments — see **`-allowlist`** below. |
 | `-session-prefix`          | `""` (no prefix)                | —                   | When set, every session this server creates lands on tmux as `<prefix><name>`, and every other session-bearing tool resolves the bare name back transparently. `session_list` / `kill_all_sessions` are scoped to the prefix and strip it from the response so co-tenant agents stay invisible. Must match `[A-Za-z0-9_-]+`, may not end with `-`, and must leave room for at least one byte of session name (combined length ≤ 64). See **`-session-prefix`** below. |
-| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `list_panes`, `list_windows`, `list_clients`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
+| `-read-only`               | `false`                         | —                   | Reject every `tools/call` whose tool would mutate tmux state. Only inspection tools (`capture`, `wait_for_text`, `session_list`, `has_session`, `list_panes`, `list_windows`, `list_clients`, `list_keys`, `display_message`, `session_describe`, `session_inspect`, plus the spec-named aliases `capture_pane` / `list_sessions` / `list_buffers` / `show_buffer` / `show_options` / `show_message`) dispatch; everything else is rejected with a typed JSON-RPC error (code `-32011`, message `tool 'X' is rejected: server in read-only mode`). `tools/list` still returns the full surface so a constrained agent can enumerate it. See **`-read-only`** below. |
 
 ## `-version-json` output
 
@@ -129,6 +130,37 @@ a Claude Desktop config to a new socket path / audit log location.
     lives outside any standard search path.
   - **Testing**: drive integration tests against a known-good tmux
     version regardless of what's on the developer's PATH.
+
+## `-tmux-config-path`
+
+- Empty default keeps the legacy behaviour: the controller invokes
+  tmux without `-f`, so tmux uses its built-in defaults plus the
+  user's `~/.tmux.conf`. Existing deployments see no change.
+- When set, the controller injects `-f <path>` into every tmux
+  invocation (server-flag position, before the subcommand verb), so
+  every session this server creates loads the supplied `tmux.conf`.
+  Options the file declares (`set -g escape-time 17`,
+  `set -g history-limit 50000`, …) take effect for every session
+  without bleeding into the user's interactive shell config.
+- The path must be an **absolute path** and must resolve to an
+  **existing regular file** (not a directory or other irregular
+  type). Validation runs at server start so a misconfiguration
+  surfaces a single clean diagnostic
+  (`tmux config path "<path>" …`) before any tmux command is
+  dispatched — without it, every later run would fail with the same
+  error per session.
+- Useful for:
+  - **Agent-friendly defaults**: ship a `tmux.conf` alongside the
+    binary that lowers `escape-time`, raises `history-limit`,
+    disables status-line redraws agents don't need, etc.
+  - **Vendored / sandboxed deployments**: keep the agent's tmux
+    behaviour reproducible regardless of which user account runs
+    tmux-mcp (no surprise overrides from a host's `~/.tmux.conf`).
+  - **Multi-tenant hosts**: run several tmux-mcp instances with
+    different option sets on the same machine without forking the
+    user's tmux config.
+  - **Testing**: drive integration tests against a known-good
+    `tmux.conf` regardless of what the developer has at `~`.
 
 ## `-log-format` & `-log-source`
 
@@ -302,7 +334,7 @@ a Claude Desktop config to a new socket path / audit log location.
   `tools/call` without first enumerating `tools/list` cannot bypass
   the filter.
 - Examples:
-  - Read-only inspector: `-allowlist=capture,wait_for_text,wait_for_stable,snapshot_diff,session_list,session_describe,session_inspect,list_panes,list_windows`
+  - Read-only inspector: `-allowlist=capture,wait_for_text,wait_for_stable,snapshot_diff,session_list,has_session,session_describe,session_inspect,list_panes,list_windows`
   - Block destructive tools (everything except
     `kill_all_sessions`, `pane_kill`, `session_kill`, `send_signal`):
     pass an explicit allowlist of the tools you do want — there is
@@ -318,8 +350,8 @@ a Claude Desktop config to a new socket path / audit log location.
   shared dev container with one agent per developer). `session_create`
   with `name=demo` and `-session-prefix=agent_alice_` lands on tmux as
   `agent_alice_demo`. The reverse direction is transparent: `capture`,
-  `send_keys`, `session_kill`, `session_describe`, `session_inspect`,
-  `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
+  `send_keys`, `session_kill`, `has_session`, `session_describe`,
+  `session_inspect`, `session_rename`, `wait_for_*`, `snapshot_diff`, `resize`,
   `send_signal`, `pane_*`, `window_*`, and `clear_history` all accept
   the bare logical name and forward to the prefixed identity.
 - `session_list` returns only sessions inside this prefix (with the
@@ -390,12 +422,14 @@ tmux-mcp -session-prefix=intake_ -allowlist=capture,wait_for_text,session_list
   | `list_panes`       | (same)           |
   | `list_windows`     | (same)           |
   | `list_clients`     | (same)           |
+  | `list_keys`        | (same)           |
   | (none)             | `list_buffers`   |
   | (none)             | `show_buffer`    |
   | (none)             | `show_options`   |
   | `display_message`  | `show_message`   |
   | `session_describe` | (same)           |
   | `session_inspect`  | (same)           |
+  | `has_session`      | (same)           |
 
 - Anything not in the table — `send_keys`, `session_create`,
   `session_kill`, `kill_all_sessions`, `pane_*` (except listing),
@@ -439,6 +473,7 @@ tmux-mcp -read-only -session-prefix=ops_
 | -------------------- | ------------ | ------------------------------------------------------------- |
 | `TMUX_MCP_SOCKET`    | `-socket`    | Absolute path. Loses to `-socket` when both are set.          |
 | `TMUX_MCP_TMUX_BIN`  | `-tmux-bin`  | Absolute path to the tmux executable. Loses to `-tmux-bin` when both are set; empty value keeps the legacy `exec.LookPath("tmux")` behaviour. |
+| `TMUX_MCP_TMUX_CONFIG_PATH` | `-tmux-config-path` | Absolute path to a `tmux.conf` file passed via `tmux -f`. Loses to `-tmux-config-path` when both are set; empty value keeps the legacy "no `-f` argument" behaviour. |
 | `TMPDIR`             | (default)    | Used to derive the fallback socket directory when `-socket`/`TMUX_MCP_SOCKET` are unset. Inherited from the OS, not declared by tmux-mcp. |
 
 ## Examples
@@ -468,6 +503,10 @@ TMUX_MCP_SOCKET=/run/tmux-mcp/sock tmux-mcp
 tmux-mcp -tmux-bin=/nix/store/abcd-tmux-3.5a/bin/tmux
 tmux-mcp -tmux-bin=/opt/homebrew/Cellar/tmux/3.5a/bin/tmux
 TMUX_MCP_TMUX_BIN=/usr/local/bin/tmux tmux-mcp
+
+# load a custom tmux.conf for every session this server creates
+tmux-mcp -tmux-config-path=/etc/tmux-mcp/tmux.conf
+TMUX_MCP_TMUX_CONFIG_PATH=/etc/tmux-mcp/tmux.conf tmux-mcp
 
 # liveness probe
 tmux-mcp -probe || echo "tmux missing or too old"

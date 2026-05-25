@@ -103,6 +103,26 @@ Flags:
                           a specific tmux version on Nix / Homebrew /
                           static builds, sandboxes, and containers where
                           multiple tmux versions live side-by-side.
+  -tmux-config-path PATH  absolute path to a tmux.conf file to load for
+                          every session this server creates (also
+                          TMUX_MCP_TMUX_CONFIG_PATH env var; flag wins).
+                          When set the controller injects "-f <path>"
+                          into every tmux invocation, so options the
+                          file declares (e.g. set -g escape-time 17)
+                          take effect without touching ~/.tmux.conf.
+                          The path must be absolute and point at an
+                          existing regular file, otherwise startup
+                          fails with "tmux config path PATH ..." — a
+                          single clean diagnostic instead of poisoning
+                          every later tmux call. Empty default = no
+                          -f argument (tmux uses its built-in defaults
+                          plus ~/.tmux.conf, the historical behaviour).
+                          Useful for testing against a known-good
+                          tmux.conf, vendoring agent-friendly defaults
+                          (e.g. low escape-time, large history-limit)
+                          alongside the binary, or running multiple
+                          tmux-mcp instances with different option
+                          sets on the same host.
   -max-concurrent-calls N cap simultaneously-executing tools/call frames
                           (default 64). Excess callers wait — back-pressure
                           rather than failure. 0 disables the cap (unbounded
@@ -215,7 +235,7 @@ Flags:
                           mutate tmux state. Only inspection tools
                           (capture, wait_for_text, session_list,
                           list_panes, list_windows, list_clients,
-                          display_message, session_describe,
+                          list_keys, display_message, session_describe,
                           session_inspect, plus the spec-named aliases
                           capture_pane / list_sessions / list_buffers /
                           show_buffer / show_options / show_message)
@@ -375,6 +395,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	tmuxBin := fs.String("tmux-bin", os.Getenv("TMUX_MCP_TMUX_BIN"),
 		"absolute path to the tmux executable "+
 			"(env TMUX_MCP_TMUX_BIN; default: resolve `tmux` from PATH)")
+	// Same env-var-falls-through pattern as -tmux-bin: operators want a
+	// single place to declare a custom tmux.conf for the agent's
+	// private tmux server (low escape-time, large history-limit, etc.)
+	// without touching ~/.tmux.conf and bleeding into the user's
+	// interactive shell. Empty default preserves the historical
+	// "tmux uses its built-in defaults / ~/.tmux.conf" behaviour for
+	// everyone else. Validation lives inside tmuxctl.WithConfigPath so
+	// a bogus path surfaces a single, consistent diagnostic regardless
+	// of whether the value came from the flag or the env var.
+	tmuxConfigPath := fs.String("tmux-config-path", os.Getenv("TMUX_MCP_TMUX_CONFIG_PATH"),
+		"absolute path to a tmux.conf file passed via tmux -f "+
+			"(env TMUX_MCP_TMUX_CONFIG_PATH; default: tmux's built-in defaults)")
 	// 64 is a generous default for an interactive single-agent client
 	// (Claude Desktop typically runs 1–4 tools in parallel) while still
 	// putting a ceiling on goroutines a misbehaving / flooding client
@@ -585,7 +617,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}()
 	}
 
-	ctl, err := tmuxctl.NewWithSocket(*socket, tmuxctl.WithBinary(*tmuxBin))
+	ctl, err := tmuxctl.NewWithSocket(
+		*socket,
+		tmuxctl.WithBinary(*tmuxBin),
+		tmuxctl.WithConfigPath(*tmuxConfigPath),
+	)
 	if err != nil {
 		return err
 	}

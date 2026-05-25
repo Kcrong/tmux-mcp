@@ -175,6 +175,115 @@ number.
 
 ---
 
+## `start_server`
+
+Pre-spawn this controller's tmux daemon via `tmux start-server` without
+creating any session. Pairs well with `session_create` — agents that
+expect to issue a flurry of `session_create` calls right after startup
+can warm the daemon once with `start_server` instead of paying the
+spawn cost on the first `session_create`'s critical path.
+
+Idempotent: when a server is already listening on the controller's
+socket the call is a no-op and returns success. Deployment scripts can
+run it unconditionally on every startup. Mutating in spirit (it spawns
+a daemon process), so it is **not** allowed under `-read-only`.
+
+### Input
+
+No fields. Pass `{}` (or `null` — the handler accepts an empty
+arguments value).
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "started": true }
+```
+
+The ack is identical whether the daemon was just spawned or was
+already running because tmux's `start-server` itself does not
+distinguish the two.
+
+### Errors
+
+- `-32603` — tmux failed to start the daemon (e.g. socket parent
+  directory is not writable).
+
+### Example
+
+```jsonc
+{}
+```
+
+---
+
+## `kill_server`
+
+Ask the controller's private tmux daemon to exit via
+`tmux kill-server`. Unlike `kill_all_sessions` (which iterates over
+sessions on a live daemon and leaves the server process up), this tool
+tears down tmux itself. The next `session_create` therefore pays the
+full re-spawn cost — there is no live daemon left to attach to. The
+call is idempotent: when no daemon is running the response is still a
+clean ack, so an agent looping in a recovery dance never sees a
+spurious failure for a state that is already correct.
+
+> **CAUTION — destroys ALL state on this controller's tmux server.**
+> kill_server wipes EVERY session, window, and pane on this socket,
+> including unrelated work belonging to other agents that share the
+> same controller (`-session-prefix` does NOT scope this tool — tmux
+> kill-server has no per-prefix form). Snapshot history for every
+> session the daemon was carrying is forgotten. Reach for
+> `kill_all_sessions` first if you only need a clean slate within your
+> own prefix; reach for `kill_server` only when you actually want the
+> daemon process gone.
+
+### Input
+
+No fields. Pass `{}`. The schema sets `additionalProperties: false`,
+so any stray field (e.g. a mistakenly-passed `"session"`) is rejected
+with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "killed": true }
+```
+
+The shape is intentionally minimal. There is no per-session list to
+echo back — every session on the daemon is gone — and the boolean is
+there so a future addition (e.g. a `count` field for the number of
+sessions reaped) can be layered on without breaking callers that read
+only the field they care about.
+
+### Errors
+
+- `-32602` — `arguments` carried an unknown field.
+- `-32603` — tmux failed to kill the server for an unexpected reason
+  (the "no server running" / "error connecting" / "server exited
+  unexpectedly" cases are NOT errors — they are the goal state, and
+  the tool returns a clean ack).
+
+### Example
+
+```jsonc
+{}
+```
+
+Pair with a follow-up `session_list` to confirm the daemon is gone
+(the listing comes back empty because tmux is no longer accepting
+connections on this socket):
+
+```jsonc
+{ "name": "kill_server",  "arguments": {} }
+{ "name": "session_list", "arguments": {} }
+```
+
+---
+
 ## `session_describe`
 
 Return structured metadata for a single session: window count, total
@@ -217,6 +326,73 @@ would be empty).
 
 ```jsonc
 { "name": "demo" }
+```
+
+---
+
+## `has_session`
+
+Report whether the named session currently exists on this server.
+Wraps tmux's `has-session` primitive — strictly the cheapest path
+when the caller only needs a yes/no answer (e.g. before deciding
+whether to `session_create` or jump straight to `send_keys`).
+
+A missing session is the literal answer the caller asked for, NOT
+an error: only malformed args (`-32602`) or genuine tmux failures
+(`-32603`) surface as JSON-RPC errors. This is the load-bearing
+contract that makes the tool worth using over `session_list` or
+`session_describe` — agents can ask "is X there?" without first
+having to catch a `-32000`.
+
+`has_session` is on the read-only allowlist, so a server running
+with `-read-only` still exposes it.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, regex `^[A-Za-z0-9_-]+$`       |
+
+The schema sets `additionalProperties: false`, so any field other
+than `name` is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "exists": true }
+```
+
+or
+
+```jsonc
+{ "exists": false }
+```
+
+The probe is cheap by design: a single tmux IPC and a one-bit
+answer. No layout, no PID, no creation time — reach for
+`session_describe` / `session_inspect` when those are needed.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name` (regex/length violation), or an unknown field was sent.     |
+| `-32603` | tmux refused the call for a genuine reason (e.g. server crashed, IO error). A non-existent session is **not** an error here — see the "false" output above. |
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+A typical chain looks like: probe before you act, then commit only
+when the session is already there.
+
+```jsonc
+{ "name": "has_session", "arguments": { "name": "demo" } }
+{ "name": "send_keys",   "arguments": { "session": "demo", "keys": ["echo hi", "Enter"] } }
 ```
 
 ---
@@ -854,6 +1030,90 @@ ones have a human watching them:
 
 ---
 
+## `list_keys`
+
+Enumerate the key bindings on this controller's tmux server via
+`tmux list-keys`. Useful for an agent that needs to introspect what a
+key chord does before sending it through `send_keys`, or to confirm a
+custom binding installed by an init script took effect. Each entry
+carries `{ table, key, command }`.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `key_table`  | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`, `"copy-mode-vi"`); maps to `-T TABLE`. len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to list every table. |
+| `notes_only` | boolean | no       | When true, restrict the listing to bindings annotated with a `bind-key -N` note (`-N`). Default `false`.                             |
+| `prefix`     | string  | no       | Optional render-time prefix prepended to every rendered key chord (`-P PREFIX`); only meaningful in notes-only mode. len 1-64.       |
+
+The schema sets `additionalProperties: false`, so any field other than
+the three above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `keys`:
+
+```jsonc
+{
+  "keys": [
+    {
+      "table":   "prefix",
+      "key":     "C-b",
+      "command": "send-prefix"
+    },
+    {
+      "table":   "prefix",
+      "key":     "?",
+      "command": "List key bindings"
+    }
+  ]
+}
+```
+
+| Field     | Type   | Notes                                                                                                                                                     |
+| --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `table`   | string | The keymap the binding lives in. Empty only in `notes_only` mode without a `key_table` filter (tmux drops the column from its `-N` output in that case). |
+| `key`     | string | The key chord (e.g. `C-a`, `M-{`, `Space`, `Enter`). When `prefix` is set, the chord is rendered with that prefix prepended verbatim.                    |
+| `command` | string | The action the binding triggers. In the default rendering this is a tmux command line; in `notes_only` mode it is the binding's `-N` note text instead.  |
+
+A listing with no matching bindings (common for narrow filters)
+returns `{"keys": []}` — a clean empty list rather than an error — so
+callers can iterate the response without a separate "is this an error"
+branch.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `key_table` or `prefix` malformed / out of range, or an unknown field was sent.                                      |
+| `-32603` | tmux failed for an unexpected reason (e.g. `key_table` names a table that does not exist, server crashed, IO error). |
+
+### Examples
+
+```jsonc
+// Every binding, default rendering.
+{}
+
+// Just the prefix table.
+{ "key_table": "prefix" }
+
+// Annotated bindings only, with a leading "C-b " in the rendered key.
+{ "notes_only": true, "prefix": "C-b " }
+```
+
+Pair with `send_keys` once you've discovered which chord drives a
+given action — list_keys answers "what does C-b ? do?" so the agent
+doesn't have to memorise the default tmux key map:
+
+```jsonc
+{ "name": "list_keys", "arguments": { "key_table": "prefix" } }
+{ "name": "send_keys", "arguments": { "session": "demo", "keys": ["C-b", "?"] } }
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
@@ -1237,6 +1497,76 @@ and then promote it into a window of its own:
 ```jsonc
 { "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
 { "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `move_pane`
+
+Relocate a single pane to a different slot, window, or session via
+`tmux move-pane -s <src> -t <dst>` (with `-h` / `-b` / `-d` selected by
+the boolean knobs). Distinct from
+[`pane_swap`](#pane_swap) (which trades two existing panes in place,
+leaving counts unchanged) and
+[`pane_break`](#pane_break) (which detaches a pane into its own
+brand-new window): `move_pane` takes one source pane and re-homes it
+next to the destination, splitting the destination to make room. The
+source pane keeps its `#{pane_id}`, contents, and running process —
+only the layout slot changes — so follow-up `pane_select` /
+`send_keys` calls against the moved pane see the new placement
+immediately.
+
+When the donor window has no remaining panes after the move, tmux
+reaps it: a `list_windows` call after the move may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                          |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------ |
+| `src`        | string  | yes      | Source pane target (`session`, `session:window`, `session:window.pane`, or `%N`) |
+| `dst`        | string  | yes      | Destination pane target (same target forms as `src`)                           |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.     |
+| `before`     | boolean | no       | When true, insert the moved pane before the destination (`-b`); default is after. |
+| `no_focus`   | boolean | no       | When true, do not change the active pane after the move (`-d`).                |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+JSON block: `{"moved": true, "src": "<src>", "dst": "<dst>"}`. The
+echoed `src` / `dst` are the logical (caller-supplied) values, so a
+`-session-prefix` deployment never leaks the prefixed identity back to
+the caller.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the move for any other reason.                                                        |
+
+### Example
+
+```jsonc
+// Default: move into the destination window with a top/bottom split,
+// inserted after the destination, focus follows.
+{ "src": "demo:1.0", "dst": "demo:0.0" }
+
+// Horizontal split, place moved pane before destination, leave focus alone.
+{ "src": "demo:1.0", "dst": "demo:0.0", "horizontal": true, "before": true, "no_focus": true }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "move_pane",    "arguments": { "src": "demo:1.0", "dst": "demo:0.0", "no_focus": true } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
 
@@ -1881,6 +2211,100 @@ the layout actually flipped:
 { "name": "list_windows", "arguments": { "session": "demo" } }
 { "name": "swap_window",  "arguments": { "session": "demo", "src": "0", "dst": "1", "no_select": true } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `choose_tree`
+
+Snapshot the (session, window) tree this server's tmux holds, in the
+shape `tmux choose-tree` produces in its non-interactive form. Useful
+for an LLM agent that needs to "see the whole topology" of the server
+in one call without iterating `list_sessions` × `list_windows`. The
+interactive picker is intentionally not reachable: this tool always
+returns a structured snapshot.
+
+Under the hood the tool runs `tmux list-windows -F ...` with the
+appropriate `-a` / `-t` filter — `tmux choose-tree` itself is
+interactive-only on tmux 3.4 (it opens a picker inside an attached
+client), so the snapshot we expose to agents wraps `list-windows`
+instead, against the same headless tmux servers the rest of the
+surface targets.
+
+### Input
+
+| Field     | Type   | Required                          | Notes                                                                                          |
+| --------- | ------ | --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `scope`   | string | no (defaults to `"all"`)          | one of `"all"`, `"session"`, `"window"`. `"all"` walks every window on the server.             |
+| `session` | string | when `scope` is `session`/`window`| len 1-64, regex `^[A-Za-z0-9_-]+$`.                                                            |
+| `window`  | string | when `scope` is `window`          | window name (len 1-64, `^[A-Za-z0-9_-]+$`) or numeric index (`\d+`).                           |
+
+The schema sets `additionalProperties: false`, so any field other than
+`scope` / `session` / `window` is rejected with `-32602` before tmux
+is consulted.
+
+`scope="all"` does not accept `session` or `window`: passing them
+alongside the default scope is rejected with `-32602` so a caller who
+meant `scope="session"` but forgot to flip the field gets a fast,
+pointed error rather than a silent server-wide listing.
+
+### Output
+
+JSON text block with a flat object keyed by `rows`:
+
+```jsonc
+{
+  "rows": [
+    {
+      "session":      "demo",
+      "window_index": 0,
+      "window_name":  "shell",
+      "pane_count":   1,
+      "active":       true
+    }
+  ]
+}
+```
+
+| Field          | Type    | Notes                                                                          |
+| -------------- | ------- | ------------------------------------------------------------------------------ |
+| `session`      | string  | tmux session name this row belongs to. Equal to the value used as a target.   |
+| `window_index` | integer | Numeric window index within the session (0-based).                            |
+| `window_name`  | string  | Human-readable window label tmux assigned.                                    |
+| `pane_count`   | integer | Number of panes currently in the window.                                      |
+| `active`       | boolean | `true` when this window is the currently focused one of its session.          |
+
+A server with no windows visible (e.g. a session-scoped call right
+after the last window of that session was killed) returns
+`{"rows": []}` — a clean empty list rather than an error — so callers
+can iterate the response without a separate "is this an error" branch.
+
+### Errors
+
+| Code     | Cause                                                                                  |
+| -------- | -------------------------------------------------------------------------------------- |
+| `-32602` | `scope` invalid; `session` / `window` malformed; required field missing for the chosen scope; or an unknown field on `arguments`. |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`).                   |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                       |
+
+### Examples
+
+```jsonc
+// Default scope: snapshot every window on the server.
+{}
+
+// Scope to a single session.
+{ "scope": "session", "session": "demo" }
+
+// Drill into a single window.
+{ "scope": "window", "session": "demo", "window": "build" }
+```
+
+Pair with `session_list` to find live sessions, then walk the tree:
+
+```jsonc
+{ "name": "session_list", "arguments": {} }
+{ "name": "choose_tree",  "arguments": { "scope": "session", "session": "demo" } }
 ```
 
 ---
