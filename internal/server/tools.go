@@ -748,6 +748,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.respawnPane(ctx, call.Arguments)
 	case "clear_history":
 		return t.clearHistory(ctx, call.Arguments)
+	case "clock_mode":
+		return t.clockMode(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
 	case "has_session":
