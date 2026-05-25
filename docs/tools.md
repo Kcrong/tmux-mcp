@@ -30,7 +30,7 @@ Tool calls fail with a JSON-RPC `error` object. Codes are stable:
 | `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
 | `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
 | `-32004` | `errs.ErrSessionExists`        | A session name collides with an existing one (e.g. `session_rename` to a name in use). |
-| `-32005` | `errs.ErrPaneActive`           | `respawn_pane` targeted a pane whose original command is still running and `kill` was not set; retry with `kill=true`. |
+| `-32005` | `errs.ErrPaneActive`           | `respawn_pane` / `respawn_window` targeted a pane or window whose original command is still running and `kill` was not set; retry with `kill=true`. |
 | `-32010` | `errs.ErrOversizedResponse`    | Marshalled response exceeded the `-max-response-bytes` ceiling; the original payload was suppressed. The underlying call did execute. |
 
 Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
@@ -2648,6 +2648,90 @@ with (typically the user's default shell):
 { "name": "respawn_pane",
   "arguments": { "session": "demo", "window": "0", "pane": "1" } }
 ```
+
+When the failed process owned the *whole* window (a build watcher in a
+single-pane window, an interactive TUI that filled the window) reach
+for [`respawn_window`](#respawn_window) instead — it re-runs the command
+at window scope and shares the same `-32005` recovery contract.
+
+---
+
+## `respawn_window`
+
+Restart the command in an existing window via
+`tmux respawn-window [-k] [-c <cwd>] -t <session>:<window> [command]`.
+Window-scoped sibling of [`respawn_pane`](#respawn_pane): where
+`respawn_pane` re-runs a single pane's command, `respawn_window`
+re-runs the whole window. Reach for it when a window-level workflow
+(a build watcher that owned its window's only pane, a REPL inside a
+single-pane window, a long-running daemon) has exited and the agent
+wants to bring it back without recreating the window and reshuffling
+the surrounding session layout. The `#{window_id}` and the window's
+slot in the session are preserved — only the foreground process
+changes.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                              |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string  | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                     |
+| `window`  | string  | yes      | window name (`^[A-Za-z0-9_-]+$`, len 1-64) or numeric index (`^[0-9]+$`)           |
+| `command` | string  | no       | optional command (≤ 4096 bytes, no newlines); empty re-runs the window's original  |
+| `cwd`     | string  | no       | optional starting directory; absolute path required if set (tmux `-c`)             |
+| `kill`    | boolean | no       | when `true`, tmux SIGKILLs the running process before respawning (`-k`); default `false` |
+
+`command` is forwarded to tmux as a single trailing argv and run via
+`/bin/sh -c` on the tmux side. Newlines (`\n` / `\r`) are rejected
+up front — they would otherwise break the "single command" contract
+when tmux hands the string to the shell. The `cwd` field uses the
+same absolute-path policy as `session_create`.
+
+### Output
+
+JSON block: `{"respawned": true}`. The window keeps its tmux
+`#{window_id}` and its slot in the session — only the foreground
+process is replaced. Follow up with `capture` / `wait_for_text` if
+you need to observe the restarted command's output.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/malformed `session` / `window`, relative `cwd`, or `command` with newline / over 4096 bytes. |
+| `-32000` | `session:window` does not resolve on this server (`errs.ErrSessionNotFound`).      |
+| `-32005` | Window is still running its original command and `kill` was not set (`errs.ErrPaneActive`). Retry with `kill=true`. The same code [`respawn_pane`](#respawn_pane) emits — clients can branch on it once and reuse the recovery path for both tools. |
+| `-32603` | tmux refused the respawn for any other reason (e.g. internal tmux failure).        |
+
+### Example
+
+Bring a crashed build watcher back to life at window scope without
+disturbing other windows in the session. The first attempt without
+`kill` will trip `-32005` if the old process is still running; the
+typed code lets the agent recover deterministically:
+
+```jsonc
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "build",
+                 "command": "npm run watch" } }
+
+// If the previous command is still active, retry with kill=true:
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "build",
+                 "command": "npm run watch", "kill": true } }
+```
+
+Reuse the original starting command but switch to a fresh working
+directory (e.g. after `git worktree remove` left the old path
+dangling):
+
+```jsonc
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "0",
+                 "cwd": "/srv/build/v2", "kill": true } }
+```
+
+For pane-level recovery use [`respawn_pane`](#respawn_pane) — it shares
+the same `kill` semantics and `-32005` recovery contract.
 
 ---
 
