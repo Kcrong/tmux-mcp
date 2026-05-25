@@ -25,14 +25,25 @@ linters:
       enable:
         - shadow
     paralleltest:
-      # Ignore missing calls to `t.Parallel()` and only report incorrect uses of it.
-      ignore-missing: true
-      # Ignore missing calls to `t.Parallel()` in subtests.
-      # Top-level tests are still required to have `t.Parallel`,
-      # but subtests are allowed to skip it.
-      ignore-missing-subtests: true
-      # Check that `defer` is not used with `t.Parallel`.
-      # (use `t.Cleanup` instead to ensure cleanup runs after parallel subtests complete).
+      # Every top-level test must call `t.Parallel()` so the suite stays
+      # cheap to run under -p=GOMAXPROCS — a forgotten call would silently
+      # serialise that test against everything else in the package, which
+      # is the exact failure mode the recent flaky-test triage chased
+      # down (slog.SetDefault races + tests that ran in lock-step).
+      # Default is false, but we set it explicitly so a future
+      # contributor cannot quietly relax the rule.
+      ignore-missing: false
+      # Subtests follow the same contract. We allow the loop helper
+      # itself (the `for _, tc := range cases` line) to be the spot the
+      # warning fires on, because that's where `t.Run` lives — every
+      # table-driven test in the repo now calls `t.Parallel()` inside
+      # the t.Run body.
+      ignore-missing-subtests: false
+      # Pair t.Parallel with t.Cleanup, never `defer`. The order
+      # `t.Parallel(); defer x()` lies: defer fires when the outer
+      # test function returns, not when the parallel subtests finish,
+      # so cleanup can race the bodies that still hold pointers to the
+      # resource. t.Cleanup waits for parallel subtests to drain.
       check-cleanup: true
     revive:
       rules:
