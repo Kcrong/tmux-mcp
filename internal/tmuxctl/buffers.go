@@ -308,3 +308,32 @@ func (c *Controller) ShowBuffer(ctx context.Context, name string) (string, error
 	}
 	return out, nil
 }
+
+// DeleteBuffer drops a single named paste buffer from the controller's
+// tmux server via `tmux delete-buffer -b NAME`. The boundary always
+// requires `name` — tmux's bare `delete-buffer` (no -b) deletes the
+// most-recently-added buffer, but exposing that "delete the last thing
+// you stored" path through a programmatic agent invites accidental
+// destruction of buffers another caller just minted. Forcing the name
+// keeps the operation deterministic from the caller's point of view.
+//
+// A missing buffer surfaces as a wrapped errs.ErrSessionNotFound so
+// the JSON-RPC dispatcher maps it to CodeSessionNotFound — the same
+// stable wire code ShowBuffer uses for the same conceptual outcome,
+// so MCP clients can branch on a single sentinel for "the named
+// buffer does not exist on this server" regardless of which read /
+// mutate verb they reached for.
+//
+// The boundary deliberately does NOT validate name's shape here —
+// tmux is the source of truth for which buffer names exist; the
+// server-tool layer is responsible for the up-front regex/length
+// guard against stray quoting / shell metachars.
+func (c *Controller) DeleteBuffer(ctx context.Context, name string) error {
+	if _, err := c.run(ctx, "delete-buffer", "-b", name); err != nil {
+		if !errors.Is(err, errs.ErrSessionNotFound) && isBufferMissingMsg(err.Error()) {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}

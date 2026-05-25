@@ -103,6 +103,11 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"snapshot_diff",
 		"choose_client",
 		"set_environment",
+		// delete_buffer drops a paste buffer from the tmux server, so
+		// the read-only spec must reject it just like every other
+		// mutating verb. We pin it here so a future contributor cannot
+		// silently flip the policy by adding the name to readOnlyTools.
+		"delete_buffer",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
