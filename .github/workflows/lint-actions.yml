@@ -101,7 +101,7 @@ jobs:
         # uses (see .github/workflows/codeql.yml). continue-on-error
         # so a missing code-scanning permission (e.g. fork PR without
         # the right token) does not fail the job.
-        uses: github/codeql-action/upload-sarif@03e4368ac7daa2bd82b3e85262f3bf87ee112f57  # v3
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
         if: always()
         continue-on-error: true
         with:
