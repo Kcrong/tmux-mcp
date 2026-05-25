@@ -126,3 +126,62 @@ jobs:
           path: gosec.sarif
           if-no-files-found: ignore
           retention-days: 14
+
+  # Aggregate this workflow's job conclusions onto the PR head SHA as a
+  # single 'security' commit status. merge-gate consumes that status —
+  # GitHub keys workflow_run-triggered runs to the default-branch HEAD,
+  # not the upstream CI's head SHA, so head_sha lookup against the PR
+  # head misses these runs. The commit status is the bridge that makes
+  # the security result visible where merge-gate looks.
+  report-status:
+    needs: [preflight, codeql, govulncheck, gosec]
+    # always(): even when preflight gated jobs out we still need to
+    # decide whether to post a status. The script below short-circuits
+    # if preflight was skipped (CI failed) — merge-gate handles that
+    # case via its CI-failed short-circuit, so leaving the status
+    # absent is correct.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        with:
+          script: |
+            // If preflight was skipped, upstream CI failed and the
+            // analysis jobs didn't actually run. Posting success here
+            // would be a lie; posting failure would double-block on a
+            // CI failure merge-gate already sees. Skip the status —
+            // merge-gate's CI-failed short-circuit handles the SHA.
+            const preflight = '${{ needs.preflight.result }}';
+            if (preflight === 'skipped') {
+              core.info('preflight skipped (upstream CI failure) — not posting status');
+              return;
+            }
+
+            const sha = context.payload.workflow_run.head_sha;
+            const conclusions = {
+              codeql: '${{ needs.codeql.result }}',
+              govulncheck: '${{ needs.govulncheck.result }}',
+              gosec: '${{ needs.gosec.result }}',
+            };
+            const failing = [];
+            for (const [name, c] of Object.entries(conclusions)) {
+              if (c === 'success' || c === 'skipped') continue;
+              failing.push(`${name}=${c}`);
+            }
+            const state = failing.length > 0 ? 'failure' : 'success';
+            const description = failing.length > 0
+              ? `Failing: ${failing.join(', ')}`
+              : 'All security jobs passed';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'security',
+              description: description.slice(0, 140),
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+            core.info(`security → ${state}: ${description}`);

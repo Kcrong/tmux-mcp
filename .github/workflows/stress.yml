@@ -225,3 +225,54 @@ jobs:
           name: benchmarks
           path: bench/
           retention-days: 30
+
+  # Aggregate this workflow's job conclusions onto the PR head SHA as a
+  # single 'stress' commit status. Same bridge pattern as security —
+  # workflow_run runs are keyed to the default-branch HEAD, so merge-gate's
+  # head_sha lookup against the PR head misses them. The commit status
+  # makes the result visible where merge-gate actually checks.
+  report-status:
+    needs: [preflight, stress, benchmarks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        with:
+          script: |
+            // Mirror security.yml: when preflight skipped (upstream
+            // security/CI failure) the analysis jobs didn't actually
+            // run, so we don't claim a result here. merge-gate's
+            // CI-failed short-circuit covers the SHA.
+            const preflight = '${{ needs.preflight.result }}';
+            if (preflight === 'skipped') {
+              core.info('preflight skipped (upstream failure) — not posting status');
+              return;
+            }
+
+            const sha = context.payload.workflow_run.head_sha;
+            const conclusions = {
+              stress: '${{ needs.stress.result }}',
+              benchmarks: '${{ needs.benchmarks.result }}',
+            };
+            const failing = [];
+            for (const [name, c] of Object.entries(conclusions)) {
+              if (c === 'success' || c === 'skipped') continue;
+              failing.push(`${name}=${c}`);
+            }
+            const state = failing.length > 0 ? 'failure' : 'success';
+            const description = failing.length > 0
+              ? `Failing: ${failing.join(', ')}`
+              : 'Stress + benchmarks passed';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'stress',
+              description: description.slice(0, 140),
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+            core.info(`stress → ${state}: ${description}`);
