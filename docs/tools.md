@@ -1437,6 +1437,113 @@ the teardown landed:
 
 ---
 
+## `server_access`
+
+Manage the per-user ACL on the tmux server's shared socket via
+`tmux server-access [-adlrw] [USER]` (introduced in tmux 3.4 alongside
+the shared-sessions feature). Useful for an operator running tmux
+against a multi-user host who wants to grant or revoke access to peers
+without restarting the daemon, or for an agent that needs to flip a
+peer between read-only spectatorship and full control.
+
+The tmux owner of the running server (and root) cannot be added,
+removed, or have their permissions changed — tmux rejects those
+shapes itself. Sockets created by tmux default to filesystem
+permissions that block every user other than the owner, so granting
+access here is only half the story: the socket file's group / other
+permissions must also allow the peer to connect.
+
+### Input
+
+| Field  | Type   | Required           | Notes                                                                                              |
+| ------ | ------ | ------------------ | -------------------------------------------------------------------------------------------------- |
+| `op`   | string | yes                | One of `"add"`, `"delete"`, `"list"`, `"read_only"`, `"write"`. Picks the underlying tmux flag.    |
+| `user` | string | yes (except `list`) | POSIX username; len 1-32, regex `^[a-z_][a-z0-9_-]*$`. Must be omitted when `op="list"`.           |
+
+The schema sets `additionalProperties: false`, so any field other than
+`op` and `user` is rejected with `-32602` (invalid params) before tmux
+is consulted. The `op`/`user` constraint (`user` required for every
+`op` except `list`, where it must be absent) is enforced by the
+handler — JSON Schema cannot express the rule directly.
+
+`op` mapping to tmux flags:
+
+| `op`        | tmux flag    | Effect                                                              |
+| ----------- | ------------ | ------------------------------------------------------------------- |
+| `add`       | `-a USER`    | Grants USER access. Defaults to read-only on tmux's side.           |
+| `delete`    | `-d USER`    | Revokes access. tmux detaches USER's currently-attached clients.    |
+| `list`      | `-l`         | Returns the current access table (no USER allowed).                 |
+| `read_only` | `-r USER`    | Switches an existing entry to read-only.                            |
+| `write`     | `-w USER`    | Switches an existing entry to read+write.                           |
+
+### Output
+
+JSON text block.
+
+For mutating ops (`add`, `delete`, `read_only`, `write`):
+
+```jsonc
+{ "ok": true, "op": "add", "user": "alice" }
+```
+
+For `list`:
+
+```jsonc
+{
+  "entries": [
+    { "user": "alice", "permission": "R/W" },
+    { "user": "bob",   "permission": "R" }
+  ]
+}
+```
+
+`entries` is always a non-null array (empty on a server with no access
+entries, or when no daemon is running yet — see below). `permission`
+is tmux's permission token: `"R/W"` for read+write, `"R"` for
+read-only, and the empty string for the server-owner row tmux prints
+without a permission column.
+
+`list` is also the only op that gracefully degrades on a headless
+server: when no tmux daemon is yet listening on the controller's
+socket, the call returns `{"entries":[]}` rather than an error,
+mirroring the behaviour of `session_list`. The other ops require a
+running daemon (start one via `start_server` or any
+session-creating tool) and surface tmux's stderr on failure.
+
+### Errors
+
+| Code     | Cause                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `op`; missing `user` for a mutating op; `user` set on `op="list"`; user fails the regex / length cap; unknown field. |
+| `-32603` | tmux failed (no such OS user, daemon not running for a mutating op, etc.). The original stderr is wrapped into the message.    |
+
+### Examples
+
+```jsonc
+// Inspect the current access list. Safe even before any session exists.
+{ "name": "server_access", "arguments": { "op": "list" } }
+
+// Grant a peer read-only access (tmux defaults to read-only on `-a`).
+{ "name": "server_access", "arguments": { "op": "add",  "user": "alice" } }
+
+// Promote them to read+write so they can drive panes too.
+{ "name": "server_access", "arguments": { "op": "write", "user": "alice" } }
+
+// Demote back to read-only (e.g. before showing them a sensitive pane).
+{ "name": "server_access", "arguments": { "op": "read_only", "user": "alice" } }
+
+// Kick them off entirely. Detaches their attached clients in flight.
+{ "name": "server_access", "arguments": { "op": "delete", "user": "alice" } }
+```
+
+`server_access` is rejected under `-read-only` even for `op="list"`:
+the surface is gated as a unit because four of its five ops mutate
+server state. An operator who wants to inspect the access list under
+`-read-only` should drop the flag for that one tool — there is no
+per-op carve-out.
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
