@@ -218,6 +218,72 @@ distinguish the two.
 
 ---
 
+## `kill_server`
+
+Ask the controller's private tmux daemon to exit via
+`tmux kill-server`. Unlike `kill_all_sessions` (which iterates over
+sessions on a live daemon and leaves the server process up), this tool
+tears down tmux itself. The next `session_create` therefore pays the
+full re-spawn cost — there is no live daemon left to attach to. The
+call is idempotent: when no daemon is running the response is still a
+clean ack, so an agent looping in a recovery dance never sees a
+spurious failure for a state that is already correct.
+
+> **CAUTION — destroys ALL state on this controller's tmux server.**
+> kill_server wipes EVERY session, window, and pane on this socket,
+> including unrelated work belonging to other agents that share the
+> same controller (`-session-prefix` does NOT scope this tool — tmux
+> kill-server has no per-prefix form). Snapshot history for every
+> session the daemon was carrying is forgotten. Reach for
+> `kill_all_sessions` first if you only need a clean slate within your
+> own prefix; reach for `kill_server` only when you actually want the
+> daemon process gone.
+
+### Input
+
+No fields. Pass `{}`. The schema sets `additionalProperties: false`,
+so any stray field (e.g. a mistakenly-passed `"session"`) is rejected
+with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "killed": true }
+```
+
+The shape is intentionally minimal. There is no per-session list to
+echo back — every session on the daemon is gone — and the boolean is
+there so a future addition (e.g. a `count` field for the number of
+sessions reaped) can be layered on without breaking callers that read
+only the field they care about.
+
+### Errors
+
+- `-32602` — `arguments` carried an unknown field.
+- `-32603` — tmux failed to kill the server for an unexpected reason
+  (the "no server running" / "error connecting" / "server exited
+  unexpectedly" cases are NOT errors — they are the goal state, and
+  the tool returns a clean ack).
+
+### Example
+
+```jsonc
+{}
+```
+
+Pair with a follow-up `session_list` to confirm the daemon is gone
+(the listing comes back empty because tmux is no longer accepting
+connections on this socket):
+
+```jsonc
+{ "name": "kill_server",  "arguments": {} }
+{ "name": "session_list", "arguments": {} }
+```
+
+---
+
 ## `session_describe`
 
 Return structured metadata for a single session: window count, total
