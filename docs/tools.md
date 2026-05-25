@@ -1134,6 +1134,99 @@ by definition, so the call is safe to issue at any point.
 
 ---
 
+## `detach_client`
+
+Cleanly end one or more tmux client connections via
+`tmux detach-client [-a] [-s SESSION] [-t CLIENT]` so the backing
+terminal is released. Distinct from `kill_server` (which tears down
+the whole daemon) and the future `lock_client` (which holds the
+client but keeps the connection): `detach_client` severs the
+client/server bond on a per-target basis. This is a **mutating** tool
+— it changes the server's client roster — so a `-read-only`
+deployment rejects it with `-32005` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                                                                                                              |
+| --------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `client`  | string  | no       | tmux client name (the path-like key shown in `list_clients`, e.g. `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Maps to `-t CLIENT`.                     |
+| `session` | string  | no       | tmux session name; detaches every client attached to that session via `-s SESSION`. Same conservative regex as the rest of the surface (alnum/underscore/dash).    |
+| `all`     | boolean | no       | When `true`, pass `-a` to detach every OTHER client. Meaningful only with `client` (inverts the selection to "everyone except CLIENT"). Defaults to `false`.       |
+
+At least one of `client` / `session` / `all` must be set — a bare
+`{}` is rejected with `-32602` (invalid params) up front rather than
+dispatched as `tmux detach-client` (which would target the caller's
+"current" client, a concept that does not apply to the headless tmux
+servers tmux-mcp owns). The combination `client + all` is valid and
+means "detach every other client except CLIENT".
+
+The schema sets `additionalProperties: false`, so any field other
+than the three above is rejected with `-32602` before tmux is
+consulted — a typo like `"tty"` (instead of `"client"`) fails fast
+instead of being silently ignored.
+
+### Output
+
+JSON text block with a flat object keyed by `detached`:
+
+```jsonc
+{ "detached": true }
+```
+
+| Field      | Type    | Notes                                                                                                                          |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `detached` | boolean | Always `true` on success. The shape leaves room for future extensions (e.g. a count of detached terminals) without breaking callers that read only the boolean. |
+
+A headless server with nothing attached returns `{"detached": true}`
+— a clean success rather than an error — so callers can fire-and-
+forget a detach without first running `list_clients` to know whether
+there is anything to detach. The boundary swallows tmux's
+`no current client` stderr in this case.
+
+### Errors
+
+| Code     | Cause                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed args (bad regex / over the length cap / all three fields empty) or an unknown field on the schema.                |
+| `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).                                       |
+| `-32005` | Server is running in `-read-only` mode (this tool mutates client state).                                                    |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                                            |
+
+A non-existent **session** does NOT surface as `-32000`: tmux folds
+"no such session" into "no current client" for `detach-client`
+specifically, and the boundary cannot distinguish that case from the
+legitimate-empty case (session exists, has zero attached clients).
+Both fall through to `{"detached": true}`. Callers that need strict
+missing-session semantics should pre-flight `has_session`.
+
+### Examples
+
+```jsonc
+// detach every client attached to session "demo"
+{ "session": "demo" }
+
+// detach a single client by TTY (e.g. found via list_clients)
+{ "client": "/dev/pts/0" }
+
+// detach every OTHER client; -a alone reads server-wide
+{ "all": true }
+
+// detach every client EXCEPT this one — useful for a "kick everyone
+// else out so I have exclusive control" idiom
+{ "client": "/dev/pts/0", "all": true }
+```
+
+Pair with `list_clients` to discover the live roster before deciding
+which terminals to release:
+
+```jsonc
+{ "name": "list_clients",  "arguments": { "session": "demo" } }
+{ "name": "detach_client", "arguments": { "client": "/dev/pts/0" } }
+```
+
+---
+
 ## `list_keys`
 
 Enumerate the key bindings on this controller's tmux server via
