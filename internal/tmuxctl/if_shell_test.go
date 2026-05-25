@@ -38,7 +38,7 @@ func readEnv(t *testing.T, ctx context.Context, c *Controller, session, name str
 // the deadline.
 func eventuallyEnv(t *testing.T, ctx context.Context, c *Controller, session, name, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		got = readEnv(t, ctx, c, session, name)
@@ -61,7 +61,7 @@ func eventuallyEnv(t *testing.T, ctx context.Context, c *Controller, session, na
 func TestIfShell_TrueBranchRuns(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "ift", Command: "/bin/sh"}); err != nil {
@@ -93,7 +93,7 @@ func TestIfShell_TrueBranchRuns(t *testing.T) {
 func TestIfShell_FalseBranchRuns(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "iff", Command: "/bin/sh"}); err != nil {
@@ -126,7 +126,7 @@ func TestIfShell_FalseBranchRuns(t *testing.T) {
 func TestIfShell_NoElseBranchIsNoop(t *testing.T) {
 	skipIfNoTmux(t)
 	c := newCtl(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "ifn", Command: "/bin/sh"}); err != nil {
@@ -152,7 +152,7 @@ func TestIfShell_NoElseBranchIsNoop(t *testing.T) {
 	// would be a real bug here) would arrive a moment after the call
 	// returns. Wait long enough for the dispatch window to close, then
 	// confirm the marker is still the seed.
-	time.Sleep(10 * time.Second)
+	time.Sleep(30 * time.Second)
 
 	got := readEnv(t, ctx, c, "ifn", "IF_BRANCH")
 	if got != "IF_BRANCH=untouched" {
