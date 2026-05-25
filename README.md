@@ -4,7 +4,7 @@
 [![CodeQL](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/codeql.yml)
 [![lint-actions](https://github.com/Kcrong/tmux-mcp/actions/workflows/lint-actions.yml/badge.svg)](https://github.com/Kcrong/tmux-mcp/actions/workflows/lint-actions.yml)
 [![Merge Queue: enabled](https://img.shields.io/badge/Merge%20Queue-enabled-2ea44f)](https://github.com/Kcrong/tmux-mcp/queue/main)
-[![codecov](https://codecov.io/gh/Kcrong/tmux-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/Kcrong/tmux-mcp)
+[![codecov](https://codecov.io/gh/Kcrong/tmux-mcp/graph/badge.svg?token=GTHFCPOXD6)](https://codecov.io/gh/Kcrong/tmux-mcp)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
