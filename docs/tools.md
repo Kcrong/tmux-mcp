@@ -5022,6 +5022,20 @@ every current and future session inherits the hook; otherwise
 `target` names the session whose options table the hook lands on
 (`-t TARGET`). Mutating: hooks change the daemon's behaviour for
 every subsequent event, so this tool is **not** allowed under
+## `previous_layout`
+
+Cycle the targeted window's pane arrangement one step BACKWARD through
+tmux's preset ring via `tmux previous-layout -t <target>`. The five
+presets tmux ships (`even-horizontal`, `even-vertical`,
+`main-horizontal`, `main-vertical`, `tiled`) walk in reverse — wrapping
+from the first preset to the last so the call never refuses on an
+edge. Sibling of `next_layout`; pair with `select_layout` when you want
+to jump to a specific preset or stored layout dump rather than step
+through the ring.
+
+`previous_layout` MUTATES tmux state (it changes a window's pane
+arrangement) so it is intentionally NOT part of the read-only
+allowlist and is rejected when the operator runs the server with
 `-read-only`.
 
 ### Input
@@ -5033,6 +5047,12 @@ every subsequent event, so this tool is **not** allowed under
 | `unset`   | boolean | no       | when true, clear the hook (`-u`) instead of binding it. Defaults to false.                                       |
 | `global`  | boolean | no       | when true, bind on the server-wide options table (`-g`); `target` is ignored. Defaults to false.                  |
 | `target`  | string  | conditional | required when `global=false`; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64).         |
+| Field    | Type   | Required | Notes                                                                              |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `target` | string | yes      | window in `<session>:<window>` form; session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index (`\d+`). |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected by spec-compliant clients before tmux is consulted.
 
 ### Output
 
@@ -5115,6 +5135,14 @@ an already-cleared hook is a no-op (the wrapper preserves tmux's
 idempotent `-u` semantics) so deployment scripts can teardown
 unconditionally.
 
+```jsonc
+{ "cycled": true }
+```
+
+`previous-layout` itself produces no useful stdout; a follow-up
+`display_message` against `#{window_layout}` is one call away if the
+caller wants to confirm the actual dump that landed.
+
 ### Errors
 
 | Code     | Cause                                                              |
@@ -5122,6 +5150,9 @@ unconditionally.
 | `-32602` | `target` missing / outside the pane-target regex; `buffer_name` outside the regex/length policy; or an unknown field on `arguments`. |
 | `-32000` | The named buffer (or the targeted session/pane) does not exist on this server (`errs.ErrSessionNotFound`). |
 | `-32603` | tmux refused the paste for an unexpected reason.                   |
+| `-32602` | Missing/invalid `target` (empty, no `:`, bad regex on either half). |
+| `-32000` | The targeted session/window does not exist (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the cycle for an unexpected reason.                   |
 
 ### Example
 
@@ -5258,5 +5289,15 @@ A typical install-then-clear chain:
 ```jsonc
 { "name": "set_hook", "arguments": { "name": "pane-died", "command": "display-message x", "target": "demo" } }
 { "name": "set_hook", "arguments": { "name": "pane-died", "target": "demo", "unset": true } }
+{ "target": "demo:0" }
+```
+
+A typical chain looks like: split the window to gain panes, anchor on
+a known preset, then step backward to reshape.
+
+```jsonc
+{ "name": "pane_split",      "arguments": { "session": "demo", "direction": "vertical", "detach": true } }
+{ "name": "select_layout",   "arguments": { "target": "demo:0", "layout": "tiled" } }
+{ "name": "previous_layout", "arguments": { "target": "demo:0" } }
 ```
 
