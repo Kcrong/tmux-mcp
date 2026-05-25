@@ -776,6 +776,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.windowMove(ctx, call.Arguments)
 	case "swap_window":
 		return t.swapWindow(ctx, call.Arguments)
+	case "next_layout":
+		return t.nextLayout(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
 	case "list_clients":
