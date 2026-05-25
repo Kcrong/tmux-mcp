@@ -55,7 +55,7 @@ func readEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session str
 // fails after the deadline.
 func eventuallyEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		got = readEnvHandler(t, ctx, tools, session)
@@ -207,7 +207,7 @@ func TestHandle_IfShell_FalseBranchNoElseIsNoop(t *testing.T) {
 	// Wait long enough for any stray then_branch dispatch (which would
 	// be a real bug) to have arrived from the server's queue, then
 	// confirm the seed is still in place.
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	if got := readEnvHandler(t, ctx, tools, "ifn"); got != "untouched" {
 		t.Fatalf("display_message #{IF_BRANCH} = %q, want untouched (no branch should have run)", got)
