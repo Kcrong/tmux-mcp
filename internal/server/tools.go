@@ -740,6 +740,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneResize(ctx, call.Arguments)
 	case "pane_break":
 		return t.paneBreak(ctx, call.Arguments)
+	case "last_pane":
+		return t.lastPane(ctx, call.Arguments)
 	case "move_pane":
 		return t.movePane(ctx, call.Arguments)
 	case "respawn_pane":
@@ -788,6 +790,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.showMessages(ctx, call.Arguments)
 	case "detach_client":
 		return t.detachClient(ctx, call.Arguments)
+	case "display_panes":
+		return t.displayPanes(ctx, call.Arguments)
 	case "list_keys":
 		return t.listKeys(ctx, call.Arguments)
 	case "unbind_key":

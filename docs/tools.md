@@ -1278,6 +1278,93 @@ which terminals to release:
 
 ---
 
+## `display_panes`
+
+Briefly draw each pane's identifier overlay on a tmux client via
+`tmux display-panes [-b] [-d duration] [-N] [-t CLIENT] [template]`.
+This is the visual primitive that lets a human pick a pane by index;
+agents use it to surface the picker on an attached terminal so a user
+can choose, or to fire a templated tmux command keyed off the
+selection. This is a **mutating** tool — it draws onto a live client
+and can run a templated command on selection — so a `-read-only`
+deployment rejects it with `-32005` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                                                                                                                       |
+| ------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `block`       | boolean | no       | When `true`, pass `-b` so tmux waits until the user has finished selecting before returning. Defaults to `false` (return as soon as the picker is drawn).                                   |
+| `duration_ms` | integer | no       | How long to paint the overlay, in milliseconds; maps to `-d`. Range `0..600000` (10 minutes). `0` falls back to tmux's `display-panes-time` (typically 1000 ms).                            |
+| `no_prefix`   | boolean | no       | When `true`, pass `-N` so the prefix key is not reserved during the picker. Defaults to `false`.                                                                                            |
+| `target`      | string  | no       | tmux client name (TTY path like `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Maps to `-t CLIENT`. Omit to draw on the caller's current client.                                   |
+| `template`    | string  | no       | tmux command template run against the selection (e.g. `select-pane -t %%`); forwarded verbatim, len capped at 4096. Omit to leave tmux's default behaviour.                                 |
+
+The schema sets `additionalProperties: false`, so any field other
+than the five above is rejected with `-32602` before tmux is
+consulted — a typo like `"duration"` (instead of `"duration_ms"`) or
+`"client"` (instead of `"target"`) fails fast instead of being
+silently ignored.
+
+### Output
+
+JSON text block with a flat object keyed by `displayed`:
+
+```jsonc
+{ "displayed": true }
+```
+
+| Field       | Type    | Notes                                                                                                                                                                                |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `displayed` | boolean | Always `true` on success. The shape leaves room for future extensions (e.g. a count of panes drawn) without breaking callers that read only the boolean.                            |
+
+A headless server with nothing attached returns
+`{"displayed": true}` — a clean success rather than an error — so
+callers can fire-and-forget without first running `list_clients` to
+know whether there is a client to draw on. The boundary swallows
+tmux's `no current client` stderr in this case.
+
+### Errors
+
+| Code     | Cause                                                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed args (bad regex on `target`, oversized `template`, `duration_ms` outside `[0..600000]`, or an unknown field on the schema).        |
+| `-32000` | `target` named a client that is not currently attached (`errs.ErrSessionNotFound`).                                                          |
+| `-32005` | Server is running in `-read-only` mode (this tool draws onto live clients).                                                                  |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, malformed `template` rejected at substitution).                              |
+
+### Examples
+
+```jsonc
+// fire-and-forget on the caller's current client; tmux's own
+// display-panes-time decides how long the overlay paints
+{}
+
+// draw the picker for 2.5s on a specific terminal
+{ "target": "/dev/pts/0", "duration_ms": 2500 }
+
+// block until the user picks; useful for a user-driven flow
+{ "block": true }
+
+// run a templated select-pane against the selection — tmux
+// substitutes %% with the picked pane id at execution time
+{ "target": "/dev/pts/0", "template": "select-pane -t %%" }
+
+// free the prefix key during the picker so the user can drop
+// straight into a binding
+{ "no_prefix": true, "target": "/dev/pts/0" }
+```
+
+Pair with `list_clients` to discover the live roster before deciding
+which terminal to draw on:
+
+```jsonc
+{ "name": "list_clients",  "arguments": {} }
+{ "name": "display_panes", "arguments": { "target": "/dev/pts/0" } }
+```
+
+---
+
 ## `list_keys`
 
 Enumerate the key bindings on this controller's tmux server via
@@ -1873,6 +1960,57 @@ and then promote it into a window of its own:
 { "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
 { "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `last_pane`
+
+Switch the active pane of a window back to whichever pane was
+previously active via `tmux last-pane`. Useful for an LLM agent that
+just split a pane, drove the new one, and wants to flip back to the
+original without having to track the pane id explicitly. Pairs with
+`pane_split` (which surfaces the new pane's id) and `list_panes`
+(which exposes the current `active` flag) for layout-aware retargeting.
+
+### Input
+
+| Field           | Type    | Required | Notes                                                                                   |
+| --------------- | ------- | -------- | --------------------------------------------------------------------------------------- |
+| `target_window` | string  | no       | tmux window target like `mysession:0`; session 1-64 `[A-Za-z0-9_-]`, window name (1-64) or numeric index. Omit to use tmux's current window. |
+| `disable_input` | boolean | no       | When true, disable input on the newly-selected pane (`-d`). Mutually exclusive with `enable_input`. Default `false`. |
+| `enable_input`  | boolean | no       | When true, re-enable input on the newly-selected pane (`-e`). Mutually exclusive with `disable_input`. Default `false`. |
+| `zoom_toggle`   | boolean | no       | When true, also toggle the pane's zoom state (`-Z`). Default `false`.                   |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected with `-32602` before tmux is consulted. `disable_input` and
+`enable_input` are also mutually exclusive — setting both is rejected
+with `-32602` rather than letting tmux silently honour one of them.
+
+### Output
+
+Plain text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Malformed `target_window`, both `disable_input` and `enable_input` set, or an unknown field was sent. |
+| `-32000` | `target_window` does not resolve on this server (`errs.ErrSessionNotFound`), or the window has no "previously active" pane to flip back to. |
+| `-32603` | tmux refused the toggle for an unexpected reason.                  |
+
+### Example
+
+```jsonc
+{ "target_window": "demo:0", "zoom_toggle": true }
+```
+
+A typical chain after splitting and driving a side-car pane:
+
+```jsonc
+{ "name": "pane_split", "arguments": { "session": "demo", "direction": "horizontal" } }
+{ "name": "send_keys",  "arguments": { "session": "demo", "keys": ["tail -F log", "Enter"] } }
+{ "name": "last_pane",  "arguments": { "target_window": "demo:0" } }
 ```
 
 ---
