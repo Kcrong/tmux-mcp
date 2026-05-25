@@ -2327,6 +2327,50 @@ log exactly which confirmation it queued.
 | `-32602` | Missing/empty `command`, oversized field, or malformed `target` (regex/length policy). |
 | `-32000` | No client attached (headless server) or named `target` does not resolve (`errs.ErrSessionNotFound`). |
 | `-32603` | tmux refused the call for any other reason. |
+## `customize_mode`
+
+Open the interactive options/key-bindings editor in a target pane via
+`tmux customize-mode [-N] [-Z] [-t TARGET] [-F FORMAT] [-f FILTER]`.
+tmux's customize-mode is the same UI exposed from `:customize-mode` on
+the command line — a row-oriented browser over server, session,
+window, and pane options (plus key bindings) that the user can tweak
+in place. Useful for an LLM agent that wants to drive the editor from
+a tool call without knowing the option's name in advance. Every
+argument is optional: omit `target` to land on the server's
+current/active pane; pass `no_close=true` to keep the editor open
+after each commit (`-N`), `zoom=true` to zoom the target pane while
+the editor is up (`-Z`), `format` for a custom row format string
+(`-F FORMAT`), or `filter` for a predicate that hides non-matching
+rows (`-f FILTER`).
+
+### Input
+
+| Field      | Type    | Required | Notes                                                                                                           |
+| ---------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `target`   | string  | no       | Pane target (`session`, `session:window`, `session:window.pane`, or `%N`). 256-char cap. Omit for the active pane. |
+| `format`   | string  | no       | tmux format string mapped to `-F FORMAT`. Must not contain newlines. 256-char cap.                              |
+| `filter`   | string  | no       | tmux filter predicate mapped to `-f FILTER`. Must not contain newlines. 256-char cap.                           |
+| `no_close` | boolean | no       | `-N`: keep the editor open after each commit (default `false`).                                                  |
+| `zoom`     | boolean | no       | `-Z`: zoom the target pane while the editor is up (default `false`).                                             |
+
+The schema is `additionalProperties: false`: an unknown field is far
+more likely a typo than a future capability and is rejected up front
+with `-32602`.
+
+### Output
+
+JSON block: `{"opened": true}`. The boundary deliberately does not
+echo the editor contents — the editor is interactive. Confirm the
+pane is in mode with a follow-up `display_message` against
+`#{?pane_in_mode,1,0}` (returns `"1"` while the editor is up).
+
+### Errors
+
+| Code     | Cause                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed `target` (regex/length policy), newline in `format` or `filter`, or oversize string (>256 chars). |
+| `-32000` | `target` does not resolve on this server, or no tmux server is running (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason (e.g. internal tmux failure).                    |
 
 ### Example
 
@@ -2341,6 +2385,14 @@ final say with the human at the terminal. With a specific
 
 ```jsonc
 { "command": "kill-session -t demo", "target": "/dev/pts/0" }
+{ "target": "demo" }
+```
+
+Verify the pane is in mode with a follow-up `display_message`:
+
+```jsonc
+{ "name": "customize_mode",  "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "format": "#{?pane_in_mode,1,0}", "session": "demo" } }
 ```
 
 ---
