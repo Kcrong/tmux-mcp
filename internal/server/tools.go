@@ -858,6 +858,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.setOption(ctx, call.Arguments)
 	case "show_environment":
 		return t.showEnvironment(ctx, call.Arguments)
+	case "show_hooks":
+		return t.showHooks(ctx, call.Arguments)
 	case "set_buffer":
 		return t.setBuffer(ctx, call.Arguments)
 	case "load_buffer":
