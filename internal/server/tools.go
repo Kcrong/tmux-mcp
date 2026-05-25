@@ -884,6 +884,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.setHook(ctx, call.Arguments)
 	case "previous_layout":
 		return t.previousLayout(ctx, call.Arguments)
+	case "command_prompt":
+		return t.commandPrompt(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path

@@ -128,6 +128,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		// mutating verb. We pin it here so a future contributor cannot
 		// silently flip the policy by adding the name to readOnlyTools.
 		"delete_buffer",
+		"command_prompt",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
