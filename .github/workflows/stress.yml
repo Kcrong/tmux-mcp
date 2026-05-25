@@ -1,66 +1,47 @@
 name: stress
 
-# Triggered after `security` completes. Runs the stress harness (race +
-# leak detection) and benchmark suite (benchstat-compared against main) in
-# parallel. Both are gates: a stress failure or a benchstat regression
-# blocks merge-gate unless the PR carries the `expected-regression` label
-# (which merge-gate honors).
+# Reusable workflow invoked from ci.yml. Runs the stress harness (race +
+# leak detection) and benchmarks (benchstat-compared against the PR base)
+# in parallel.
 #
-# Baseline behavior: if there is no main baseline yet (first run, fresh
-# branch state, etc.), benchstat passes automatically.
+# Inputs the caller MUST supply:
+#   * base_ref — branch name to benchstat-compare against. Empty for main
+#     pushes (the bench job falls back to HEAD~1) or fork PRs that we
+#     can't fetch the base for (auto-skip).
+#   * event — the parent event ('pull_request' | 'push' | 'merge_group').
+#     Drives the HEAD~1 fallback for push events.
+#   * bypass_benchmark_regression — when true, a statistically significant
+#     benchstat regression is logged but does not fail the job. Used by
+#     the caller to honor an `expected-regression` PR label without
+#     punching a hole in the gate for normal PRs.
+#
+# Baseline behavior: if there is no resolvable baseline (first run, fork
+# PR, etc.), benchstat passes automatically.
 
 on:
-  workflow_run:
-    workflows: [security]
-    types: [completed]
+  workflow_call:
+    inputs:
+      base_ref:
+        type: string
+        required: false
+        default: ''
+      event:
+        type: string
+        required: true
+      bypass_benchmark_regression:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
-  actions: read
-  pull-requests: read
-
-concurrency:
-  group: stress-${{ github.event.workflow_run.head_sha }}
-  cancel-in-progress: true
 
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    # Only run if upstream security succeeded — a CI/security failure should
-    # not pile additional red onto the PR.
-    if: github.event.workflow_run.conclusion == 'success'
-    outputs:
-      sha: ${{ steps.s.outputs.sha }}
-      base_ref: ${{ steps.s.outputs.base_ref }}
-      pr_number: ${{ steps.s.outputs.pr_number }}
-      event: ${{ steps.s.outputs.event }}
-    steps:
-      - id: s
-        run: |
-          set -eu
-          {
-            echo "sha=${{ github.event.workflow_run.head_sha }}"
-            echo "event=${{ github.event.workflow_run.event }}"
-          } >> "$GITHUB_OUTPUT"
-          # workflow_run.pull_requests is empty for fork PRs; that's fine —
-          # bench job below handles the missing-baseline case.
-          prs='${{ toJSON(github.event.workflow_run.pull_requests) }}'
-          base=$(echo "$prs" | jq -r '.[0].base.ref // ""')
-          num=$(echo "$prs" | jq -r '.[0].number // ""')
-          {
-            echo "base_ref=$base"
-            echo "pr_number=$num"
-          } >> "$GITHUB_OUTPUT"
-
   stress:
-    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          ref: ${{ needs.preflight.outputs.sha }}
 
       - name: Install tmux
         run: |
@@ -131,16 +112,13 @@ jobs:
   benchmarks:
     # Compares this commit's bench results against the PR base (or main on
     # main pushes) using benchstat. A regression with default p-value 0.05
-    # fails the job. The `expected-regression` label is honored at the
-    # merge-gate layer — this job stays a true regression detector.
-    needs: [preflight]
+    # fails the job unless inputs.bypass_benchmark_regression is true.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
-          ref: ${{ needs.preflight.outputs.sha }}
 
       - name: Install tmux
         run: |
@@ -167,12 +145,15 @@ jobs:
 
       - name: bench (baseline)
         id: baseline
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          EVENT: ${{ inputs.event }}
         run: |
           set -eux
-          base_ref="${{ needs.preflight.outputs.base_ref }}"
+          base_ref="$BASE_REF"
           # Push to main → compare HEAD against HEAD~1; PR → compare against
           # PR base; fork PR with no base ref → no baseline (auto-pass).
-          if [ -z "$base_ref" ] && [ "${{ needs.preflight.outputs.event }}" = "push" ]; then
+          if [ -z "$base_ref" ] && [ "$EVENT" = "push" ]; then
             base_ref="HEAD~1"
           fi
           if [ -z "$base_ref" ]; then
@@ -191,10 +172,11 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          head_sha="$(git rev-parse HEAD)"
           git checkout "$base_ref" -- .
           go test -bench=. -benchmem -run=^$ -count=5 ./... > bench/base.txt 2>&1 || true
-          # Restore working tree to the head commit for the compare step.
-          git checkout "${{ needs.preflight.outputs.sha }}" -- .
+          # Restore the head tree for the compare step.
+          git checkout "$head_sha" -- .
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: install benchstat
@@ -203,6 +185,8 @@ jobs:
 
       - name: compare
         if: steps.baseline.outputs.skip != 'true'
+        env:
+          BYPASS: ${{ inputs.bypass_benchmark_regression }}
         run: |
           set -eux
           # Default benchstat p-value (0.05) — a stat-significant regression
@@ -213,8 +197,11 @@ jobs:
           # by scanning for `+\d+\.\d+%` followed by `(p=` which is benchstat's
           # significance-marked regression line in the delta column.
           if grep -E '\+[0-9]+\.[0-9]+%[[:space:]]+\(p=' bench/benchstat.txt; then
+            if [ "$BYPASS" = "true" ]; then
+              echo "::warning::benchstat regression detected but bypassed via expected-regression label"
+              exit 0
+            fi
             echo "::warning::benchstat detected a statistically significant regression"
-            # Fail the job — merge-gate handles bypass via `expected-regression` label.
             exit 1
           fi
           echo "no statistically significant regression"
@@ -225,54 +212,3 @@ jobs:
           name: benchmarks
           path: bench/
           retention-days: 30
-
-  # Aggregate this workflow's job conclusions onto the PR head SHA as a
-  # single 'stress' commit status. Same bridge pattern as security —
-  # workflow_run runs are keyed to the default-branch HEAD, so merge-gate's
-  # head_sha lookup against the PR head misses them. The commit status
-  # makes the result visible where merge-gate actually checks.
-  report-status:
-    needs: [preflight, stress, benchmarks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions:
-      statuses: write
-    steps:
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
-        with:
-          script: |
-            // Mirror security.yml: when preflight skipped (upstream
-            // security/CI failure) the analysis jobs didn't actually
-            // run, so we don't claim a result here. merge-gate's
-            // CI-failed short-circuit covers the SHA.
-            const preflight = '${{ needs.preflight.result }}';
-            if (preflight === 'skipped') {
-              core.info('preflight skipped (upstream failure) — not posting status');
-              return;
-            }
-
-            const sha = context.payload.workflow_run.head_sha;
-            const conclusions = {
-              stress: '${{ needs.stress.result }}',
-              benchmarks: '${{ needs.benchmarks.result }}',
-            };
-            const failing = [];
-            for (const [name, c] of Object.entries(conclusions)) {
-              if (c === 'success' || c === 'skipped') continue;
-              failing.push(`${name}=${c}`);
-            }
-            const state = failing.length > 0 ? 'failure' : 'success';
-            const description = failing.length > 0
-              ? `Failing: ${failing.join(', ')}`
-              : 'Stress + benchmarks passed';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha,
-              state,
-              context: 'stress',
-              description: description.slice(0, 140),
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-            });
-            core.info(`stress → ${state}: ${description}`);

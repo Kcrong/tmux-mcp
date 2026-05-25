@@ -1,31 +1,21 @@
 name: merge-gate
 
-# Single required check that aggregates every gate workflow's conclusion onto
-# the head SHA. Branch protection only needs to require `merge-gate` —
+# Single required check that aggregates every gate workflow's conclusion
+# onto the head SHA. Branch protection only needs to require `merge-gate` —
 # adding/removing upstream workflows then doesn't churn protection rules.
 #
 # Trigger fires on every upstream completion. Each invocation re-evaluates
 # the full set, so the final upstream completion latches the gate.
 #
-# How conclusions get aggregated:
-#   * CI / pr-title / actionlint run with pull_request / push triggers, so
-#     their workflow runs are keyed to the PR head SHA — listWorkflowRunsForRepo
-#     finds them via {head_sha: ...}.
-#   * security / stress run with workflow_run triggers, so GitHub keys
-#     their runs to the default-branch HEAD, NOT the upstream CI head.
-#     They're invisible to a head_sha-based run lookup. Each of those
-#     workflows posts its own commit status to the PR head SHA — we read
-#     those statuses here and treat them as the workflow's conclusion.
-#
-# The `expected-regression` PR label bypasses ONLY the `stress` workflow
-# conclusion. Lint / test / security failures still block.
+# Every required workflow now runs with a direct pull_request / push
+# trigger (security and stress are invoked as reusable workflows from
+# CI, so their runs are still keyed to the PR head SHA via the parent
+# CI run). That means a single head_sha lookup finds them all.
 
 on:
   workflow_run:
     workflows:
       - CI
-      - security
-      - stress
       - pr-title
       - actionlint
     types: [completed]
@@ -51,16 +41,8 @@ jobs:
       - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
         with:
           script: |
-            // Workflows whose runs are keyed to the PR head SHA — direct
-            // pull_request/push triggers. Looked up via run search.
-            const directRequired = ['CI', 'pr-title', 'actionlint'];
-            // Workflows that run via workflow_run and post their own
-            // commit status. Looked up via the statuses API.
-            const statusRequired = ['security', 'stress'];
-
+            const required = ['CI', 'pr-title', 'actionlint'];
             const sha = context.payload.workflow_run.head_sha;
-            const labelBypass = 'expected-regression';
-            const bypassable = new Set(['stress']);
 
             // Pull every run for this SHA. The list endpoint returns
             // newest first, so the first match per workflow_name wins.
@@ -73,50 +55,20 @@ jobs:
                 per_page: 100,
               },
             );
-            const latestRun = new Map();
+            const latest = new Map();
             for (const r of runs) {
-              if (!latestRun.has(r.name)) latestRun.set(r.name, r);
-            }
-
-            // Pull every commit status for this SHA. Newest-first; first
-            // match per context wins. listCommitStatusesForRef returns the
-            // entire history, so we rely on creation order to pick the
-            // latest one written by each workflow.
-            const statuses = await github.paginate(
-              github.rest.repos.listCommitStatusesForRef,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: sha,
-                per_page: 100,
-              },
-            );
-            const latestStatus = new Map();
-            for (const s of statuses) {
-              if (!latestStatus.has(s.context)) latestStatus.set(s.context, s);
-            }
-
-            // Determine if this is a PR; if so check labels for bypass.
-            let bypassed = false;
-            const prs = context.payload.workflow_run.pull_requests || [];
-            if (prs.length > 0) {
-              const pr = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prs[0].number,
-              });
-              bypassed = pr.data.labels.some(l => l.name === labelBypass);
+              if (!latest.has(r.name)) latest.set(r.name, r);
             }
 
             const failing = [];
-            const bypassedFails = [];
             let pending = false;
 
-            for (const name of directRequired) {
-              const r = latestRun.get(name);
+            for (const name of required) {
+              const r = latest.get(name);
               if (!r) {
-                // Workflow never ran for this SHA — could be paths-ignore'd.
-                // Treat as pass; the path filter is an intentional skip.
+                // Workflow never ran for this SHA. Could be paths-ignore'd
+                // (md-only PR for CI; non-PR push for pr-title) — treat as
+                // pass; the path/event filter is an intentional skip.
                 continue;
               }
               if (r.status !== 'completed') {
@@ -124,46 +76,9 @@ jobs:
                 continue;
               }
               const conclusion = r.conclusion;
+              // success / skipped / neutral all count as pass.
               if (['success', 'skipped', 'neutral'].includes(conclusion)) continue;
-              if (bypassed && bypassable.has(name)) {
-                bypassedFails.push(`${name} (bypassed via '${labelBypass}' label)`);
-                continue;
-              }
               failing.push(`${name}: ${conclusion}`);
-            }
-
-            for (const name of statusRequired) {
-              const s = latestStatus.get(name);
-              if (!s) {
-                // Status hasn't landed yet. Either the workflow_run-triggered
-                // workflow is still running, or it skipped because upstream
-                // CI failed. Mark as pending — when CI is failure the
-                // direct-required block above will pick that up and fail
-                // merge-gate anyway, so we won't sit pending forever.
-                pending = true;
-                continue;
-              }
-              if (s.state === 'pending') {
-                pending = true;
-                continue;
-              }
-              if (s.state === 'success') continue;
-              if (bypassed && bypassable.has(name)) {
-                bypassedFails.push(`${name} (bypassed via '${labelBypass}' label)`);
-                continue;
-              }
-              failing.push(`${name}: ${s.state}`);
-            }
-
-            // If CI itself failed, every downstream workflow_run-triggered
-            // status will sit pending forever. Detect that and short-circuit
-            // so the gate fails fast with a clear reason instead of
-            // appearing stuck.
-            const ciRun = latestRun.get('CI');
-            const ciFailed = ciRun && ciRun.status === 'completed' &&
-              !['success', 'skipped', 'neutral'].includes(ciRun.conclusion);
-            if (ciFailed) {
-              pending = false;
             }
 
             let state, description;
@@ -175,9 +90,7 @@ jobs:
               description = `Failing: ${failing.join(', ')}`.slice(0, 140);
             } else {
               state = 'success';
-              description = bypassedFails.length > 0
-                ? `OK (${bypassedFails.join(', ')})`.slice(0, 140)
-                : 'All required workflows passed';
+              description = 'All required workflows passed';
             }
 
             await github.rest.repos.createCommitStatus({
@@ -191,4 +104,3 @@ jobs:
             });
 
             core.info(`merge-gate → ${state}: ${description}`);
-            if (bypassedFails.length > 0) core.info(`bypassed: ${bypassedFails.join(', ')}`);

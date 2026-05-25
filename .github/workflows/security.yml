@@ -1,45 +1,29 @@
 name: security
 
-# Triggered after CI completes. Runs CodeQL, govulncheck, and gosec in
-# parallel. Decoupled from CI so a security-only re-run (e.g. a CVE drop)
-# doesn't churn the whole test matrix.
+# Reusable workflow invoked from ci.yml. Runs CodeQL, govulncheck, and
+# gosec in parallel against the calling job's checkout SHA.
+#
+# Why workflow_call (not workflow_run):
+#   * jobs surface in the PR Checks UI under the parent CI run, so authors
+#     can see security state without leaving the PR
+#   * the caller can `needs:` this workflow, so a CI failure (lint / test)
+#     skips security automatically — no preflight gate needed
+#   * iterating on this file inside a PR actually exercises the new YAML;
+#     workflow_run loaded from the default branch made that impossible
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  workflow_call:
 
 permissions:
-  actions: read
   contents: read
   security-events: write
 
-concurrency:
-  group: security-${{ github.event.workflow_run.head_sha }}
-  cancel-in-progress: true
-
 jobs:
-  # CI failures should not silently produce missing security checks. Skip
-  # the work but emit a `success` conclusion so merge-gate sees the
-  # workflow and treats CI failure (not security) as the blocker.
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    if: github.event.workflow_run.conclusion == 'success'
-    outputs:
-      sha: ${{ steps.s.outputs.sha }}
-    steps:
-      - id: s
-        run: echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
-
   codeql:
-    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
@@ -62,13 +46,10 @@ jobs:
           category: '/language:go'
 
   govulncheck:
-    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
@@ -85,13 +66,10 @@ jobs:
   gosec:
     # Informational: findings upload to the Security tab, but the job does
     # not fail on findings. Drop `|| true` once the baseline is clean.
-    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
@@ -126,62 +104,3 @@ jobs:
           path: gosec.sarif
           if-no-files-found: ignore
           retention-days: 14
-
-  # Aggregate this workflow's job conclusions onto the PR head SHA as a
-  # single 'security' commit status. merge-gate consumes that status —
-  # GitHub keys workflow_run-triggered runs to the default-branch HEAD,
-  # not the upstream CI's head SHA, so head_sha lookup against the PR
-  # head misses these runs. The commit status is the bridge that makes
-  # the security result visible where merge-gate looks.
-  report-status:
-    needs: [preflight, codeql, govulncheck, gosec]
-    # always(): even when preflight gated jobs out we still need to
-    # decide whether to post a status. The script below short-circuits
-    # if preflight was skipped (CI failed) — merge-gate handles that
-    # case via its CI-failed short-circuit, so leaving the status
-    # absent is correct.
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions:
-      statuses: write
-    steps:
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
-        with:
-          script: |
-            // If preflight was skipped, upstream CI failed and the
-            // analysis jobs didn't actually run. Posting success here
-            // would be a lie; posting failure would double-block on a
-            // CI failure merge-gate already sees. Skip the status —
-            // merge-gate's CI-failed short-circuit handles the SHA.
-            const preflight = '${{ needs.preflight.result }}';
-            if (preflight === 'skipped') {
-              core.info('preflight skipped (upstream CI failure) — not posting status');
-              return;
-            }
-
-            const sha = context.payload.workflow_run.head_sha;
-            const conclusions = {
-              codeql: '${{ needs.codeql.result }}',
-              govulncheck: '${{ needs.govulncheck.result }}',
-              gosec: '${{ needs.gosec.result }}',
-            };
-            const failing = [];
-            for (const [name, c] of Object.entries(conclusions)) {
-              if (c === 'success' || c === 'skipped') continue;
-              failing.push(`${name}=${c}`);
-            }
-            const state = failing.length > 0 ? 'failure' : 'success';
-            const description = failing.length > 0
-              ? `Failing: ${failing.join(', ')}`
-              : 'All security jobs passed';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha,
-              state,
-              context: 'security',
-              description: description.slice(0, 140),
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-            });
-            core.info(`security → ${state}: ${description}`);
