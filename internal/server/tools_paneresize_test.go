@@ -15,10 +15,11 @@ import (
 // boundary's "ok" envelope and the post-resize height pins both the
 // dispatcher wiring and the handler's argument-passthrough contract.
 func TestHandle_PaneResize_GrowsPaneViaDispatcher(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -98,6 +99,7 @@ func TestHandle_PaneResize_GrowsPaneViaDispatcher(t *testing.T) {
 // trip CodeInvalidParams (-32602) before tmux is consulted, so a typo
 // like "vertical" cannot reach the controller.
 func TestHandle_PaneResize_RejectsBadDirection(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -122,6 +124,7 @@ func TestHandle_PaneResize_RejectsBadDirection(t *testing.T) {
 // handler, but a zero step is a no-op tmux silently swallows — almost
 // never what the caller meant — so the boundary refuses it explicitly.
 func TestHandle_PaneResize_RejectsZeroAmount(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -146,6 +149,7 @@ func TestHandle_PaneResize_RejectsZeroAmount(t *testing.T) {
 // signed step would drive the bounds check the wrong way and tmux
 // would refuse with an unhelpful error if we let it through.
 func TestHandle_PaneResize_RejectsNegativeAmount(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -170,6 +174,7 @@ func TestHandle_PaneResize_RejectsNegativeAmount(t *testing.T) {
 // mistaken for cells) and the boundary catches it before any tmux
 // call runs.
 func TestHandle_PaneResize_RejectsAmountAbove200(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -194,6 +199,7 @@ func TestHandle_PaneResize_RejectsAmountAbove200(t *testing.T) {
 // than falling through to tmux with an empty -t value (which tmux
 // would resolve to whatever pane it considers current).
 func TestHandle_PaneResize_RejectsMissingTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -217,6 +223,7 @@ func TestHandle_PaneResize_RejectsMissingTarget(t *testing.T) {
 // the tmux argv, even though the boundary already guards `session`
 // fields elsewhere.
 func TestHandle_PaneResize_RejectsBadTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -240,10 +247,11 @@ func TestHandle_PaneResize_RejectsBadTarget(t *testing.T) {
 // that pane_resize against an unknown session surfaces
 // CodeSessionNotFound (-32000), mirroring pane_swap / pane_kill.
 func TestHandle_PaneResize_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -276,6 +284,7 @@ func TestHandle_PaneResize_MissingSessionMapsCode(t *testing.T) {
 // TestHandle_ToolsList_IncludesPaneResize makes sure tools/list
 // advertises the new tool so MCP clients can discover its schema.
 func TestHandle_ToolsList_IncludesPaneResize(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

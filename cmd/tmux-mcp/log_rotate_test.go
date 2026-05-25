@@ -477,6 +477,7 @@ func TestRotatingFile_ConcurrentWritesDoNotPanic(t *testing.T) {
 // rollover, so the directory ends with multiple archives and exactly
 // one live file by the time run() returns.
 func TestRun_LogRotateFlag_EndToEnd(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}

@@ -15,10 +15,11 @@ import (
 // and the list_windows envelope echoes the structured fields an agent
 // would switch on (index, name, active, panes).
 func TestHandle_ListWindows_AfterSessionCreate(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "lw", "command": "/bin/sh", "width": 80, "height": 20,
@@ -59,10 +60,11 @@ func TestHandle_ListWindows_AfterSessionCreate(t *testing.T) {
 // session with two windows must surface both, with exactly one flagged
 // as active.
 func TestHandle_ListWindows_MultiWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "mw", "command": "/bin/sh",
@@ -107,10 +109,11 @@ func TestHandle_ListWindows_MultiWindow(t *testing.T) {
 // session branch (server-wide -a listing) works through the tool
 // surface — symmetric to the list_panes "no args" contract.
 func TestHandle_ListWindows_NoArgs_ListsAllSessions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	for _, name := range []string{"a1", "a2"} {
 		callTool(t, tools, ctx, "session_create", map[string]any{
@@ -135,10 +138,11 @@ func TestHandle_ListWindows_NoArgs_ListsAllSessions(t *testing.T) {
 // instead of a generic internal-error code, mirroring list_panes /
 // session_kill / pane_select.
 func TestHandle_ListWindows_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor the tmux server with a real session so the dispatcher
 	// hits the "server is up but the named session does not exist"
@@ -166,6 +170,7 @@ func TestHandle_ListWindows_MissingSessionMapsCode(t *testing.T) {
 // optional, a present-but-malformed value must still be refused with
 // CodeInvalidParams up front so tmux is never asked to resolve it.
 func TestHandle_ListWindows_RejectsBadSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -185,6 +190,7 @@ func TestHandle_ListWindows_RejectsBadSession(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via the
 // schema endpoint.
 func TestHandle_ToolsList_IncludesListWindows(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)
@@ -227,10 +233,11 @@ func TestHandle_ToolsList_IncludesListWindows(t *testing.T) {
 // "list every window on the server" rather than rejecting it as
 // malformed.
 func TestHandle_ListWindows_AcceptsNullArguments(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "any", "command": "/bin/sh",

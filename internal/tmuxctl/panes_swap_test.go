@@ -17,10 +17,11 @@ import (
 // buffers), so the assertion is "what's at position 0 and 1 changed
 // places".
 func TestSwapPane_SwapsTwoPanes(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "swp", Command: "/bin/sh", Width: 80, Height: 24,
@@ -91,10 +92,11 @@ func TestSwapPane_SwapsTwoPanes(t *testing.T) {
 // JSON-RPC layer can map "session/pane not found" to CodeSessionNotFound
 // — the same contract every other tmuxctl pane method upholds.
 func TestSwapPane_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, session
 	// missing" (the stderr shape changes versus "no server").
@@ -114,10 +116,11 @@ func TestSwapPane_MissingSessionWrapsSentinel(t *testing.T) {
 // TestSwapPane_RejectsEmptySrc locks the up-front guard. tmux would
 // otherwise resolve "" to whatever pane it considers current.
 func TestSwapPane_RejectsEmptySrc(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.SwapPane(ctx, "", "demo:0.1")
 	if err == nil {
 		t.Fatal("expected error for empty src")
@@ -130,10 +133,11 @@ func TestSwapPane_RejectsEmptySrc(t *testing.T) {
 // TestSwapPane_RejectsEmptyDst mirrors the src guard for the destination
 // argument so a half-formed call cannot reach tmux.
 func TestSwapPane_RejectsEmptyDst(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.SwapPane(ctx, "demo:0.0", "")
 	if err == nil {
 		t.Fatal("expected error for empty dst")

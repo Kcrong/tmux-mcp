@@ -184,7 +184,8 @@ func TestServe_PanicInNotificationDoesNotReply(t *testing.T) {
 // into the structured logs (operators need them) but never into the
 // wire output (clients must not).
 func TestServe_PanicLogsStackToLogger(t *testing.T) {
-	logs := withCapturedLogs(t)
+	t.Parallel()
+	logs, withLogger := withCapturedLogs(t)
 
 	in := &threadSafeBuffer{}
 	out := &bytes.Buffer{}
@@ -197,9 +198,9 @@ func TestServe_PanicLogsStackToLogger(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, in, syncWriter, handler) }()
+	go func() { done <- Serve(ctx, in, syncWriter, handler, withLogger) }()
 
 	_, _ = in.Write([]byte(`{"jsonrpc":"2.0","id":99,"method":"crash"}` + "\n"))
 

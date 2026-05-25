@@ -16,13 +16,14 @@ import (
 // the same name. This is the contract every existing deployment
 // depends on — the prefix feature is opt-in.
 func TestSessionPrefix_EmptyBackCompat(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	if tools.SessionPrefix != "" {
 		t.Fatalf("default SessionPrefix = %q, want empty", tools.SessionPrefix)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -80,11 +81,12 @@ func TestSessionPrefix_EmptyBackCompat(t *testing.T) {
 // returns raw tmux names), and session_list is asserted to perform
 // the inverse strip — both sides confirm the abstraction holds.
 func TestSessionPrefix_CreateMapsToPrefixedTmuxName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	tools.SessionPrefix = "spx_one_"
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -173,6 +175,7 @@ func TestSessionPrefix_CreateMapsToPrefixedTmuxName(t *testing.T) {
 // the prefixed instances — that is the contract that lets a
 // shared tmux server host multiple agents safely.
 func TestSessionPrefix_CrossTenantIsolation(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	// Both *Tools instances share the controller from the first one so
 	// they really do drive the same tmux server (the multi-agent setup
@@ -182,7 +185,7 @@ func TestSessionPrefix_CrossTenantIsolation(t *testing.T) {
 	bob := NewTools(alice.Ctl)
 	bob.SessionPrefix = "ag_bob_"
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	mkCall := func(tools *Tools) func(name string, args any) any {
 		return func(name string, args any) any {
@@ -284,11 +287,12 @@ func TestSessionPrefix_CrossTenantIsolation(t *testing.T) {
 // expected response — without it an oversized combination would land
 // on tmux as a name no other tool can validly reference.
 func TestSessionPrefix_RuntimeRejectsCombinedOverflow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	tools.SessionPrefix = strings.Repeat("p", 60) + "_" // len 61, leaves 3 bytes
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	overflow := strings.Repeat("x", 10) // 61 + 10 > 64
 	params := mustJSON(t, map[string]any{

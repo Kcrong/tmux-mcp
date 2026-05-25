@@ -16,10 +16,11 @@ import (
 // via list-windows. Catches argv ordering (-s vs -t) and the way tmux
 // resolves both halves of the target string.
 func TestMoveWindow_RenumbersWithinSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "mw", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -60,10 +61,11 @@ func TestMoveWindow_RenumbersWithinSession(t *testing.T) {
 // modes ("next free index in <session>"); we exercise it here so the
 // boundary's "tolerate empty dst window" branch is wired end-to-end.
 func TestMoveWindow_AcrossSessions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "src", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession src: %v", err)
@@ -105,10 +107,11 @@ func TestMoveWindow_AcrossSessions(t *testing.T) {
 // exact wording ("index in use") is tmux's, but the substring is stable
 // across recent versions.
 func TestMoveWindow_DuplicateIndex(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "dup", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -139,10 +142,11 @@ func TestMoveWindow_DuplicateIndex(t *testing.T) {
 // errs.ErrSessionNotFound so the JSON-RPC layer maps it to
 // CodeSessionNotFound — same contract as SelectWindow / RenameWindow.
 func TestMoveWindow_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -158,10 +162,11 @@ func TestMoveWindow_MissingSessionWrapsSentinel(t *testing.T) {
 // TestMoveWindow_RejectsEmptyArgs guards both up-front nil-checks so a
 // `tmux move-window` is never issued with a partial target string.
 func TestMoveWindow_RejectsEmptyArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.MoveWindow(ctx, "", "x:0"); err == nil ||
 		!strings.Contains(err.Error(), "src required") {
 		t.Fatalf("empty src: got %v, want \"src required\"", err)

@@ -13,10 +13,11 @@ import (
 // session surfaces exactly one window, that window is flagged active,
 // and the structured fields parse cleanly.
 func TestListWindows_ReturnsActiveWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "lw", Command: "/bin/sh", Width: 80, Height: 20,
@@ -51,10 +52,11 @@ func TestListWindows_ReturnsActiveWindow(t *testing.T) {
 // landing on whichever window tmux is focused on (the second one when
 // Select=true).
 func TestListWindows_MultiWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "mw", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -97,10 +99,11 @@ func TestListWindows_MultiWindow(t *testing.T) {
 // flag) and proves we surface windows from multiple sessions in one
 // call — the symmetric contract to ListPanes("").
 func TestListWindows_AllSessions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	for _, name := range []string{"alpha", "beta"} {
 		if err := c.CreateSession(ctx, SessionSpec{Name: name, Command: "/bin/sh"}); err != nil {
@@ -128,10 +131,11 @@ func TestListWindows_AllSessions(t *testing.T) {
 // errs.ErrSessionNotFound — needed by the JSON-RPC layer to map this
 // to CodeSessionNotFound.
 func TestListWindows_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	// Anchor the tmux server with a real session so list-windows hits
 	// the "server is up but the named session does not exist" branch.
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {

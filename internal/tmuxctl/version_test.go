@@ -13,6 +13,7 @@ import (
 )
 
 func TestParseTmuxVersion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		in        string
@@ -36,6 +37,7 @@ func TestParseTmuxVersion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			v, err := parseTmuxVersion(tc.in)
 			if tc.wantErr {
 				if err == nil {
@@ -59,6 +61,7 @@ func TestParseTmuxVersion(t *testing.T) {
 }
 
 func TestTmuxVersionAtLeast(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		v    tmuxVersion
@@ -75,6 +78,7 @@ func TestTmuxVersionAtLeast(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tc.v.atLeast(minTmuxMajor, minTmuxMinor); got != tc.ok {
 				t.Fatalf("%+v.atLeast(3,0) = %v, want %v", tc.v, got, tc.ok)
 			}
@@ -99,6 +103,7 @@ func fakeTmux(t *testing.T, version string) string {
 }
 
 func TestCheckTmuxVersion_TooOld(t *testing.T) {
+	t.Parallel()
 	bin := fakeTmux(t, "tmux 2.6")
 	err := checkTmuxVersion(context.Background(), bin)
 	if err == nil {
@@ -123,8 +128,10 @@ func TestCheckTmuxVersion_TooOld(t *testing.T) {
 }
 
 func TestCheckTmuxVersion_OK(t *testing.T) {
+	t.Parallel()
 	for _, ver := range []string{"tmux 3.0", "tmux 3.4a", "tmux next-3.5", "tmux master"} {
 		t.Run(ver, func(t *testing.T) {
+			t.Parallel()
 			bin := fakeTmux(t, ver)
 			if err := checkTmuxVersion(context.Background(), bin); err != nil {
 				t.Fatalf("checkTmuxVersion(%q) = %v", ver, err)
@@ -137,6 +144,7 @@ func TestCheckTmuxVersion_OK(t *testing.T) {
 // path: when tmux is available locally we just make sure the version
 // gate does not reject it.
 func TestNew_RealTmuxIfNewEnough(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c, err := New()
 	if err != nil {

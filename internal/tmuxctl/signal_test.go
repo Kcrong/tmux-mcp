@@ -20,10 +20,11 @@ import (
 // HasSession unreliable ("no server" vs "server exited unexpectedly"
 // depending on timing).
 func TestSendSignal_TerminatesSleepingProcess(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "anchor", Command: "/bin/sh", Width: 80, Height: 20,
@@ -62,10 +63,11 @@ func TestSendSignal_TerminatesSleepingProcess(t *testing.T) {
 // anything outside SignalNames() must be refused without any tmux
 // calls being attempted.
 func TestSendSignal_RejectsUnknownSignal(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "rs", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -84,10 +86,11 @@ func TestSendSignal_RejectsUnknownSignal(t *testing.T) {
 // typed errs.ErrSessionNotFound — needed by the JSON-RPC layer to map
 // this to CodeSessionNotFound.
 func TestSendSignal_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	// Anchor the tmux server with a real session so display-message
 	// hits the "server is up but the named session does not exist"
 	// branch rather than the "no server" branch.
@@ -106,10 +109,11 @@ func TestSendSignal_MissingSessionWrapsSentinel(t *testing.T) {
 // TestSendSignal_RejectsEmptySession guards the up-front check —
 // tmux would otherwise resolve "" to whatever it considers current.
 func TestSendSignal_RejectsEmptySession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.SendSignal(ctx, "", "TERM")
 	if err == nil {
 		t.Fatal("expected error for empty session")
