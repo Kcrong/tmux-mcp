@@ -3,6 +3,9 @@
 [![CI](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Kcrong/tmux-mcp/actions/workflows/ci.yml)
 [![security](https://github.com/Kcrong/tmux-mcp/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/Kcrong/tmux-mcp/actions/workflows/security.yml)
 [![release](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/Kcrong/tmux-mcp/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/Kcrong/tmux-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/Kcrong/tmux-mcp)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Kcrong/tmux-mcp.svg)](https://pkg.go.dev/github.com/Kcrong/tmux-mcp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Kcrong/tmux-mcp)](https://goreportcard.com/report/github.com/Kcrong/tmux-mcp)
 [![Latest Release](https://img.shields.io/github/v/release/Kcrong/tmux-mcp?display_name=tag&sort=semver)](https://github.com/Kcrong/tmux-mcp/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
