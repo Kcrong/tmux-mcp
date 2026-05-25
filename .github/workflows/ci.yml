@@ -208,11 +208,15 @@ jobs:
           go install ./cmd/tmux-mcp
           "$(go env GOPATH)/bin/tmux-mcp" -version
 
-  windows-build:
-    # Cross-compile smoke test. tmux does not run on Windows, but we ship
-    # Windows binaries in releases. Catches accidental Linux-only imports
-    # before they hit a release.
-    needs: [lint]
+  install-test-windows:
+    # Cross-compile smoke test for the Windows release artifacts. tmux
+    # does not run on Windows so we cannot exercise the binary itself,
+    # but we DO ship windows/amd64 and windows/arm64 builds — this job
+    # catches accidental Linux-only imports before a release surfaces
+    # them. Sits at the same tier as install-test-{linux,macos}: it
+    # only fires once both test-linux and test-macos are green, since
+    # a binary that can't pass the unit suite isn't worth packaging.
+    needs: [test-linux, test-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
