@@ -1667,6 +1667,62 @@ Park a pane on the clock and confirm with `display_message`:
 
 ---
 
+## `confirm_before`
+
+Stage a tmux command behind an interactive y/n prompt via
+`tmux confirm-before [-p prompt] [-t target-client] command`. tmux pops
+a confirmation prompt up in the matching client and only runs `command`
+if the user accepts — the controller surfaces this as a single
+fire-and-forget call so an agent can stage destructive ops without
+making the tmux UI silently auto-execute.
+
+The boundary is deliberately NOT idempotent on a headless server: with
+no client attached there is no terminal to display the prompt on, so
+the call surfaces `-32000` (`CodeSessionNotFound`) rather than a silent
+success. Returning a successful no-op there would let an agent believe
+a destructive command was queued behind a confirmation when in fact
+nobody ever saw the prompt — exactly the auto-execute behaviour the
+tool exists to prevent.
+
+### Input
+
+| Field     | Type   | Required | Default | Notes                                                                                          |
+| --------- | ------ | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `command` | string | yes      | —       | tmux command to run if the user accepts; len 1-4096                                            |
+| `prompt`  | string | no       | tmux's `Confirm 'CMD'? (y/n)` | y/n prompt text; len 0-128                                            |
+| `target`  | string | no       | caller's current client | tmux client target (typically a TTY path like `/dev/pts/0`); regex `^[A-Za-z0-9/_.\-]+$`, len 0-128 |
+
+### Output
+
+JSON block: `{"ack": true, "prompt": "<text>"}`. The `prompt` field
+echoes whatever the caller passed (empty when omitted) so an agent can
+log exactly which confirmation it queued.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/empty `command`, oversized field, or malformed `target` (regex/length policy). |
+| `-32000` | No client attached (headless server) or named `target` does not resolve (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason. |
+
+### Example
+
+```jsonc
+{ "command": "kill-session -t demo", "prompt": "really kill demo?" }
+```
+
+Stage a destructive kill behind an explicit confirmation, leaving the
+final say with the human at the terminal. With a specific
+`target` the prompt is routed at one attached client rather than
+"whoever tmux thinks is current":
+
+```jsonc
+{ "command": "kill-session -t demo", "target": "/dev/pts/0" }
+```
+
+---
+
 ## `pane_swap`
 
 Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux
