@@ -15,10 +15,12 @@ on:
 
 permissions:
   contents: read
+  security-events: write
+  pull-requests: read
 
 # PR runs cancel on new push to save compute. Main / merge_group preserve
-# every run so the workflow_run chain (security → stress → merge-gate)
-# always has a definitive upstream conclusion to react to.
+# every run so merge-gate always has a definitive upstream conclusion to
+# react to.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -28,9 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -68,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install tmux
         run: |
@@ -81,7 +83,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends tmux
           tmux -V
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -115,7 +117,7 @@ jobs:
       # no extra recovery story.
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
         with:
           files: coverage-linux.out
           flags: linux
@@ -133,7 +135,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install tmux
         run: |
@@ -145,7 +147,7 @@ jobs:
           brew install tmux
           tmux -V
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -163,7 +165,7 @@ jobs:
       # actions/upload-artifact.
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
         with:
           files: coverage-macos.out
           flags: macos
@@ -179,8 +181,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -196,8 +198,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -220,9 +222,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -239,3 +241,39 @@ jobs:
           GOOS: windows
           GOARCH: arm64
         run: go build -trimpath -o tmux-mcp-arm64.exe ./cmd/tmux-mcp
+
+  # security and stress are reusable workflows invoked here so they:
+  #   * appear in the PR Checks UI under this CI run
+  #   * skip automatically when an upstream job fails (needs: gating)
+  #   * run against the PR's actual SHA (workflow_run loaded the YAML
+  #     from the default branch, which made same-PR self-validation
+  #     impossible)
+  #
+  # Pipeline ordering:
+  #   lint → test-{linux,macos} → install-test-{linux,macos,windows}
+  #     → security → stress
+  # security only fires once the install-test tier is green — a binary
+  # that can't even `go install` shouldn't burn CodeQL minutes. stress
+  # waits for security so a vulnerability finding fails the PR before
+  # we run the 30-minute benchmark/race harness.
+  security:
+    needs: [install-test-linux, install-test-macos, install-test-windows]
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  # bypass_benchmark_regression: PRs labeled `expected-regression` get a
+  # benchstat regression turned into a warning instead of a job failure.
+  # The `expected-regression` label evaluates here (not in merge-gate) so
+  # the workflow's own conclusion already reflects the bypass — no
+  # downstream gate needs to interpret labels.
+  stress:
+    needs: [security]
+    uses: ./.github/workflows/stress.yml
+    with:
+      base_ref: ${{ github.base_ref }}
+      event: ${{ github.event_name }}
+      bypass_benchmark_regression: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'expected-regression') }}
+    permissions:
+      contents: read

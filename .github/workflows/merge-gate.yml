@@ -1,21 +1,21 @@
 name: merge-gate
 
-# Single required check that aggregates every gate workflow's conclusion onto
-# the head SHA. Branch protection only needs to require `merge-gate` —
+# Single required check that aggregates every gate workflow's conclusion
+# onto the head SHA. Branch protection only needs to require `merge-gate` —
 # adding/removing upstream workflows then doesn't churn protection rules.
 #
 # Trigger fires on every upstream completion. Each invocation re-evaluates
 # the full set, so the final upstream completion latches the gate.
 #
-# The `expected-regression` PR label bypasses ONLY the `stress` workflow
-# conclusion. Lint / test / security failures still block.
+# Every required workflow now runs with a direct pull_request / push
+# trigger (security and stress are invoked as reusable workflows from
+# CI, so their runs are still keyed to the PR head SHA via the parent
+# CI run). That means a single head_sha lookup finds them all.
 
 on:
   workflow_run:
     workflows:
       - CI
-      - security
-      - stress
       - pr-title
       - actionlint
     types: [completed]
@@ -38,16 +38,14 @@ jobs:
       github.event.workflow_run.event == 'push' ||
       github.event.workflow_run.event == 'merge_group'
     steps:
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const required = ['CI', 'security', 'stress', 'pr-title', 'actionlint'];
+            const required = ['CI', 'pr-title', 'actionlint'];
             const sha = context.payload.workflow_run.head_sha;
-            const labelBypass = 'expected-regression';
-            const bypassable = new Set(['stress']);
 
-            // Pull the latest run per workflow for this SHA. The list endpoint
-            // returns newest first, so the first match per workflow_name wins.
+            // Pull every run for this SHA. The list endpoint returns
+            // newest first, so the first match per workflow_name wins.
             const runs = await github.paginate(
               github.rest.actions.listWorkflowRunsForRepo,
               {
@@ -57,33 +55,20 @@ jobs:
                 per_page: 100,
               },
             );
-
             const latest = new Map();
             for (const r of runs) {
               if (!latest.has(r.name)) latest.set(r.name, r);
             }
 
-            // Determine if this is a PR; if so check labels for bypass.
-            let bypassed = false;
-            const prs = context.payload.workflow_run.pull_requests || [];
-            if (prs.length > 0) {
-              const pr = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prs[0].number,
-              });
-              bypassed = pr.data.labels.some(l => l.name === labelBypass);
-            }
-
             const failing = [];
-            const bypassedFails = [];
             let pending = false;
 
             for (const name of required) {
               const r = latest.get(name);
               if (!r) {
-                // Workflow never ran for this SHA. Could be paths-ignore'd —
-                // treat as pass. (PR-level filters are intentional skips.)
+                // Workflow never ran for this SHA. Could be paths-ignore'd
+                // (md-only PR for CI; non-PR push for pr-title) — treat as
+                // pass; the path/event filter is an intentional skip.
                 continue;
               }
               if (r.status !== 'completed') {
@@ -93,10 +78,6 @@ jobs:
               const conclusion = r.conclusion;
               // success / skipped / neutral all count as pass.
               if (['success', 'skipped', 'neutral'].includes(conclusion)) continue;
-              if (bypassed && bypassable.has(name)) {
-                bypassedFails.push(`${name} (bypassed via '${labelBypass}' label)`);
-                continue;
-              }
               failing.push(`${name}: ${conclusion}`);
             }
 
@@ -109,9 +90,7 @@ jobs:
               description = `Failing: ${failing.join(', ')}`.slice(0, 140);
             } else {
               state = 'success';
-              description = bypassedFails.length > 0
-                ? `OK (${bypassedFails.join(', ')})`.slice(0, 140)
-                : 'All required workflows passed';
+              description = 'All required workflows passed';
             }
 
             await github.rest.repos.createCommitStatus({
@@ -125,4 +104,3 @@ jobs:
             });
 
             core.info(`merge-gate → ${state}: ${description}`);
-            if (bypassedFails.length > 0) core.info(`bypassed: ${bypassedFails.join(', ')}`);
