@@ -589,6 +589,94 @@ discover a target before reading its format-only fields.
 
 ---
 
+## `find_window`
+
+Search for windows whose name, pane title, or visible pane content
+matches a query. Functionally `tmux find-window` for a headless server
+— tmux's own `find-window` requires a client attached, so the boundary
+implements the same matching semantics on top of `tmux list-windows -F
+… -f <filter>` and returns the matching rows directly. Useful when an
+agent is juggling many sessions and wants to locate "the build window"
+or "the pane currently showing an error" without enumerating every
+session/window pair client-side.
+
+By default the search runs across all three scopes (the same `-CNT`
+default tmux uses); set any of the `*_only` flags to restrict, or
+combine them to compose a union (matches in any selected scope are
+returned). `regex` flips matching from fnmatch-style globbing to a
+regular expression (`-r`). `target`, when supplied, scopes the search
+to a single tmux session (`-t`); otherwise every window on the server
+is considered (`-a`).
+
+### Input
+
+| Field          | Type    | Required | Default | Notes                                                                         |
+| -------------- | ------- | -------- | ------- | ----------------------------------------------------------------------------- |
+| `match`        | string  | yes      | —       | non-empty pattern. fnmatch substring by default; regex when `regex=true`.     |
+| `regex`        | boolean | no       | `false` | treat `match` as a regular expression (`-r`).                                 |
+| `name_only`    | boolean | no       | `false` | restrict to the window name (`-N`). Combine with the other `*_only` flags.   |
+| `title_only`   | boolean | no       | `false` | restrict to the window's pane title (`-T`).                                  |
+| `content_only` | boolean | no       | `false` | restrict to visible pane content (`-C`).                                     |
+| `target`       | string  | no       | —       | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to search every session. |
+
+The schema sets `additionalProperties: false`, so any field other than
+the documented ones is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block with a flat object keyed by `matches`:
+
+```jsonc
+{
+  "matches": [
+    { "session": "demo",  "window_index": 1, "window_name": "build" },
+    { "session": "build", "window_index": 0, "window_name": "build" }
+  ]
+}
+```
+
+| Field          | Type    | Notes                                                                              |
+| -------------- | ------- | ---------------------------------------------------------------------------------- |
+| `session`      | string  | Session the matching window lives in. Combine with `window_index` to form a `session:index` target. |
+| `window_index` | integer | Window index inside its session (0-based).                                         |
+| `window_name`  | string  | Whatever tmux assigned (caller-supplied `-n`, or the auto label).                  |
+
+A query that matches zero windows returns `{"matches": []}` (an empty
+array, not `null`) so callers branching on `matches.length === 0` do
+not have to also handle the null shape.
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `match` missing/empty, `target` malformed, or an unknown field sent. |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`).  |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// substring across name/title/content (default scope, every session)
+{ "match": "error" }
+
+// regex anchored to the window name, scoped to one session
+{ "match": "^build_", "regex": true, "name_only": true, "target": "demo" }
+
+// content-only search for a phrase visible on a pane
+{ "match": "panic:", "content_only": true }
+```
+
+A typical chain looks like: locate the matching window, focus it, then
+drive it.
+
+```jsonc
+{ "name": "find_window",   "arguments": { "match": "build", "name_only": true, "target": "demo" } }
+{ "name": "window_select", "arguments": { "session": "demo", "target": "1" } }
+{ "name": "capture",       "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `send_keys`
 
 Type into a session. Each entry of `keys` is interpreted by tmux: bare
