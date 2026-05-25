@@ -15,10 +15,11 @@ import (
 // accepts the documented arguments, and the response envelope carries
 // the `{"killed": true}` ack.
 func TestHandle_PaneKill_RemovesSplitPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -81,6 +82,7 @@ func TestHandle_PaneKill_RemovesSplitPane(t *testing.T) {
 // rather than falling through to tmux with an empty -t value (which
 // tmux would resolve to whatever pane it considers current).
 func TestHandle_PaneKill_RejectsMissingTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -100,6 +102,7 @@ func TestHandle_PaneKill_RejectsMissingTarget(t *testing.T) {
 // `target_pane` so a stray quote/whitespace can't slip through to the
 // tmux argv.
 func TestHandle_PaneKill_RejectsBadTargetPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -121,6 +124,7 @@ func TestHandle_PaneKill_RejectsBadTargetPane(t *testing.T) {
 // for the optional `session` field — when supplied, it must satisfy
 // the same rules every other tool enforces.
 func TestHandle_PaneKill_RejectsBadSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -143,10 +147,11 @@ func TestHandle_PaneKill_RejectsBadSession(t *testing.T) {
 // that pane_kill against a target on an unknown session surfaces
 // CodeSessionNotFound (-32000), mirroring pane_select / pane_split.
 func TestHandle_PaneKill_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, pane missing"
 	// rather than "no server" (different stderr shape).
@@ -178,6 +183,7 @@ func TestHandle_PaneKill_MissingSessionMapsCode(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via the
 // schema endpoint.
 func TestHandle_ToolsList_IncludesPaneKill(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

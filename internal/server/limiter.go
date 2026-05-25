@@ -31,6 +31,12 @@ type callLimiter struct {
 	// len(sem) is the current in-flight count, which doubles as the
 	// queue-depth metric we surface in the slow-acquire warning.
 	sem chan struct{}
+	// logger is the slog handle the slow-acquire warning is emitted
+	// against. nil falls back to slog.Default(); Serve injects the
+	// operator's logger via newCallLimiter so the warn line lands on
+	// the same sink as the rest of the server's structured logs
+	// without going through process-global slog.SetDefault.
+	logger *slog.Logger
 }
 
 // newCallLimiter returns a callLimiter capped at limit concurrent
@@ -38,11 +44,23 @@ type callLimiter struct {
 // a nil callLimiter is a no-op, which preserves the pre-flag behaviour
 // (unbounded goroutines) without forcing every call site to branch on
 // the flag value.
-func newCallLimiter(limit int) *callLimiter {
+//
+// lg is the slog handle the slow-acquire warning is logged against.
+// Pass nil to fall back to slog.Default() — useful in tests that want
+// to ignore the warn line entirely without setting up a sink.
+func newCallLimiter(limit int, lg *slog.Logger) *callLimiter {
 	if limit <= 0 {
 		return nil
 	}
-	return &callLimiter{sem: make(chan struct{}, limit)}
+	return &callLimiter{sem: make(chan struct{}, limit), logger: lg}
+}
+
+// log returns the configured logger or slog.Default() as fallback.
+func (l *callLimiter) log() *slog.Logger {
+	if l != nil && l.logger != nil {
+		return l.logger
+	}
+	return slog.Default()
 }
 
 // Acquire blocks until a slot is available or ctx is cancelled.
@@ -104,7 +122,7 @@ func (l *callLimiter) Acquire(ctx context.Context, method string) error {
 			// is the most useful single number for "is the server
 			// saturated?". Capacity is included so operators don't
 			// have to cross-reference the flag value.
-			slog.Warn("rpc concurrency wait",
+			l.log().Warn("rpc concurrency wait",
 				"method", method,
 				"waited_ms", slowAcquireThreshold.Milliseconds(),
 				"in_flight", len(l.sem),

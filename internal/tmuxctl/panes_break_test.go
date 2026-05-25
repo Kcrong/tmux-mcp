@@ -16,10 +16,11 @@ import (
 // window on the server, and the original window must drop back to a
 // single pane.
 func TestBreakPane_DetachesIntoNewWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "bp", Command: "/bin/sh", Width: 80, Height: 24,
@@ -97,10 +98,11 @@ func TestBreakPane_DetachesIntoNewWindow(t *testing.T) {
 // JSON-RPC layer can map "session/pane not found" to CodeSessionNotFound
 // — the same contract every other tmuxctl pane method upholds.
 func TestBreakPane_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor with a real session so we exercise "server up, session
 	// missing" rather than "no server" (different stderr shape).
@@ -120,10 +122,11 @@ func TestBreakPane_MissingSessionWrapsSentinel(t *testing.T) {
 // TestBreakPane_RejectsEmptyTarget locks the up-front guard. tmux would
 // otherwise resolve "" to whatever pane it considers current.
 func TestBreakPane_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	_, err := c.BreakPane(ctx, "")
 	if err == nil {
 		t.Fatal("expected error for empty target")

@@ -51,6 +51,12 @@ type Metrics struct {
 	// gates and load balancers can wait on that signal instead of
 	// declaring the pod ready the moment the listener binds.
 	healthy atomic.Bool
+	// logger is the slog handle poller / exporter diagnostics use.
+	// nil falls back to slog.Default(); Serve injects the operator's
+	// logger via SetLogger so failures land on the same sink as the
+	// rest of the server's structured logs without going through
+	// process-global slog.SetDefault.
+	logger *slog.Logger
 }
 
 // NewMetrics constructs a [*Metrics] and registers its collectors against
@@ -93,6 +99,27 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	}
 	reg.MustRegister(m.callTotal, m.callDuration, m.sessionsActive)
 	return m
+}
+
+// SetLogger injects the slog handle the poller / exporter use for
+// diagnostic logs. Safe on nil. Pass nil to revert to slog.Default().
+//
+// Call before [Metrics.RunSessionsPoller] starts the goroutine — Serve()
+// arranges this so the write happens-before any pollSessionsOnce reads
+// logger via log(), keeping the read on the hot path lock-free.
+func (m *Metrics) SetLogger(lg *slog.Logger) {
+	if m == nil {
+		return
+	}
+	m.logger = lg
+}
+
+// log returns the configured logger or slog.Default() as fallback.
+func (m *Metrics) log() *slog.Logger {
+	if m != nil && m.logger != nil {
+		return m.logger
+	}
+	return slog.Default()
 }
 
 // observeToolCall records one tools/call observation: it bumps the
@@ -205,7 +232,7 @@ func (m *Metrics) pollSessionsOnce(ctx context.Context, ctl SessionLister) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		slog.Warn("metrics: ListSessions failed", "err", err)
+		m.log().Warn("metrics: ListSessions failed", "err", err)
 		return
 	}
 	m.sessionsActive.Set(float64(len(names)))
@@ -288,7 +315,7 @@ func NewMetricsServer(addr string, gatherer prometheus.Gatherer, m *Metrics, ena
 		// errServerClosed path is the clean teardown signal and is
 		// not worth logging.
 		if serr := srv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
-			slog.Error("metrics server failed", "err", serr)
+			m.log().Error("metrics server failed", "err", serr)
 		}
 	}()
 	return &MetricsServer{addr: ln.Addr().String(), server: srv}, nil

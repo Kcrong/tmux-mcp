@@ -14,10 +14,11 @@ import (
 // CreateSession the new session has at least one pane and that the
 // fields parse cleanly into the typed Pane struct.
 func TestListPanes_ReturnsActivePane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{
 		Name: "lp", Command: "/bin/sh", Width: 80, Height: 20,
@@ -57,10 +58,11 @@ func TestListPanes_ReturnsActivePane(t *testing.T) {
 // TestListPanes_AllSessions exercises the no-session branch (server-wide
 // listing via -a) and proves we surface panes from multiple sessions.
 func TestListPanes_AllSessions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	for _, name := range []string{"alpha", "beta"} {
 		if err := c.CreateSession(ctx, SessionSpec{Name: name, Command: "/bin/sh"}); err != nil {
@@ -89,10 +91,11 @@ func TestListPanes_AllSessions(t *testing.T) {
 // errs.ErrSessionNotFound — needed by the JSON-RPC layer to map this
 // to CodeSessionNotFound.
 func TestListPanes_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	// Anchor the tmux server with a real session so list-panes hits the
 	// "server is up but the named session does not exist" branch.
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
@@ -110,10 +113,11 @@ func TestListPanes_MissingSessionWrapsSentinel(t *testing.T) {
 // TestSelectPane_Succeeds checks that the happy path drives tmux's
 // select-pane without error against a target tmux can resolve.
 func TestSelectPane_Succeeds(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "sp", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -127,10 +131,11 @@ func TestSelectPane_Succeeds(t *testing.T) {
 // surfaces the typed sentinel for an unknown session, mirroring the
 // contract enforced for KillSession / ListPanes.
 func TestSelectPane_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -147,10 +152,11 @@ func TestSelectPane_MissingSessionWrapsSentinel(t *testing.T) {
 // against an empty target. tmux would otherwise act on whatever pane it
 // considers current, which is rarely what the caller intended.
 func TestSelectPane_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	err := c.SelectPane(ctx, "")
 	if err == nil {
 		t.Fatal("expected error for empty target")

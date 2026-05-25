@@ -11,10 +11,11 @@ import (
 // history for one of them, then asserts kill_all_sessions wipes the
 // session list and forgets snapshot history for every killed name.
 func TestHandle_KillAllSessions(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -87,10 +88,11 @@ func TestHandle_KillAllSessions(t *testing.T) {
 // branch end-to-end: the handler must return a valid response (count=0,
 // empty killed slice) rather than erroring out.
 func TestHandle_KillAllSessions_EmptyController(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	params := mustJSON(t, map[string]any{
 		"name":      "kill_all_sessions",

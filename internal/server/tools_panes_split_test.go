@@ -16,10 +16,11 @@ import (
 // up, the schema accepts the documented arguments, and the response
 // envelope carries an `id`/`index` pair.
 func TestHandle_PaneSplit_VerticalCreatesSecondPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -71,10 +72,11 @@ func TestHandle_PaneSplit_VerticalCreatesSecondPane(t *testing.T) {
 // and dispatcher accept the second valid direction, and that the new
 // pane shows up in list_panes the same way as the vertical case.
 func TestHandle_PaneSplit_HorizontalAcceptedOnly(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	call := func(name string, args any) any {
 		t.Helper()
@@ -116,6 +118,7 @@ func TestHandle_PaneSplit_HorizontalAcceptedOnly(t *testing.T) {
 // a direction outside the {horizontal, vertical} whitelist surfaces as
 // CodeInvalidParams (-32602) — a stable code the client can branch on.
 func TestHandle_PaneSplit_RejectsBadDirection(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -138,6 +141,7 @@ func TestHandle_PaneSplit_RejectsBadDirection(t *testing.T) {
 // field path: omitting `direction` must come back as CodeInvalidParams
 // rather than falling through to tmux with an empty axis flag.
 func TestHandle_PaneSplit_RejectsMissingDirection(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -157,6 +161,7 @@ func TestHandle_PaneSplit_RejectsMissingDirection(t *testing.T) {
 // policy for `session` that every other tool enforces — the
 // dispatcher must not fall through to tmux on a malformed reference.
 func TestHandle_PaneSplit_RejectsBadSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -179,6 +184,7 @@ func TestHandle_PaneSplit_RejectsBadSession(t *testing.T) {
 // the optional `target_pane` argument so a stray quote/whitespace
 // can't slip through to the tmux argv.
 func TestHandle_PaneSplit_RejectsBadTargetPane(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -203,6 +209,7 @@ func TestHandle_PaneSplit_RejectsBadTargetPane(t *testing.T) {
 // but we bound the JSON-RPC frame size so a hostile caller can't push
 // megabyte-sized commands through the dispatcher.
 func TestHandle_PaneSplit_RejectsOversizedCommand(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	big := strings.Repeat("a", maxPaneCommandLen+1)
@@ -227,10 +234,11 @@ func TestHandle_PaneSplit_RejectsOversizedCommand(t *testing.T) {
 // that pane_split against an unknown session surfaces
 // CodeSessionNotFound (-32000), mirroring pane_select / window_create.
 func TestHandle_PaneSplit_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor so we hit "server up, session missing".
 	createParams := mustJSON(t, map[string]any{
@@ -262,6 +270,7 @@ func TestHandle_PaneSplit_MissingSessionMapsCode(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via the
 // schema endpoint.
 func TestHandle_ToolsList_IncludesPaneSplit(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

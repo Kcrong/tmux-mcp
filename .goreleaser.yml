@@ -68,16 +68,18 @@ checksum:
 
 # Generate one SPDX-JSON SBOM per archive using syft.
 # Produces files like tmux-mcp_Linux_x86_64.tar.gz.sbom.json next to each archive.
+#
+# `cmd`/`args` are intentionally omitted: GoReleaser's defaults already invoke
+# syft as `syft $artifact --output spdx-json=$document`, which is exactly what
+# we want. An earlier override hardcoded `{{ .Document }}` (a Go-template
+# placeholder) inside `args:`, but `args:` only honors shell-style `$document`
+# substitution — Go templates have no `.Document` key in this context, which
+# made the SBOM step fail with `map has no entry for key "Document"`.
 sboms:
   - id: archive
     artifacts: archive
     documents:
       - '{{ .ArtifactName }}.sbom.json'
-    cmd: syft
-    args:
-      - '$artifact'
-      - '--output'
-      - 'spdx-json={{ .Document }}'
 
 # Keyless cosign signatures using the GitHub Actions OIDC identity.
 # Signs every release archive, the checksums.txt file, and each SBOM.

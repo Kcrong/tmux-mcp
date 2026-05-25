@@ -28,10 +28,11 @@ func callTool(t *testing.T, tools *Tools, ctx context.Context, name string, args
 // caller-supplied name. The response must echo back the new label and
 // session so an agent can chain follow-ups.
 func TestHandle_WindowCreate_NamedAndSelected(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wc", "command": "/bin/sh", "width": 80, "height": 20,
@@ -55,10 +56,11 @@ func TestHandle_WindowCreate_NamedAndSelected(t *testing.T) {
 // response must still carry a usable identifier (the numeric index)
 // so a follow-up window_kill has something to target.
 func TestHandle_WindowCreate_UnnamedFallsBackToIndex(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wcu", "command": "/bin/sh",
@@ -79,10 +81,11 @@ func TestHandle_WindowCreate_UnnamedFallsBackToIndex(t *testing.T) {
 // contract: window_create against an unknown session must return
 // CodeSessionNotFound, mirroring session_kill / pane_select.
 func TestHandle_WindowCreate_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor so the dispatcher hits "server up, session missing".
 	callTool(t, tools, ctx, "session_create", map[string]any{
@@ -108,6 +111,7 @@ func TestHandle_WindowCreate_MissingSessionMapsCode(t *testing.T) {
 // tmux's own quoting (spaces, colons, dots) must be refused with
 // CodeInvalidParams up front.
 func TestHandle_WindowCreate_RejectsBadName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -131,6 +135,7 @@ func TestHandle_WindowCreate_RejectsBadName(t *testing.T) {
 // belt because the dispatcher should never fall through to tmux on a
 // malformed reference.
 func TestHandle_WindowCreate_RejectsBadSession(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -150,10 +155,11 @@ func TestHandle_WindowCreate_RejectsBadSession(t *testing.T) {
 // two windows in a session, killing the second by name yields the
 // expected text block and leaves the session alive.
 func TestHandle_WindowKill_RemovesNonLastWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wk", "command": "/bin/sh",
@@ -186,10 +192,11 @@ func TestHandle_WindowKill_RemovesNonLastWindow(t *testing.T) {
 // JSON-RPC code must be CodeInvalidParams (-32602) and the session
 // must remain alive.
 func TestHandle_WindowKill_RejectsLastWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "wkl", "command": "/bin/sh",
@@ -227,10 +234,11 @@ func TestHandle_WindowKill_RejectsLastWindow(t *testing.T) {
 // CodeSessionNotFound contract for the kill path, mirroring the
 // CreateWindow test above.
 func TestHandle_WindowKill_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "anchor", "command": "/bin/sh",
@@ -257,6 +265,7 @@ func TestHandle_WindowKill_MissingSessionMapsCode(t *testing.T) {
 // regex: a value that would otherwise become a tmux target must be
 // refused with CodeInvalidParams up front.
 func TestHandle_WindowKill_RejectsBadWindowName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -277,6 +286,7 @@ func TestHandle_WindowKill_RejectsBadWindowName(t *testing.T) {
 // target string "demo:" and let tmux act on whatever it considers
 // current.
 func TestHandle_WindowKill_RejectsEmptyWindow(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -296,6 +306,7 @@ func TestHandle_WindowKill_RejectsEmptyWindow(t *testing.T) {
 // advertises the new tools so MCP clients can discover them via the
 // schema endpoint.
 func TestHandle_ToolsList_IncludesWindowTools(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

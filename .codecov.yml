@@ -12,3 +12,17 @@ comment:
   layout: "header, diff, files, footer"
   behavior: default
   require_changes: false
+# Per-OS flags. Each test job (test-linux, test-macos in ci.yml) uploads its
+# own profile with the matching `flags:` value; Codecov merges them into a
+# single project-level report and keeps per-flag slices for inspection.
+# https://docs.codecov.com/docs/flags
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: linux
+      paths:
+        - "**"
+    - name: macos
+      paths:
+        - "**"

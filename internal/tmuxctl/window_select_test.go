@@ -14,10 +14,11 @@ import (
 // windows in a session, selecting the second one moves tmux's active
 // flag — which is what an agent ultimately observes via list_windows.
 func TestSelectWindow_MovesActiveFlag(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "sw", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -65,10 +66,11 @@ func TestSelectWindow_MovesActiveFlag(t *testing.T) {
 // form: window indexes are valid tmux targets, and the controller
 // must hand them through unchanged.
 func TestSelectWindow_AcceptsNumericIndex(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "swi", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -100,10 +102,11 @@ func TestSelectWindow_AcceptsNumericIndex(t *testing.T) {
 // errs.ErrSessionNotFound so the JSON-RPC layer maps it to
 // CodeSessionNotFound — same contract as CreateWindow / KillWindow.
 func TestSelectWindow_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -119,10 +122,11 @@ func TestSelectWindow_MissingSessionWrapsSentinel(t *testing.T) {
 // TestSelectWindow_RejectsEmptyArgs covers both up-front nil-checks so
 // a partially-targeted `tmux select-window` is never issued.
 func TestSelectWindow_RejectsEmptyArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.SelectWindow(ctx, "", "0"); err == nil ||
 		!strings.Contains(err.Error(), "session required") {
 		t.Fatalf("empty session: got %v, want \"session required\"", err)
@@ -136,10 +140,11 @@ func TestSelectWindow_RejectsEmptyArgs(t *testing.T) {
 // TestRenameWindow_UpdatesName drives the happy path: after a rename,
 // list_windows surfaces the new label and the old one is gone.
 func TestRenameWindow_UpdatesName(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "rw", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -179,10 +184,11 @@ func TestRenameWindow_UpdatesName(t *testing.T) {
 // works the same as a named target — tmux resolves both forms
 // uniformly and the controller must forward whichever the agent passed.
 func TestRenameWindow_AcceptsNumericIndex(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "rwi", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -204,10 +210,11 @@ func TestRenameWindow_AcceptsNumericIndex(t *testing.T) {
 // flow so the JSON-RPC layer can map the failure to
 // CodeSessionNotFound, matching every other window method.
 func TestRenameWindow_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateSession(ctx, SessionSpec{Name: "anchor", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -223,10 +230,11 @@ func TestRenameWindow_MissingSessionWrapsSentinel(t *testing.T) {
 // TestRenameWindow_RejectsEmptyArgs guards every required parameter
 // so a malformed `tmux rename-window` is never issued.
 func TestRenameWindow_RejectsEmptyArgs(t *testing.T) {
+	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.RenameWindow(ctx, "", "0", "x"); err == nil ||
 		!strings.Contains(err.Error(), "session required") {
 		t.Fatalf("empty session: got %v, want \"session required\"", err)
