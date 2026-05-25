@@ -18,17 +18,32 @@ jobs:
   # files (or the workflow itself) changed. Docs-only PRs short-circuit the
   # Go pipeline by leaving the conditional jobs as `skipped`, which still
   # satisfies any required-status-check rule on those job names.
+  #
+  # Fail-open semantics: if the filter step fails for any reason (transient
+  # GitHub API rate limit, missing base ref, etc.), the fallback step sets
+  # `outputs.go=true` so downstream jobs run unconditionally. We never want
+  # a broken filter to silently disable CI — skipped jobs satisfy required
+  # checks, so a false negative here would let a PR merge with zero Go
+  # validation. False positives (CI runs on a docs-only PR) are cheap.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      go: ${{ steps.filter.outputs.go }}
-      workflows: ${{ steps.filter.outputs.workflows }}
+      go: ${{ steps.filter.outputs.go || steps.fallback.outputs.go }}
+      workflows: ${{ steps.filter.outputs.workflows || steps.fallback.outputs.workflows }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 2  # paths-filter needs at least the merge base locally
       - id: filter
+        continue-on-error: true
         uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590  # v3.0.3
         with:
+          # Pin the base ref so paths-filter doesn't need to discover the
+          # merge base via the GitHub API (which can rate-limit). For PRs
+          # use the PR base SHA; for push events fall back to github.event.before;
+          # for merge_group fall back to github.base_ref.
+          base: ${{ github.event.pull_request.base.sha || github.event.before || github.base_ref }}
           filters: |
             go:
               - '**/*.go'
@@ -39,6 +54,17 @@ jobs:
               - 'Makefile'
             workflows:
               - '.github/workflows/**'
+      - id: fallback
+        # If the filter step failed (rate limit, missing base ref, etc.) or
+        # was skipped/cancelled, default to "all jobs run" so we never silently
+        # skip CI. Use `outcome != 'success'` rather than `failure()` so this
+        # also catches skipped/cancelled outcomes.
+        if: steps.filter.outcome != 'success'
+        run: |
+          {
+            echo "go=true"
+            echo "workflows=true"
+          } >> "$GITHUB_OUTPUT"
 
   lint:
     needs: changes

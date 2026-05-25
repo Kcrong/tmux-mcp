@@ -21,23 +21,40 @@ concurrency:
 jobs:
   # `changes` gate: docs-only PRs skip the vuln scan, scheduled runs
   # always proceed (path filter has no base to compare against on cron).
+  #
+  # Fail-open semantics: if the filter step fails for any reason (rate
+  # limit, missing base ref, etc.), the fallback step sets `outputs.go=true`
+  # so the govulncheck job still runs. A broken filter must never silently
+  # disable vulnerability scanning.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      go: ${{ steps.filter.outputs.go }}
+      go: ${{ steps.filter.outputs.go || steps.fallback.outputs.go }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 2  # paths-filter needs at least the merge base locally
       - id: filter
         if: github.event_name != 'schedule'
+        continue-on-error: true
         uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590  # v3.0.3
         with:
+          # Pin the base ref so paths-filter doesn't need to discover the
+          # merge base via the GitHub API (which can rate-limit).
+          base: ${{ github.event.pull_request.base.sha || github.event.before || github.base_ref }}
           filters: |
             go:
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/govulncheck.yml'
+      - id: fallback
+        # Fail open: if the filter didn't succeed (failed, skipped, or
+        # cancelled), set go=true so govulncheck runs. Schedule events also
+        # fall through here because the filter step is gated off.
+        if: steps.filter.outcome != 'success'
+        run: echo "go=true" >> "$GITHUB_OUTPUT"
 
   govulncheck:
     needs: changes
