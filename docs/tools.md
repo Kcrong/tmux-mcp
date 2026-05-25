@@ -3415,6 +3415,133 @@ verify the live value:
 
 ---
 
+## `show_environment`
+
+Inspect the environment future panes will inherit, via
+`tmux show-environment`. Read-only counterpart of
+[`set_environment`](#set_environment): use `set_environment` to
+mutate the table, `show_environment` to read it back. Works against
+either the per-session table (the default) or the server-wide global
+table. Pass `name` to narrow the response to a single variable, or
+omit it to dump the full scope.
+
+Scopes mirror tmux's own flag set:
+
+- `session` (default) — read the named target session's environment
+  table (`tmux show-environment -t TARGET`). `target` is required.
+  Future panes spawned inside that session inherit the entries
+  reported here; existing panes keep whatever environment they
+  already have.
+- `global` — read the server-wide table
+  (`tmux show-environment -g`). New sessions inherit these entries on
+  creation; `target` is ignored.
+
+tmux marks variables that have been *explicitly removed* in a scope
+(typically because the session has hidden an inherited global) with a
+leading dash on the `show-environment` line (e.g. `-FOO`). The tool
+surfaces these as `present=false` so a caller can tell "tmux has a
+record that this variable is unset" apart from "tmux has no record
+of this variable at all" — the latter, queried via the single-`name`
+form, also comes back with `present=false` so an agent's "is FOO
+set?" check is always a single read.
+
+### Input
+
+| Field    | Type   | Required                  | Default     | Notes                                                                                |
+| -------- | ------ | ------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| `name`   | string | no                        | —           | Variable name to narrow the response to a single entry. Len 1-128, regex `^[A-Za-z_][A-Za-z0-9_]*$`. |
+| `scope`  | string | no                        | `"session"` | One of `session`, `global`.                                                          |
+| `target` | string | yes when `scope=session`  | —           | Target session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Ignored for `scope=global`.   |
+
+`additionalProperties: false` — typo'd field names are rejected at
+the boundary with `-32602`.
+
+### Output
+
+Two response shapes, picked by whether `name` was supplied.
+
+**Whole-table form (`name` omitted):**
+
+```jsonc
+{
+  "vars": {
+    "EDITOR": "vim",
+    "MCP_FOO": "bar",
+    "EMPTY":   ""        // legal "set to empty" — distinct from removed
+  },
+  "removed": ["LEGACY_VAR"]   // entries tmux reported with a leading dash
+}
+```
+
+`vars` carries every entry tmux currently reports as present (the
+common case — an agent asking "what env will future panes see?"
+needs a single key lookup). `removed` is a flat list of names tmux
+emitted with a leading `-` (i.e. explicitly hidden on top of the
+inherited scope); the slice is empty when no removals exist.
+
+**Single-name form (`name` supplied):**
+
+```jsonc
+{
+  "name":    "MCP_FOO",
+  "value":   "bar",
+  "present": true
+}
+```
+
+`present=false` covers two related cases on purpose:
+
+- tmux has no record of the variable in this scope (the
+  never-set case). tmux's `unknown variable: NAME` stderr is
+  translated into `present=false`, not a wire error, so an agent's
+  "is FOO set?" probe is always a single call.
+- tmux has a record but it is the explicit `-NAME` removal form.
+
+If you need to distinguish those two — auditing whether someone
+actively cleared a global default vs. whether the variable simply
+was never assigned — fall back to the whole-table form and look for
+the name in the `removed` slice.
+
+### Errors
+
+| Code     | Cause                                                                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Unknown `scope`; `target` missing for `scope=session`; bad `name` (regex/length); unknown field on `arguments`. |
+| `-32000` | Referenced session does not exist on this server (`errs.ErrSessionNotFound`).                                  |
+| `-32603` | tmux refused the call for any other reason.                                                                    |
+
+### Examples
+
+```jsonc
+// Whole table for a single session.
+{ "scope": "session", "target": "demo" }
+
+// Default scope is "session" — same call, terser.
+{ "target": "demo" }
+
+// Single variable on a session.
+{ "name": "MCP_FOO", "target": "demo" }
+
+// Whole server-wide global table.
+{ "scope": "global" }
+
+// Single variable from the global table.
+{ "name": "EDITOR", "scope": "global" }
+```
+
+Common chain: write a value with `set_environment`, then confirm it
+landed where future panes will see it.
+
+```jsonc
+{ "name": "set_environment",  "arguments": { "name": "MCP_FOO", "value": "bar", "target": "demo" } }
+{ "name": "show_environment", "arguments": { "name": "MCP_FOO", "target": "demo" } }
+```
+
+This is read-only and on the `-read-only` allowlist alongside other
+inspection tools.
+
+---
+
 ## `swap_window`
 
 Exchange two windows of the same session in place via
