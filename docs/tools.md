@@ -1933,6 +1933,57 @@ and then promote it into a window of its own:
 
 ---
 
+## `last_pane`
+
+Switch the active pane of a window back to whichever pane was
+previously active via `tmux last-pane`. Useful for an LLM agent that
+just split a pane, drove the new one, and wants to flip back to the
+original without having to track the pane id explicitly. Pairs with
+`pane_split` (which surfaces the new pane's id) and `list_panes`
+(which exposes the current `active` flag) for layout-aware retargeting.
+
+### Input
+
+| Field           | Type    | Required | Notes                                                                                   |
+| --------------- | ------- | -------- | --------------------------------------------------------------------------------------- |
+| `target_window` | string  | no       | tmux window target like `mysession:0`; session 1-64 `[A-Za-z0-9_-]`, window name (1-64) or numeric index. Omit to use tmux's current window. |
+| `disable_input` | boolean | no       | When true, disable input on the newly-selected pane (`-d`). Mutually exclusive with `enable_input`. Default `false`. |
+| `enable_input`  | boolean | no       | When true, re-enable input on the newly-selected pane (`-e`). Mutually exclusive with `disable_input`. Default `false`. |
+| `zoom_toggle`   | boolean | no       | When true, also toggle the pane's zoom state (`-Z`). Default `false`.                   |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected with `-32602` before tmux is consulted. `disable_input` and
+`enable_input` are also mutually exclusive — setting both is rejected
+with `-32602` rather than letting tmux silently honour one of them.
+
+### Output
+
+Plain text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Malformed `target_window`, both `disable_input` and `enable_input` set, or an unknown field was sent. |
+| `-32000` | `target_window` does not resolve on this server (`errs.ErrSessionNotFound`), or the window has no "previously active" pane to flip back to. |
+| `-32603` | tmux refused the toggle for an unexpected reason.                  |
+
+### Example
+
+```jsonc
+{ "target_window": "demo:0", "zoom_toggle": true }
+```
+
+A typical chain after splitting and driving a side-car pane:
+
+```jsonc
+{ "name": "pane_split", "arguments": { "session": "demo", "direction": "horizontal" } }
+{ "name": "send_keys",  "arguments": { "session": "demo", "keys": ["tail -F log", "Enter"] } }
+{ "name": "last_pane",  "arguments": { "target_window": "demo:0" } }
+```
+
+---
+
 ## `move_pane`
 
 Relocate a single pane to a different slot, window, or session via
