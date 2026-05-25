@@ -3309,3 +3309,93 @@ Walk every client to the previous session and toggle read-only:
   "arguments": { "prev": true, "read_only": true }
 }
 ```
+
+---
+
+## `display_popup`
+
+Render an overlay popup on the attached tmux client via
+`tmux display-popup`. The popup is a rectangular overlay drawn on top
+of any panes; pane contents are not refreshed while the popup is
+visible. Sizing knobs (`width` / `height`) accept either a percentage
+("80%") or a number of cells; omit them to let tmux centre a
+half-the-terminal popup. `shell_command` runs inside the popup; omit it
+to launch the user's default shell. Pair `close_on_exit` (`-C`) or
+`close_on_zero_exit` (`-E`) to make the popup self-dismiss on exit.
+
+The tool **mutates client UI state** and is therefore refused under
+`-read-only` (`-32011`).
+
+### Input
+
+| Field                | Type             | tmux flag | Notes                                                                                          |
+| -------------------- | ---------------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `target`             | string           | `-t`      | Optional pane target (`session`, `session:window`, `session:window.pane`, or `%N`).            |
+| `title`              | string           | `-T`      | tmux format string for the popup title; max 4096 chars; no newlines.                           |
+| `border_style`       | string           | `-S`      | tmux style spec applied to the border (e.g. `fg=red`); max 4096 chars; no newlines.            |
+| `border_lines`       | string           | `-b`      | Border glyph set (`single`, `double`, `heavy`, `simple`, `rounded`, `padded`, `none`).         |
+| `start_directory`    | string           | `-d`      | Absolute path used as the popup shell-command's cwd. Relative paths are rejected up front.     |
+| `env`                | object           | `-e`      | Map of `KEY=VALUE` overrides; POSIX env names; values max 4096 chars; max 64 entries.          |
+| `width`              | string           | `-w`      | Cells (`60`) or percentage (`60%`); regex `^[0-9]+%?$`; max 32 chars.                          |
+| `height`             | string           | `-h`      | Same shape as `width`.                                                                         |
+| `x`                  | string           | `-x`      | Same shape as `width`.                                                                         |
+| `y`                  | string           | `-y`      | Same shape as `width`.                                                                         |
+| `shell_command`      | string           |           | Trailing positional command tmux runs inside the popup; max 4096 chars; no newlines.            |
+| `no_border`          | bool             | `-B`      | Suppresses the popup border. Overrides `border_lines` / `border_style` on tmux's side.         |
+| `close_on_exit`      | bool             | `-C`      | Close the popup as soon as `shell_command` exits.                                              |
+| `close_on_zero_exit` | bool             | `-E`      | Close the popup only when `shell_command` exits 0.                                             |
+| `centered`           | bool             | `-r`      | Centre the popup on the active client. Requires tmux >= 3.5; older daemons reject the flag.    |
+
+The schema sets `additionalProperties: false`, so a typo in any field
+name is refused with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "opened": true }
+```
+
+`opened` is a flat ack — display-popup is fire-and-forget at this
+layer, so the boundary deliberately does not echo the supplied flags
+back. Inspect the popup state with `display_message` /
+`list_clients` if confirmation is needed.
+
+### Errors
+
+| Code     | Cause                                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| `-32602` | Bad `target` shape, oversized free-form arg, relative `start_directory`, malformed env key, or unknown field. |
+| `-32000` | `target` names a session / window / pane that does not exist (`errs.ErrSessionNotFound`).                     |
+| `-32011` | Server is running with `-read-only`; `display_popup` mutates client UI state and is refused.                  |
+| `-32603` | tmux refused the call for any other reason (no current client on a headless server, unknown flag on an older tmux, etc.). |
+
+### Example
+
+Open a centred status popup running a quick command:
+
+```jsonc
+{
+  "name": "display_popup",
+  "arguments": {
+    "target": "demo:0.1",
+    "title":  "review #{session_name}",
+    "width":  "60%",
+    "height": "40%",
+    "border_lines": "rounded",
+    "border_style": "fg=cyan",
+    "shell_command": "git status",
+    "close_on_exit": true,
+    "env": { "PAGER": "cat" }
+  }
+}
+```
+
+A bare call lets tmux apply every default — half-the-terminal centred
+popup, default border, the user's shell:
+
+```jsonc
+{ "name": "display_popup", "arguments": {} }
+```
+
