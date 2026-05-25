@@ -83,48 +83,53 @@ sboms:
 
 # Keyless cosign signatures using the GitHub Actions OIDC identity.
 # Signs every release archive, the checksums.txt file, and each SBOM.
-# Signatures (.sig) and certificates (.pem) are uploaded to the release and
-# the signing event is logged to the public Rekor transparency log.
+# Each signing event is logged to the public Rekor transparency log.
+#
+# cosign v3 (installed by sigstore/cosign-installer >= v4) defaults to the
+# new bundle format. The legacy `--output-signature` / `--output-certificate`
+# flags are silently ignored in that mode, which causes cosign to try to
+# write to an empty `--bundle` path and fail with
+#   "create bundle file: open : no such file or directory".
+# The fix is the official migration recommended by GoReleaser:
+#   https://goreleaser.com/blog/cosign-v3/
+# i.e. drop `certificate:`, rename the signature artifact to `.sigstore.json`,
+# and pass a single `--bundle=${signature}` flag instead of the two deprecated
+# output flags. The bundle is a JSON document that contains both the signature
+# and the certificate, so a single uploaded file replaces the previous .sig+.pem pair.
 signs:
   - id: cosign-archives
     cmd: cosign
     artifacts: archive
-    signature: '${artifact}.sig'
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - '--yes'
       - '--oidc-provider=github-actions'
-      - '--output-signature=${signature}'
-      - '--output-certificate=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
     output: true
 
   - id: cosign-checksum
     cmd: cosign
     artifacts: checksum
-    signature: '${artifact}.sig'
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - '--yes'
       - '--oidc-provider=github-actions'
-      - '--output-signature=${signature}'
-      - '--output-certificate=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
     output: true
 
   - id: cosign-sbom
     cmd: cosign
     artifacts: sbom
-    signature: '${artifact}.sig'
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - '--yes'
       - '--oidc-provider=github-actions'
-      - '--output-signature=${signature}'
-      - '--output-certificate=${certificate}'
+      - '--bundle=${signature}'
       - '${artifact}'
     output: true
 
