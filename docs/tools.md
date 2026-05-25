@@ -2911,6 +2911,83 @@ when you want to confirm the option actually landed:
 
 ---
 
+## `show_window_options`
+
+Read the resolved tmux **window-options** table for a target window.
+Wraps `tmux show-window-options [-g] [-t TARGET] [OPTION]` and returns
+an ordered list of `{ name, value }` pairs in the same alphabetical
+order tmux itself prints. Sister of the (write-side) `set_window_option`
+tool, and a finer-grained complement to `show_options` (which carries a
+`scope` discriminator). Useful when an LLM agent needs to introspect a
+window's per-window flags — `synchronize-panes`, `automatic-rename`,
+`mode-keys` — before deciding whether to flip them.
+
+This tool is on the **`-read-only` allowlist**: it never mutates tmux
+state, so a server started in inspection-only mode still serves it.
+
+### Input
+
+| Field    | Type    | Required | Default | Notes                                                                                                            |
+| -------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `target` | string  | no       | —       | Window target. `<session>` or `<session>:<window>`; len 1-129 (session ≤64, window ≤64). Empty = tmux's current. |
+| `name`   | string  | no       | —       | Single option to fetch (e.g. `synchronize-panes`, `mode-keys`); ≤64 chars. Empty queries every option.           |
+| `global` | boolean | no       | `false` | When true, query the global window-options defaults (`-g`) instead of the per-window override map.               |
+
+The schema sets `additionalProperties: false`, so a typo in a field
+name surfaces as a fast `-32602` rejection rather than silently doing
+the wrong thing.
+
+### Output
+
+JSON block:
+
+```jsonc
+{
+  "options": [
+    { "name": "automatic-rename", "value": "on" },
+    { "name": "mode-keys", "value": "emacs" },
+    { "name": "synchronize-panes", "value": "on" }
+  ]
+}
+```
+
+Values are returned verbatim — including any quoting tmux emits for
+strings with embedded specials. An empty result (`{"options": []}`)
+means either no per-window overrides are set on the target (the common
+case for a freshly created window) or the requested `name` is currently
+unset; it is never an error condition.
+
+### Errors
+
+| Code     | Cause                                                                                                                                        |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Bound violation on `target` / `name`, or an unknown field was sent.                                                                          |
+| `-32000` | Referenced session/window does not exist on this server (`errs.ErrSessionNotFound`; tmux 3.4 surfaces "no such window" for this branch).     |
+| `-32603` | tmux refused the call for any other reason.                                                                                                  |
+
+### Examples
+
+```jsonc
+// Every per-window override on the first window of "demo".
+{ "target": "demo:0" }
+
+// Just one flag, scoped to a specific window.
+{ "target": "demo:build", "name": "synchronize-panes" }
+
+// Global window-options defaults (always populated).
+{ "target": "demo:0", "global": true }
+```
+
+Pair with `set_window_option` when the agent needs to flip a flag and
+verify the live value:
+
+```jsonc
+{ "name": "set_window_option",  "arguments": { "target": "demo:0", "name": "synchronize-panes", "value": "on" } }
+{ "name": "show_window_options", "arguments": { "target": "demo:0", "name": "synchronize-panes" } }
+```
+
+---
+
 ## `swap_window`
 
 Exchange two windows of the same session in place via
