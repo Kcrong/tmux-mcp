@@ -244,14 +244,20 @@ jobs:
 
   # security and stress are reusable workflows invoked here so they:
   #   * appear in the PR Checks UI under this CI run
-  #   * skip automatically when lint/test fails (needs: gating)
+  #   * skip automatically when an upstream job fails (needs: gating)
   #   * run against the PR's actual SHA (workflow_run loaded the YAML
   #     from the default branch, which made same-PR self-validation
   #     impossible)
-  # `needs: [test-linux, test-macos]` keeps these gated behind the cheap
-  # tier — a broken test suite shouldn't burn CodeQL/stress minutes.
+  #
+  # Pipeline ordering:
+  #   lint → test-{linux,macos} → install-test-{linux,macos,windows}
+  #     → security → stress
+  # security only fires once the install-test tier is green — a binary
+  # that can't even `go install` shouldn't burn CodeQL minutes. stress
+  # waits for security so a vulnerability finding fails the PR before
+  # we run the 30-minute benchmark/race harness.
   security:
-    needs: [test-linux, test-macos]
+    needs: [install-test-linux, install-test-macos, install-test-windows]
     uses: ./.github/workflows/security.yml
     permissions:
       contents: read
@@ -263,7 +269,7 @@ jobs:
   # the workflow's own conclusion already reflects the bypass — no
   # downstream gate needs to interpret labels.
   stress:
-    needs: [test-linux, test-macos]
+    needs: [security]
     uses: ./.github/workflows/stress.yml
     with:
       base_ref: ${{ github.base_ref }}
