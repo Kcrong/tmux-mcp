@@ -1149,6 +1149,81 @@ doesn't have to memorise the default tmux key map:
 
 ---
 
+## `unbind_key`
+
+Remove a tmux key binding via `tmux unbind-key [-a] [-T TABLE] [KEY]`.
+Sister of `bind_key` and `list_keys`: pass `key` to remove a single
+chord, or set `all=true` to wipe every binding in the targeted table
+(`-a`). Useful for an agent tearing down a custom binding set installed
+earlier in the session, or for a recovery loop that wants to flush a
+custom keymap before re-registering it from scratch.
+
+### Input
+
+| Field       | Type    | Required | Notes                                                                                                                              |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | string  | no\*     | Key chord to remove (e.g. `"C-a"`, `"F12"`, `"M-{"`). Mutually exclusive with `all=true`. len 1-256, no NUL or ASCII control bytes. |
+| `key_table` | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`); maps to `-T TABLE`. len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to use tmux's default table for the operation. |
+| `all`       | boolean | no\*     | When true, remove every binding in the targeted table (`-a`). Mutually exclusive with `key`. Default `false`.                       |
+
+\* Exactly one of `{key set, all=true}` is required: both empty would
+silently no-op on tmux (a buggy caller's unbind never lands), and both
+set contradict each other (tmux silently swallows the KEY when `-a` is
+present). The handler refuses both shapes with `-32602` (invalid params).
+
+The schema sets `additionalProperties: false`, so any field other than
+the three above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat ack object:
+
+```jsonc
+{ "unbound": true }
+```
+
+Idempotent by design. tmux's `unbind-key` itself emits `table TABLE
+doesn't exist` (when the targeted custom table has been wiped) and
+`unknown key: KEY` (when the chord was never bound) for the
+"already-gone" shapes; the boundary swallows both so a recovery loop
+re-issuing the same teardown frame does not see a spurious failure on
+the second iteration. `unbound: true` is returned uniformly whether the
+binding existed or not.
+
+### Errors
+
+| Code     | Cause                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Neither `key` nor `all=true` set; or both set; or `key`/`key_table` malformed (length, regex, control bytes); or an unknown field was sent. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, etc.). Idempotent shapes (`table doesn't exist`, `unknown key`) are NOT errors. |
+
+### Examples
+
+```jsonc
+// Remove a single binding from a custom table.
+{ "key": "F12", "key_table": "agent-table" }
+
+// Wipe every binding in a custom table.
+{ "key_table": "agent-table", "all": true }
+
+// Remove a chord from tmux's default key table for the operation
+// (no `-T` flag, no `-a`).
+{ "key": "C-a" }
+```
+
+Pair with `bind_key` to install bindings, and `list_keys` to confirm
+the teardown landed:
+
+```jsonc
+{ "name": "bind_key",   "arguments": { "key": "F12", "key_table": "agent", "command": "display-message hi" } }
+{ "name": "unbind_key", "arguments": { "key": "F12", "key_table": "agent" } }
+{ "name": "list_keys",  "arguments": { "key_table": "agent" } } // empty after teardown
+```
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
