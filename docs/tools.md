@@ -2760,6 +2760,71 @@ the layout actually flipped:
 
 ---
 
+## `next_window`
+
+Advance the session's active window pointer to the next window via
+`tmux next-window -t <target>`. tmux walks the session's window list in
+index order and wraps around at the end, so calling this on the last
+window lands on the first one. Pairs with `window_select` (jump to a
+specific target) by offering the "step forward" idiom an agent reaches
+for when it does not know the concrete next index up front.
+
+This tool **mutates** session state: it changes which window is active.
+It is therefore **not** included in the `-read-only` allowlist — a
+server armed with `-read-only` rejects `next_window` calls with
+`CodeReadOnly` (`-32011`) before any handler runs.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                                                                              |
+| ------------ | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `target`     | string  | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `with_alert` | boolean | no       | `false` | when `true`, skip to the next window with a monitor-activity / monitor-bell alert (tmux's `-a` flag) |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected with `-32602` before tmux is consulted.
+
+`with_alert=true` is the load-bearing setting for an agent watching a
+long-lived session for whatever raised an alert: without it a session
+with many idle windows is stepped through one-by-one, with it the
+pointer hops directly to whichever window has new activity. This is
+the same semantics tmux's interactive `next-window -a` keybinding
+produces.
+
+### Output
+
+Plain text block: `ok`.
+
+The boundary deliberately does not echo the post-step layout — a
+follow-up `list_windows` is one call away if the caller wants to
+confirm which window the pointer landed on.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.            |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32011` | Server is armed with `-read-only`; `next_window` is not on the inspection allowlist. |
+| `-32603` | tmux refused the step for an unexpected reason.                    |
+
+### Example
+
+```jsonc
+{ "target": "demo" }
+```
+
+A typical chain looks like: snapshot the layout, step forward, drive
+whichever window the pointer landed on.
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "next_window",  "arguments": { "target": "demo", "with_alert": true } }
+{ "name": "capture",      "arguments": { "session": "demo" } }
+```
+
+---
+
 ## `choose_tree`
 
 Snapshot the (session, window) tree this server's tmux holds, in the
