@@ -2718,6 +2718,75 @@ Pin format-string evaluation to a specific session (tmux substitutes
 
 ---
 
+## `copy_mode`
+
+Enter (or leave) tmux's copy-mode in a target pane via
+`tmux copy-mode [-Hu] [-q] [-M] [-s SRC_PANE] [-t TARGET_PANE]`.
+copy-mode puts the pane into scrollback / selection mode so a
+subsequent [`send_keys`](#send_keys) call can drive copy-mode key
+bindings (cursor motion, search, copy-selection, …); pass
+`exit=true` to leave copy-mode and return the pane to its normal "type
+commands at the shell" state. Distinct from
+[`capture`](#capture) (which reads scrollback into a string without
+touching pane state) and [`send_keys`](#send_keys) (which types into
+whatever mode the pane is already in): `copy_mode` is the verb that
+flips the mode state itself, so an agent can pre-position the pane
+before sending the copy-mode key bindings that drive selection / yank.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                       |
+| ------------- | ------- | -------- | ------------------------------------------------------------------------------------------- |
+| `target`      | string  | yes      | Pane target (`session`, `session:window`, `session:window.pane`, or `%N`).                  |
+| `src_pane`    | string  | no       | Optional source pane whose scrollback is cloned into the target before entry (`-s`).        |
+| `exit`        | boolean | no       | When true, quit copy-mode immediately if the target is in it (`-q`); default false.         |
+| `scroll_down` | boolean | no       | When true, anchor the cursor at the bottom of the visible region (`-u`); default false.     |
+| `mouse`       | boolean | no       | When true, start copy-mode in mouse-drag selection (`-M`); default false.                   |
+| `drag_mode`   | boolean | no       | When true, enter HALFLINE drag-mode (`-H`, equivalent of pressing `H` interactively).       |
+
+`target` and `src_pane` must match
+`^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a tmux `%N` pane id) — the
+same conservative shape the other pane tools accept. tmux's `-e`
+("exit when status-bar drag finishes") is intentionally not surfaced;
+add it later if a concrete need shows up.
+
+### Output
+
+JSON block: `{"ok": true, "target": "<target>", "exit": <bool>}`. When
+`src_pane` was supplied the echo also carries it as `"src_pane":
+"<src>"`. The echoed `target` / `src_pane` are the logical
+(caller-supplied) values, so a `-session-prefix` deployment never
+leaks the prefixed identity back to the caller.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, or a `target` / `src_pane` that does not match the pane regex.                               |
+| `-32000` | The target session/window/pane does not exist on this server (`errs.ErrSessionNotFound`).                            |
+| `-32603` | tmux refused the copy-mode call for any other reason.                                                                |
+
+### Example
+
+```jsonc
+// Enter copy-mode on the active pane of session "demo" so a follow-up
+// send_keys can drive Up / PageUp / "?pattern" / Enter / "y" bindings.
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0" } }
+
+// Clone another pane's scrollback before entering copy-mode (useful
+// for inspecting a sibling pane's history without making it active).
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0", "src_pane": "demo:0.1" } }
+
+// Done inspecting — leave copy-mode and return to the shell.
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0", "exit": true } }
+```
+
+Pair with `send_keys` to drive the copy-mode bindings, and with
+`capture` (or `display_message #{?pane_in_mode,1,0}`) to confirm the
+pane really is in copy-mode before issuing the key sequence.
+
+---
+
 ## `respawn_pane`
 
 Restart the command running in an existing pane via

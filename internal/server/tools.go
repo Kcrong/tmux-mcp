@@ -760,6 +760,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.lastPane(ctx, call.Arguments)
 	case "move_pane":
 		return t.movePane(ctx, call.Arguments)
+	case "copy_mode":
+		return t.copyMode(ctx, call.Arguments)
 	case "respawn_pane":
 		return t.respawnPane(ctx, call.Arguments)
 	case "respawn_window":
