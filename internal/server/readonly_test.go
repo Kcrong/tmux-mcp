@@ -95,6 +95,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"unbind_key",
 		"set_window_option",
 		"switch_client",
+		"lock_server",
 		"wait_for_stable",
 		"snapshot_diff",
 		"choose_client",
