@@ -1488,6 +1488,80 @@ which terminal to draw on:
 
 ---
 
+## `suspend_client`
+
+Send `SIGTSTP` to a tmux client via
+`tmux suspend-client [-t TARGET-CLIENT]` so the user can resume it
+later with `fg`. Strictly less destructive sibling of
+`detach_client`: the client process is paused but the session itself
+stays intact, and unattached clients are unaffected. Useful for an
+agent that wants to politely yield the terminal back to its operator
+without tearing the session down. This is a **mutating** tool — it
+changes a client process's run state (sends `SIGTSTP`) — so a
+`-read-only` deployment rejects it with `-32005`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field           | Type   | Required | Notes                                                                                                                                                      |
+| --------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target_client` | string | no       | tmux client target; regex `^[A-Za-z0-9_./:%-]+$`, max 256 bytes. Maps to `-t TARGET-CLIENT`. Accepts a TTY path like `/dev/pts/3`, a session-qualified name like `demo:0`, or an internal `%client-1` handle. Omit to let tmux pick its "current" client. |
+
+The schema sets `additionalProperties: false`, so a typo like
+`"client"` (instead of `"target_client"`) is rejected with `-32602`
+before tmux is consulted. Empty payload (`{}`) and entirely-absent
+`arguments` are both accepted as the "no `-t` flag" shape.
+
+### Output
+
+JSON text block with a flat object keyed by `suspended`:
+
+```jsonc
+{ "suspended": true }
+```
+
+| Field       | Type    | Notes                                                                                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `suspended` | boolean | Always `true` on success. Same shape as `detach_client`'s `detached` so callers can chain mutations against a stable wire-shape. |
+
+A headless server (no clients attached) with no `target_client`
+returns `{"suspended": true}` — a clean no-op rather than an error —
+so callers can fire-and-forget a suspend without first running
+`list_clients` to know whether anyone is watching. The boundary
+swallows tmux's `no current client` stderr in this case.
+
+### Errors
+
+| Code     | Cause                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed `target_client` (bad regex / over the 256-byte cap) or an unknown field on the schema.                            |
+| `-32000` | `target_client` named a client that is not currently attached (`errs.ErrSessionNotFound`).                                  |
+| `-32005` | Server is running in `-read-only` mode (this tool sends `SIGTSTP`).                                                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                                            |
+
+### Examples
+
+```jsonc
+// Suspend whoever is currently watching (no-op on a headless server)
+{}
+
+// Suspend a specific TTY (e.g. found via list_clients)
+{ "target_client": "/dev/pts/0" }
+
+// Suspend by internal client handle
+{ "target_client": "%client-1" }
+```
+
+Pair with `list_clients` to discover the live roster before picking
+a target to suspend:
+
+```jsonc
+{ "name": "list_clients",   "arguments": { "session": "demo" } }
+{ "name": "suspend_client", "arguments": { "target_client": "/dev/pts/0" } }
+```
+
+---
+
 ## `list_keys`
 
 Enumerate the key bindings on this controller's tmux server via
