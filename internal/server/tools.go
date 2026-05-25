@@ -764,6 +764,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.displayMessage(ctx, call.Arguments)
 	case "display_popup":
 		return t.displayPopup(ctx, call.Arguments)
+	case "display_menu":
+		return t.displayMenu(ctx, call.Arguments)
 	case "send_signal":
 		return t.sendSignal(ctx, call.Arguments)
 	case "window_create":

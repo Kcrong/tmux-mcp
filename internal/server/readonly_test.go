@@ -99,6 +99,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"wait_for_stable",
 		"snapshot_diff",
 		"choose_client",
+		"display_menu",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -309,7 +310,8 @@ func TestServe_ReadOnly_RejectionInvokesAuditAndMetrics(t *testing.T) {
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, in, syncWriter, handler,
+		done <- Serve(
+			ctx, in, syncWriter, handler,
 			WithReadOnly(true),
 			WithAudit(audit),
 		)
