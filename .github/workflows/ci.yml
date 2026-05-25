@@ -90,15 +90,15 @@ jobs:
       - name: build
         run: go build -trimpath ./...
 
-      # -shuffle=on randomises top-level test order per package and
-      # -p=4 runs up to 4 packages in parallel. Both pressure-test the
-      # suite for hidden ordering deps and races: a flake that only
-      # reproduces under a specific package order or parallel execution
-      # path now surfaces in CI rather than on a developer's laptop.
-      # Combined with the t.Parallel() inside individual tests, every
-      # CI run exercises a different schedule.
+      # -shuffle=on randomises top-level test order per package so a
+      # flake that only reproduces under a specific schedule surfaces
+      # in CI rather than on a developer's laptop. Package-level
+      # parallelism stays on the `go test` default (GOMAXPROCS) so the
+      # runner's full CPU budget is exercised — combined with the
+      # t.Parallel() calls inside individual tests, every CI run
+      # exercises a different schedule.
       - name: test (race + coverage, shuffled)
-        run: go test ./... -count=1 -race -shuffle=on -p=4 -covermode=atomic -coverprofile=coverage-linux.out
+        run: go test ./... -count=1 -race -shuffle=on -covermode=atomic -coverprofile=coverage-linux.out
 
       - name: coverage summary
         run: go tool cover -func=coverage-linux.out | tail -n 40
@@ -151,10 +151,12 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      # -shuffle=on / -p=4 mirror test-linux: keep CI exercising a fresh
-      # schedule on every run so order/parallel flakes can't hide.
+      # -shuffle=on mirrors test-linux: keep CI exercising a fresh
+      # schedule on every run so order flakes can't hide. -p stays at
+      # the `go test` default (GOMAXPROCS) so the macOS runner's full
+      # CPU budget is exercised.
       - name: test (macOS-specific behavior, shuffled)
-        run: go test ./... -count=1 -shuffle=on -p=4 -covermode=atomic -coverprofile=coverage-macos.out
+        run: go test ./... -count=1 -shuffle=on -covermode=atomic -coverprofile=coverage-macos.out
 
       # Same rationale as test-linux: Codecov is the single retention
       # surface for coverage, so we don't mirror the raw .out into
