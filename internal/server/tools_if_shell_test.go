@@ -47,9 +47,15 @@ func readEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session str
 // observable on macOS, where fork/exec timing keeps the gap visible).
 // Polling absorbs that gap without masking real bugs — a regression
 // that genuinely never sets the value still fails after the deadline.
+//
+// 5 s is generous enough for the slowest macOS arm64 CI runners we've
+// observed (the gap between if_shell return and the dispatched
+// set-environment landing has measured >2 s there) without unbounding
+// genuine failures: a regression that never sets the value still
+// fails after the deadline.
 func eventuallyEnvHandler(t *testing.T, ctx context.Context, tools *Tools, session, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		got = readEnvHandler(t, ctx, tools, session)
@@ -201,7 +207,7 @@ func TestHandle_IfShell_FalseBranchNoElseIsNoop(t *testing.T) {
 	// Wait long enough for any stray then_branch dispatch (which would
 	// be a real bug) to have arrived from the server's queue, then
 	// confirm the seed is still in place.
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	if got := readEnvHandler(t, ctx, tools, "ifn"); got != "untouched" {
 		t.Fatalf("display_message #{IF_BRANCH} = %q, want untouched (no branch should have run)", got)

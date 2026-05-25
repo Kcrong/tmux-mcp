@@ -30,9 +30,15 @@ func readEnv(t *testing.T, ctx context.Context, c *Controller, session, name str
 // fork/exec timing makes the gap consistently observable). Polling
 // absorbs that gap without masking real bugs — a regression that
 // genuinely never sets the value still fails after the deadline.
+//
+// 5 s is generous enough for the slowest macOS arm64 CI runners we've
+// seen (which can take >2 s between if-shell return and the
+// dispatched set-environment landing) without unbounding genuine
+// failures: a regression that never sets the value still fails after
+// the deadline.
 func eventuallyEnv(t *testing.T, ctx context.Context, c *Controller, session, name, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		got = readEnv(t, ctx, c, session, name)
@@ -143,7 +149,7 @@ func TestIfShell_NoElseBranchIsNoop(t *testing.T) {
 	// would be a real bug here) would arrive a moment after the call
 	// returns. Wait long enough for the dispatch window to close, then
 	// confirm the marker is still the seed.
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	got := readEnv(t, ctx, c, "ifn", "IF_BRANCH")
 	if got != "IF_BRANCH=untouched" {
