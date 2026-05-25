@@ -57,8 +57,12 @@ var readOnlyTools = map[string]struct{}{
 	// Buffer / option / message inspectors. show_buffer and
 	// show_options are spec-named for forward compatibility — neither
 	// is registered today, but adding them here means the policy is
-	// already correct on the day they land.
+	// already correct on the day they land. save_buffer is the
+	// canonical "I want the whole buffer payload" read path; it is
+	// inspection-only by construction (it never mutates tmux state)
+	// so it lives next to show_buffer here.
 	"show_buffer":  {},
+	"save_buffer":  {},
 	"show_options": {},
 	// show_window_options is the read-side sibling of set_window_option:
 	// it wraps `tmux show-window-options [-g] [-t TARGET] [OPTION]` and

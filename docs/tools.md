@@ -3687,6 +3687,24 @@ preferable.
 | `data`   | string  | yes      | buffer payload, streamed verbatim over stdin. Empty string is allowed (creates an empty buffer; tmux 3.4 may drop empty buffers). Capped at 1 MiB (1 048 576 bytes). |
 | `name`   | string  | no       | optional buffer name to pin; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, tmux assigns the next `bufferN`.                     |
 | `append` | boolean | no       | when true, concatenate onto an existing buffer (`-a`) instead of replacing it. Defaults to false.                                     |
+## `save_buffer`
+
+Return the raw text content of a tmux paste buffer via
+`tmux save-buffer - [-b NAME]` — semantically equivalent to
+`show_buffer` but signals "this is the canonical save-path read".
+The headline difference is `error_on_truncation`: when true (the
+default), the handler returns a typed `-32010 oversized response`
+directly if the marshalled body would exceed the server's configured
+`-max-response-bytes` cap, so a caller cannot silently receive a
+truncated payload. Pair with `list_buffers` to discover the names a
+server is currently holding.
+
+### Input
+
+| Field                 | Type    | Required | Notes                                                                                                                                                                                                                                            |
+| --------------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                | string  | no       | optional buffer name; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty / omitted → most-recent buffer.                                                                                                                                                  |
+| `error_on_truncation` | boolean | no       | when true (the default), the handler refuses oversize bodies up front with `-32010` instead of letting the framing-level guard rewrite them after the fact. Pass `false` to ship the payload verbatim and let the dispatcher's cap fire if needed. |
 
 ### Output
 
@@ -3731,6 +3749,40 @@ Pair with `show_buffer` to round-trip a snippet:
 ```jsonc
 { "name": "load_buffer", "arguments": { "data": "the value", "name": "shared" } }
 { "name": "show_buffer", "arguments": { "name": "shared" } }
+  "name": "pinned",         // echoed back when the caller pinned a name; empty otherwise.
+  "data": "the quick brown fox"
+}
+```
+
+`data` is the buffer body verbatim — tmux does not append a trailing
+newline, so an agent that expects one should add it explicitly.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `name` outside the regex/length policy, or an unknown field on `arguments`.                                                                                          |
+| `-32000` | The named buffer does not exist on this server (`errs.ErrSessionNotFound`).                                                                                          |
+| `-32010` | `error_on_truncation=true` and the marshalled body would exceed the server's configured `-max-response-bytes` cap. Retry with a smaller scope or pass `false` to allow the dispatcher's framing-level handling. |
+| `-32603` | tmux refused the save for an unexpected reason.                                                                                                                      |
+
+### Example
+
+```jsonc
+// Strict read: error out if the canonical payload would not fit.
+{ "name": "pinned" }
+
+// Permissive read: ship whatever fits and let the dispatcher's
+// framing-level cap rewrite the response if it gets too big.
+{ "name": "pinned", "error_on_truncation": false }
+```
+
+A typical chain looks like: stash a snippet, list to discover the
+assigned name, then read it back via the canonical save-path.
+
+```jsonc
+{ "name": "list_buffers", "arguments": {} }
+{ "name": "save_buffer",  "arguments": { "name": "buffer0" } }
 ```
 
 ---

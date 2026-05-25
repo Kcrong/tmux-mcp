@@ -193,6 +193,18 @@ type Tools struct {
 	// Set from the operator-supplied -session-prefix CLI flag and
 	// validated at startup against the same regex used for session names.
 	SessionPrefix string
+	// MaxResponseBytes mirrors the operator-supplied -max-response-bytes
+	// CLI flag at the handler layer so a tool that wants to enforce the
+	// cap up front (today: save_buffer's `error_on_truncation=true`
+	// path) can reject oversize bodies before the dispatcher's framing-
+	// level [WithMaxResponseBytes] guard sees the response. Most handlers
+	// continue to ignore this field — the dispatcher already enforces
+	// the cap by replacing oversize bodies with a typed
+	// [errs.CodeOversizedResponse] error after the fact — so wiring it
+	// at construction time is no-op for the existing tool surface.
+	// Zero or negative disables the per-handler check, matching the
+	// dispatcher's "<= 0 means uncapped" contract.
+	MaxResponseBytes int64
 
 	// mu guards defs, dyn, and notify.
 	//
@@ -822,6 +834,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listBuffers(ctx, call.Arguments)
 	case "show_buffer":
 		return t.showBuffer(ctx, call.Arguments)
+	case "save_buffer":
+		return t.saveBuffer(ctx, call.Arguments)
 	case "switch_client":
 		return t.switchClient(ctx, call.Arguments)
 	case "lock_server":
