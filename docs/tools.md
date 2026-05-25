@@ -4200,6 +4200,77 @@ the name in the `removed` slice.
 | `-32602` | Unknown `scope`; `target` missing for `scope=session`; bad `name` (regex/length); unknown field on `arguments`. |
 | `-32000` | Referenced session does not exist on this server (`errs.ErrSessionNotFound`).                                  |
 | `-32603` | tmux refused the call for any other reason.                                                                    |
+## `attach_session`
+
+Drive `tmux attach-session [-dDErXx] [-c WORKING-DIRECTORY] [-f FLAGS]
+[-t TARGET-SESSION]` against the named session. This is a **mutating**
+tool — it changes the server's client roster — so a `-read-only`
+deployment rejects it with `-32011` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Headless interpretation (important)
+
+`tmux attach-session` is a foreground terminal-bound operation: it
+hijacks the calling process's controlling TTY to render the target
+session. The MCP server, by definition, does NOT own a controlling
+terminal — every call arrives over JSON-RPC over stdio. As a result
+this tool implements the only semantically honest interpretation
+available from a headless context:
+
+- When at least one of `detach_others=true` /
+  `detach_others_including_self=true` is set, the call clears the
+  target session's client roster (via `tmux detach-client -s
+  <session>` under the hood) so a follow-up real attach — issued
+  from a terminal elsewhere — lands on a clean roster.
+- When neither detach flag is set the call is rejected with
+  `-32602` and a message suggesting the caller run
+  `tmux attach -t <name>` themselves from a terminal.
+
+The forward-compat fields (`read_only`, `working_directory`,
+`skip_environment_update`, `flags`, `no_environment_apply`) are
+validated for shape today but otherwise inert under the headless
+detach path. They are accepted so MCP clients can populate them once
+a future build of tmux-mcp grows real TTY support, without seeing a
+schema-level rejection in the meantime.
+
+### Input
+
+| Field                          | Type    | Required | Default | Notes                                                                                                                         |
+| ------------------------------ | ------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `target_session`               | string  | yes      | —       | tmux session name; len 1-64, regex `^[A-Za-z0-9_-]+$`. Maps to `-t TARGET-SESSION`.                                           |
+| `detach_others`                | boolean | no       | `false` | When `true`, pass `-d`. Headless interpretation: clear every other client off the target session.                             |
+| `detach_others_including_self` | boolean | no       | `false` | When `true`, pass `-D` (tmux 3.5+). Headless interpretation routes through `detach-client -s SESSION`, which works on every supported tmux. |
+| `read_only`                    | boolean | no       | `false` | When `true`, pass `-r`. Forward-compat only.                                                                                  |
+| `working_directory`            | string  | no       | —       | Optional `-c WORKING-DIRECTORY`. Must be an absolute path; rejected with `-32602` otherwise. Forward-compat only.             |
+| `skip_environment_update`      | boolean | no       | `false` | When `true`, pass `-E`. Forward-compat only.                                                                                  |
+| `flags`                        | string  | no       | —       | Optional `-f FLAGS`. Comma-separated client flags; len 0-256, character set `[A-Za-z0-9,_-]+`. Forward-compat only.           |
+| `no_environment_apply`         | boolean | no       | `false` | When `true`, pass `-X` (tmux 3.5+). Forward-compat only.                                                                      |
+
+The schema sets `additionalProperties: false`, so any field other than
+the eight above is rejected with `-32602` (invalid params) before
+tmux is consulted.
+
+### Output
+
+JSON text block with a flat object keyed by `attached`:
+
+```jsonc
+{ "attached": true, "target_session": "demo" }
+```
+
+| Field            | Type    | Notes                                                                                                                  |
+| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `attached`       | boolean | Always `true` on success. Reflects "the headless detach completed", NOT a real interactive attach.                     |
+| `target_session` | string  | Echoes the caller-supplied logical name (pre `-session-prefix` resolution) so chained tools can reuse it as-is.        |
+
+### Errors
+
+| Code     | Cause                                                                                                                                                             |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target_session`; relative `working_directory`; `flags` outside `[A-Za-z0-9,_-]+`; **OR** neither detach flag is set (the headless TTY refusal). |
+| `-32000` | `target_session` does not exist on this server (`errs.ErrSessionNotFound`).                                                                                       |
+| `-32011` | Server is running in `-read-only` mode (this tool mutates client state).                                                                                          |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, unsupported `-D` / `-X` flag on an older tmux build).                                             |
 
 ### Examples
 
@@ -4230,6 +4301,38 @@ landed where future panes will see it.
 
 This is read-only and on the `-read-only` allowlist alongside other
 inspection tools.
+
+// Headless interpretation: clear the client roster on session "demo"
+{ "target_session": "demo", "detach_others": true }
+
+// Same, but ask tmux to detach including any "self" attachments (3.5+)
+{ "target_session": "demo", "detach_others_including_self": true }
+
+// Forward-compat shape (today these fields are inert under the
+// headless detach path; the call still succeeds as a clean roster
+// reset, and the same JSON shape will work unchanged when tmux-mcp
+// grows real TTY support).
+{
+  "target_session":          "demo",
+  "detach_others":           true,
+  "read_only":               true,
+  "working_directory":       "/srv/run/demo",
+  "skip_environment_update": true,
+  "flags":                   "active-pane,read-only",
+  "no_environment_apply":    true
+}
+```
+
+If you actually want an interactive attach, run `tmux attach -t <name>`
+from a terminal yourself — the MCP server cannot do this for you. Use
+`attach_session` to **prepare** the session (clear stale clients) and
+then run the real `tmux attach` from a shell:
+
+```jsonc
+{ "name": "attach_session", "arguments": { "target_session": "demo", "detach_others_including_self": true } }
+// then, in a real terminal:
+//   tmux attach -t demo
+```
 
 ---
 
