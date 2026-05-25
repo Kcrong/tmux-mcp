@@ -736,6 +736,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.startServer(ctx, call.Arguments)
 	case "kill_server":
 		return t.handleKillServer(ctx, call.Arguments)
+	case "server_access":
+		return t.serverAccess(ctx, call.Arguments)
 	case "kill_window":
 		return t.killWindow(ctx, call.Arguments)
 	case "list_panes":
