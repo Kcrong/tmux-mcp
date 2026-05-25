@@ -104,6 +104,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"lock_server",
 		"refresh_client",
 		"paste_buffer",
+		"source_file",
 		"wait_for_stable",
 		"snapshot_diff",
 		"choose_client",

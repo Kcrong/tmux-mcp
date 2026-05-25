@@ -4139,6 +4139,24 @@ the server's buffer table.
 | `buffer_name`  | string  | no       | optional buffer to paste; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, the most-recently-added buffer is pasted (the bare `paste-buffer` CLI default). |
 | `delete_after` | boolean | no       | when true, drop the buffer from tmux's list after the paste lands (`-d`). Defaults to false.                                          |
 | `bracketed`    | boolean | no       | when true, wrap the paste in bracketed-paste escape sequences (`-p`) for applications that opt into bracketed-paste mode. Defaults to false. |
+## `source_file`
+
+Re-source a tmux config file via `tmux source-file PATH`. Useful for
+hot-reloading tweaks (status bar, key bindings, options) without
+restarting the tmux server. `path` must be an absolute filesystem
+path; the boundary rejects relative paths, control characters, NUL
+bytes, and `..` traversal segments before tmux is consulted. Set
+`quiet=true` to map to `-q`, which tells tmux to suppress non-fatal
+errors so a partially-incompatible config still reloads as far as it
+can — the same flag agents reach for when they want a best-effort
+reload that does not blow up on missing or out-of-version directives.
+
+### Input
+
+| Field   | Type    | Required | Notes                                                                                                                                |
+| ------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `path`  | string  | yes      | absolute filesystem path to the tmux.conf. Max 4096 bytes; rejects NUL, control characters, and `..` traversal segments.             |
+| `quiet` | boolean | no       | when true, pass `-q` so tmux suppresses non-fatal errors (unknown options, missing file). Defaults to false.                         |
 
 ### Output
 
@@ -4195,6 +4213,17 @@ The pasted bytes themselves do not appear in the response — they land
 in the pane's pty and are observable via `capture` once the receiving
 process has rendered them.
 
+```jsonc
+{
+  "sourced": true
+}
+```
+
+The reload is observable via `show_options` — for instance, sourcing a
+`tmux.conf` that sets `set -g escape-time 17` flips the server-wide
+`escape-time` value to `"17"` immediately, so an agent that wants to
+confirm the reload took effect can chain into `show_options`.
+
 ### Errors
 
 | Code     | Cause                                                              |
@@ -4246,6 +4275,9 @@ stderr in this case; any other tmux failure surfaces as `-32603`.
 | `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
 | `-32011` | Server is running in `-read-only` mode (this tool mutates client state).                         |
 | `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+| `-32602` | `path` missing, longer than 4096 bytes, relative, contains a control character / NUL byte, contains a `..` segment, or an unknown field on `arguments`. |
+| `-32000` | `path` does not exist on the filesystem (`errs.ErrSessionNotFound`); only when `quiet=false`. With `quiet=true` tmux silently swallows the missing-file case. |
+| `-32603` | tmux's source-file failed for an unexpected reason (rare; typically a fork/exec error or syntactically-broken config under quiet=false). |
 
 ### Examples
 
@@ -4302,5 +4334,17 @@ before locking it:
 ```jsonc
 { "name": "list_clients", "arguments": {} }
 { "name": "lock_client",  "arguments": { "client": "/dev/pts/0" } }
+// Strict reload: fail loudly if the path is wrong.
+{ "path": "/etc/tmux-mcp/tmux.conf" }
+
+// Best-effort reload: ignore missing files / unknown options.
+{ "path": "/home/agent/.tmux.conf", "quiet": true }
+```
+
+Pair with `show_options` to confirm the reload took effect:
+
+```jsonc
+{ "name": "source_file",  "arguments": { "path": "/etc/tmux-mcp/tmux.conf" } }
+{ "name": "show_options", "arguments": { "scope": "server" } }
 ```
 
