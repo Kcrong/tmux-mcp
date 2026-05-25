@@ -3362,6 +3362,78 @@ Pair with `show_buffer` to fetch a specific buffer's contents:
 
 ---
 
+## `load_buffer`
+
+Inject `data` into a tmux paste buffer via `tmux load-buffer -b NAME -`,
+streaming the payload over the child's stdin. Behaviourally identical
+to `set_buffer` — same `name` / `append` semantics, same `bufferN`
+auto-naming when `name` is omitted, same 1 MiB cap — but the bytes
+travel through the child's stdin pipe instead of as a positional argv
+argument so very large payloads do not run into the OS argv length cap
+(`ARG_MAX`, ~128 KiB on Linux, ~256 KiB on macOS) before tmux's own
+buffer ceiling is reached.
+
+Reach for `load_buffer` when you have a kilobyte-sized blob (a captured
+logfile slice, a screenful of source code, a binary-safe snippet) and
+want a discrete tool call to land it in a buffer; reach for
+`set_buffer` when the payload is small and the single-argv shape is
+preferable.
+
+### Input
+
+| Field    | Type    | Required | Notes                                                                                                                                |
+| -------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `data`   | string  | yes      | buffer payload, streamed verbatim over stdin. Empty string is allowed (creates an empty buffer; tmux 3.4 may drop empty buffers). Capped at 1 MiB (1 048 576 bytes). |
+| `name`   | string  | no       | optional buffer name to pin; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, tmux assigns the next `bufferN`.                     |
+| `append` | boolean | no       | when true, concatenate onto an existing buffer (`-a`) instead of replacing it. Defaults to false.                                     |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "loaded": true,
+  "name":   "buffer3"   // resolved buffer name; equal to the input `name` when one was pinned, otherwise the auto-assigned bufferN.
+}
+```
+
+The resolved `name` is recovered the same way `set_buffer` does:
+running `tmux list-buffers -F '#{buffer_created} #{buffer_name}'`
+after the load and picking the most-recently-created entry. When the
+caller pinned a `name`, that lookup is skipped — tmux honours
+`-b NAME` verbatim.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `data` missing or > 1 MiB; `name` outside the regex/length policy; or an unknown field on `arguments`. |
+| `-32603` | tmux's load-buffer or follow-up list-buffers failed (rare; typically a fork/exec error). |
+
+### Examples
+
+```jsonc
+// Stream a large snippet into tmux's auto-named buffer slot.
+{ "data": "<5KB blob...>" }
+
+// Pin a stable name so a follow-up show_buffer doesn't have to
+// round-trip through list_buffers.
+{ "data": "<payload>", "name": "snippet" }
+
+// Append to an existing buffer (or create it under that name).
+{ "data": "...continued", "name": "snippet", "append": true }
+```
+
+Pair with `show_buffer` to round-trip a snippet:
+
+```jsonc
+{ "name": "load_buffer", "arguments": { "data": "the value", "name": "shared" } }
+{ "name": "show_buffer", "arguments": { "name": "shared" } }
+```
+
+---
+
 ## `show_buffer`
 
 Return the raw text content of a tmux paste buffer. Omit `name` (or
