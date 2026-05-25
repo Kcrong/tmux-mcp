@@ -3758,6 +3758,34 @@ arguments value). The schema sets `additionalProperties: false`, so
 any stray field (e.g. a `"session"` borrowed from `lock_session`, or
 a `"client"` from `lock_client`) is rejected with `-32602` before tmux
 is consulted.
+## `set_environment`
+
+Set or remove an environment variable that future panes will inherit,
+via `tmux set-environment`. `scope=session` (the default) updates the
+named session's environment table (`-t SESSION`); `scope=global`
+updates the server-wide table (`-g`) so subsequently-created sessions
+inherit it. Pass `value` to set the variable; omit `value` to remove
+it (`-u NAME`).
+
+Existing panes keep whatever environment they already have — only
+newly spawned panes (e.g. via `new_window`, `pane_split`, or a fresh
+`session_create` for `scope=global`) pick up the change. This mirrors
+the underlying tmux semantics; the boundary does not invent an
+"reload-running-shells" affordance.
+
+### Input
+
+| Field     | Type   | Required                  | Notes                                                                                                                                                                |
+| --------- | ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`    | string | yes                       | environment variable name; len 1-128, regex `^[A-Za-z_][A-Za-z0-9_]*$` (POSIX shape — leading digit, dashes, dots and shell metachars are rejected at -32602).  |
+| `value`   | string | no                        | variable value. Omit to remove the variable (`-u NAME`); an explicit empty string `""` is a legal "set to empty", distinct from omission.                            |
+| `scope`   | string | no (default `"session"`)  | one of `session` (`-t SESSION`) or `global` (`-g`). Anything else is rejected at -32602.                                                                              |
+| `session` | string | yes when `scope=session`  | target session for `scope=session`; ignored when `scope=global`. Standard session-ref policy: len 1-64, regex `^[A-Za-z0-9_-]+$`. Routed through `-session-prefix` when configured. |
+
+The schema sets `additionalProperties: false`, and the handler enforces
+it at runtime — a typo'd field (e.g. `val` instead of `value`) is
+rejected with `-32602` before any tmux command runs, rather than
+silently behaving like the remove form.
 
 ### Output
 
@@ -3791,3 +3819,47 @@ operator hands the server back to a human and wants every attached
 terminal to require authentication before resuming work, `lock_server`
 is the single call that does it without disturbing any running
 process.
+{
+  "set":     true,
+  "name":    "FOO",      // echoed back verbatim from the input.
+  "removed": false       // true when `value` was omitted (the `-u NAME` path), false on a set.
+}
+```
+
+### Errors
+
+| Code     | Cause                                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `name` missing or outside the regex/length policy; `scope=session` without `session`; unknown `scope`; unknown field on `arguments`. |
+| `-32000` | `scope=session` and the named session does not exist on this server (`errs.ErrSessionNotFound`).                 |
+| `-32603` | tmux refused the `set-environment` for any other reason.                                                         |
+
+### Examples
+
+```jsonc
+// Set a per-session variable. Future panes spawned inside `mysession`
+// inherit it; existing panes keep their current environment.
+{ "name": "FOO", "value": "bar", "scope": "session", "session": "mysession" }
+
+// scope is optional — the documented default is "session".
+{ "name": "FOO", "value": "bar", "session": "mysession" }
+
+// Set to empty string explicitly. Distinct from omitting `value`,
+// which would remove the variable instead.
+{ "name": "FOO", "value": "", "session": "mysession" }
+
+// Remove a per-session variable (`tmux set-environment -t mysession -u FOO`).
+{ "name": "FOO", "scope": "session", "session": "mysession" }
+
+// Set a server-wide variable that subsequently created sessions
+// inherit. `session` is ignored for scope=global.
+{ "name": "PATH", "value": "/usr/local/bin:/usr/bin", "scope": "global" }
+
+// Remove a global variable (`tmux set-environment -g -u PATH`).
+{ "name": "PATH", "scope": "global" }
+```
+
+`set_environment` is a mutating tool and is therefore rejected when
+the server is armed with `-read-only` (CodeReadOnly, `-32011`). Use
+the read-only tool surface (`show_options`, `capture`, `session_list`,
+`list_buffers`, …) for inspection-only access.

@@ -822,6 +822,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.switchClient(ctx, call.Arguments)
 	case "lock_server":
 		return t.lockServer(ctx, call.Arguments)
+	case "set_environment":
+		return t.setEnvironment(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path
