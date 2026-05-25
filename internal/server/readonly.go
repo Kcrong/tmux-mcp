@@ -63,6 +63,10 @@ var readOnlyTools = map[string]struct{}{
 	// `display-message`-style read against tmux and never mutate.
 	"session_describe": {},
 	"session_inspect":  {},
+	// has_session is a one-bit existence probe (`tmux has-session -t
+	// NAME`); strictly cheaper than session_list and inspection-only
+	// by construction.
+	"has_session": {},
 }
 
 // IsReadOnlyTool reports whether name is allowed when the server is

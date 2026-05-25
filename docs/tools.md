@@ -330,6 +330,73 @@ would be empty).
 
 ---
 
+## `has_session`
+
+Report whether the named session currently exists on this server.
+Wraps tmux's `has-session` primitive — strictly the cheapest path
+when the caller only needs a yes/no answer (e.g. before deciding
+whether to `session_create` or jump straight to `send_keys`).
+
+A missing session is the literal answer the caller asked for, NOT
+an error: only malformed args (`-32602`) or genuine tmux failures
+(`-32603`) surface as JSON-RPC errors. This is the load-bearing
+contract that makes the tool worth using over `session_list` or
+`session_describe` — agents can ask "is X there?" without first
+having to catch a `-32000`.
+
+`has_session` is on the read-only allowlist, so a server running
+with `-read-only` still exposes it.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, regex `^[A-Za-z0-9_-]+$`       |
+
+The schema sets `additionalProperties: false`, so any field other
+than `name` is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "exists": true }
+```
+
+or
+
+```jsonc
+{ "exists": false }
+```
+
+The probe is cheap by design: a single tmux IPC and a one-bit
+answer. No layout, no PID, no creation time — reach for
+`session_describe` / `session_inspect` when those are needed.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name` (regex/length violation), or an unknown field was sent.     |
+| `-32603` | tmux refused the call for a genuine reason (e.g. server crashed, IO error). A non-existent session is **not** an error here — see the "false" output above. |
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+A typical chain looks like: probe before you act, then commit only
+when the session is already there.
+
+```jsonc
+{ "name": "has_session", "arguments": { "name": "demo" } }
+{ "name": "send_keys",   "arguments": { "session": "demo", "keys": ["echo hi", "Enter"] } }
+```
+
+---
+
 ## `session_rename`
 
 Rename an existing session via `tmux rename-session -t OLD NEW`. Useful
