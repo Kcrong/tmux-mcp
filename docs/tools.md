@@ -1570,6 +1570,78 @@ doesn't have to memorise the default tmux key map:
 { "name": "send_keys", "arguments": { "session": "demo", "keys": ["C-b", "?"] } }
 ```
 
+To install a new binding (rather than just read the existing map),
+pair `list_keys` with [`bind_key`](#bind_key) below — the two tools
+read and write the same keymap and share the same `key_table` regex
+so a name that round-trips through one will round-trip through the
+other.
+
+---
+
+## `bind_key`
+
+Register a tmux key binding via `tmux bind-key [-T TABLE] [-r] KEY COMMAND`.
+The write counterpart of [`list_keys`](#list_keys), which reads the
+same keymap back. Useful when an agent (or an init script the agent
+drives) wants to install a custom chord — `bind_key` answers "make
+F12 fire `display-message hello`" without dropping out to the shell.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                                                                        |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`        | string  | yes      | Keysym string tmux's parser knows (e.g. `"C-Space"`, `"M-x"`, `"Up"`). len 1-256, no NUL or other ASCII control bytes (DEL allowed because tmux uses literal keysym strings).                |
+| `command`    | string  | yes      | Entire tmux command line to bind to the chord; passed verbatim as a single argv element (do NOT split on whitespace — tmux parses it server-side). len 1-4096, no NUL or non-tab control bytes. |
+| `key_table`  | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`, `"copy-mode-vi"`); maps to `-T TABLE`. Same shape as `list_keys.key_table` — len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to land in tmux's default table (`"prefix"` on tmux 3.4). |
+| `repeatable` | boolean | no       | When `true`, add `-r` so the binding can repeat while the prefix table stays armed (used by tmux's built-in resize / select-pane chords). Default `false`.                                  |
+
+The schema sets `additionalProperties: false`, so any field other than
+the four above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently landing in the default table.
+
+### Output
+
+JSON text block: `{"bound": true, "key": "<key>", "table": "<key_table>"}`.
+The `key` and `table` fields echo the caller's inputs verbatim so an
+agent can confirm what tmux now thinks (an empty `table` means the
+binding landed in the default table). On every code path that reaches
+this envelope, `bound` is `true` — failures surface via the JSON-RPC
+error object instead.
+
+### Errors
+
+| Code     | Cause                                                                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | `key` or `command` missing/empty/oversized, contains a control byte, or `key_table` is malformed; or an unknown field was sent.                  |
+| `-32603` | tmux refused the bind (e.g. `command` references an unknown verb, the command string has a syntax error, the named `key_table` does not exist). |
+
+`bind-key` has no equivalent of "session not found" — it does not
+look up live state, so failures are purely syntactic and surface
+through the generic internal-error code rather than a typed sentinel.
+
+### Examples
+
+```jsonc
+// Install F12 → display a message; lands in the default (prefix) table.
+{ "key": "F12", "command": "display-message hello" }
+
+// Install in copy-mode so it only fires while copy-mode is active.
+{ "key": "F11", "command": "send-keys -X cancel", "key_table": "copy-mode" }
+
+// Repeatable resize binding: hold the prefix and tap C-Right repeatedly.
+{ "key": "C-Right", "command": "resize-pane -R 5", "repeatable": true }
+```
+
+Pair with [`list_keys`](#list_keys) to confirm the binding landed and
+then drive it with `send_keys`:
+
+```jsonc
+{ "name": "bind_key",  "arguments": { "key": "F12", "command": "display-message hello" } }
+{ "name": "list_keys", "arguments": { "key_table": "prefix" } }
+{ "name": "send_keys", "arguments": { "session": "demo", "keys": ["F12"] } }
+```
+
 ---
 
 ## `unbind_key`
