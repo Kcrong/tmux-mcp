@@ -60,6 +60,12 @@ var readOnlyTools = map[string]struct{}{
 	// path runs in this handler, so it belongs on the inspection
 	// allowlist alongside show_options.
 	"show_window_options": {},
+	// show_environment reads the per-session or server-wide
+	// environment table that future panes will inherit
+	// (`tmux show-environment`). It never mutates server state — the
+	// write counterpart is set_environment, which is deliberately
+	// kept off this list.
+	"show_environment": {},
 	// "display_message" is the registered tool name; "show_message" is
 	// the spec-named alias the read-only feature reserves so callers
 	// targeting either name see the same policy.
