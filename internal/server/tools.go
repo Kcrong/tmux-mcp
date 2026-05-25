@@ -720,6 +720,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.handleKillAll(ctx, call.Arguments)
 	case "start_server":
 		return t.startServer(ctx, call.Arguments)
+	case "kill_server":
+		return t.handleKillServer(ctx, call.Arguments)
 	case "kill_window":
 		return t.killWindow(ctx, call.Arguments)
 	case "list_panes":
@@ -738,12 +740,16 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneResize(ctx, call.Arguments)
 	case "pane_break":
 		return t.paneBreak(ctx, call.Arguments)
+	case "move_pane":
+		return t.movePane(ctx, call.Arguments)
 	case "respawn_pane":
 		return t.respawnPane(ctx, call.Arguments)
 	case "clear_history":
 		return t.clearHistory(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
+	case "has_session":
+		return t.hasSession(ctx, call.Arguments)
 	case "session_rename":
 		return t.sessionRename(ctx, call.Arguments)
 	case "session_inspect":
@@ -772,6 +778,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listClients(ctx, call.Arguments)
 	case "list_keys":
 		return t.listKeys(ctx, call.Arguments)
+	case "unbind_key":
+		return t.unbindKey(ctx, call.Arguments)
 	case "choose_tree":
 		return t.chooseTree(ctx, call.Arguments)
 	case "show_options":

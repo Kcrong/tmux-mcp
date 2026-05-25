@@ -408,10 +408,17 @@ func (c *Controller) ListSessions(ctx context.Context) ([]string, error) {
 	if err != nil {
 		// Either tmux exited cleanly with "no server running on ...",
 		// or — when the socket file does not yet exist — the client
-		// fails to connect at all. Both cases just mean "zero sessions".
+		// fails to connect at all. The "server exited unexpectedly"
+		// phrase is the third variant: it surfaces when a list-sessions
+		// races a kill-server and the client noticed the daemon
+		// disappeared mid-call. All four phrases mean the same thing
+		// at this layer: zero sessions. Treat them uniformly so callers
+		// (kill_server's snapshot bookkeeping, agent recovery loops)
+		// don't have to substring-match tmux's version-dependent stderr.
 		msg := err.Error()
 		if strings.Contains(msg, "no server running") ||
 			strings.Contains(msg, "error connecting") ||
+			strings.Contains(msg, "server exited unexpectedly") ||
 			strings.Contains(msg, "No such file or directory") {
 			return nil, nil
 		}
