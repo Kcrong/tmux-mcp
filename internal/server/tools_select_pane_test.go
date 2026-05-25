@@ -16,6 +16,8 @@ import (
 // This is the back-compat baseline — adding the optional flags must not
 // regress callers that just want "make this pane active".
 func TestHandle_SelectPane_AcceptsTarget(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -51,6 +53,8 @@ func TestHandle_SelectPane_AcceptsTarget(t *testing.T) {
 // follow-up list_panes. This is the load-bearing extra capability over
 // pane_select; without it there would be no reason to land the new tool.
 func TestHandle_SelectPane_DirectionFlipsActive(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -202,6 +206,8 @@ func TestHandle_SelectPane_RejectsEmptyTarget(t *testing.T) {
 // CodeSessionNotFound rather than the generic internal-error code, so
 // the tool stays consistent with pane_select / pane_resize.
 func TestHandle_SelectPane_MissingTargetMapsCode(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

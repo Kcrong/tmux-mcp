@@ -17,10 +17,12 @@ import (
 // future contributor that breaks one direction would silently leave a
 // pane stuck in the wrong mode.
 func TestHandle_CopyMode_EnterAndExit(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "cm", "command": "/bin/bash", "width": 80, "height": 24,
@@ -73,10 +75,12 @@ func TestHandle_CopyMode_EnterAndExit(t *testing.T) {
 // must report pane_in_mode=1 and the JSON ack must echo the logical
 // src_pane the caller supplied.
 func TestHandle_CopyMode_WithSrcPane(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "cms", "command": "/bin/bash", "width": 80, "height": 24,
@@ -107,6 +111,8 @@ func TestHandle_CopyMode_WithSrcPane(t *testing.T) {
 // reject the empty string at runtime so a half-formed call cannot leak
 // a stray "" past the regex.
 func TestHandle_CopyMode_RejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -126,6 +132,8 @@ func TestHandle_CopyMode_RejectsEmptyTarget(t *testing.T) {
 // target argument — a stray quote / shell metachar must not slip
 // through to the tmux argv.
 func TestHandle_CopyMode_RejectsBadTarget(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -147,10 +155,12 @@ func TestHandle_CopyMode_RejectsBadTarget(t *testing.T) {
 // copy_mode against an unknown target pane must surface
 // CodeSessionNotFound (-32000), mirroring move_pane / pane_swap.
 func TestHandle_CopyMode_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Anchor a real session so the dispatcher hits the "server up,
 	// target missing" branch — without it tmux emits a different stderr
@@ -184,10 +194,12 @@ func TestHandle_CopyMode_MissingSessionMapsCode(t *testing.T) {
 // tools/list assertion in TestHandle_ToolsList_IncludesCopyMode pins
 // the schema shape end-to-end.
 func TestHandle_CopyMode_AcceptsOptionalsAbsent(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	callTool(t, tools, ctx, "session_create", map[string]any{
 		"name": "cmopt", "command": "/bin/bash", "width": 80, "height": 24,
@@ -209,6 +221,8 @@ func TestHandle_CopyMode_AcceptsOptionalsAbsent(t *testing.T) {
 // advertises the new tool so MCP clients can discover it via tools/list,
 // and pins the strict additionalProperties / required contract.
 func TestHandle_ToolsList_IncludesCopyMode(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

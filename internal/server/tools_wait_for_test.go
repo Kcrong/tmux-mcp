@@ -139,8 +139,8 @@ func TestHandle_WaitFor_DefaultModeIsWait(t *testing.T) {
 				// mode deliberately omitted — must default to "wait"
 			},
 		})
-		res, rerr := tools.Handle(ctx, "tools/call", params)
-		done <- result{res, rerr}
+		res, r := tools.Handle(ctx, "tools/call", params)
+		done <- result{res, r}
 	}()
 
 	// Give the waiter time to issue the bare wait-for to tmux before
@@ -213,8 +213,8 @@ func TestHandle_WaitFor_LockUnlockSerialises(t *testing.T) {
 				"timeout_ms": 10000,
 			},
 		})
-		res, rerr := tools.Handle(ctx, "tools/call", params)
-		done <- result{res, rerr}
+		res, r := tools.Handle(ctx, "tools/call", params)
+		done <- result{res, r}
 	}()
 
 	// Sample the contender's status: it must NOT have completed within

@@ -17,6 +17,8 @@ import (
 // doesn't reach back into tmux's interactive state, so we use it to pin
 // which pane carries the active flag after the call.
 func TestSelectPaneAdvanced_Succeeds(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -73,6 +75,8 @@ func TestSelectPaneAdvanced_Succeeds(t *testing.T) {
 // layout. The boundary's job is to forward the flag faithfully; the
 // observable zoom behaviour is tmux's contract, not ours.
 func TestSelectPaneAdvanced_ZoomFlag(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -106,6 +110,8 @@ func TestSelectPaneAdvanced_ZoomFlag(t *testing.T) {
 // internal flag without spinning up the interactive client. (tmux only
 // keeps a single marked pane server-wide, so the assertions are exact.)
 func TestSelectPaneAdvanced_MarkAndUnmark(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -143,6 +149,8 @@ func TestSelectPaneAdvanced_MarkAndUnmark(t *testing.T) {
 // to CodeSessionNotFound. tmux phrases this as "can't find pane" so the
 // controller has to translate it back to ErrSessionNotFound.
 func TestSelectPaneAdvanced_MissingSessionWrapsSentinel(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	c := newCtl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

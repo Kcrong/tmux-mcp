@@ -18,6 +18,8 @@ import (
 // terminal to lock), but the wire contract is the same: tmux returned
 // success, so the boundary returns the ack.
 func TestHandle_LockSession_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -64,6 +66,8 @@ func TestHandle_LockSession_HappyPath(t *testing.T) {
 // than falling through to tmux with an empty -t value (which tmux would
 // resolve to whatever session it considers current).
 func TestHandle_LockSession_RejectsMissingSession(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -83,6 +87,8 @@ func TestHandle_LockSession_RejectsMissingSession(t *testing.T) {
 // `session` so a stray colon, space, or shell metachar can't slip
 // through to the tmux argv.
 func TestHandle_LockSession_RejectsBadName(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	cases := []struct {
@@ -95,6 +101,7 @@ func TestHandle_LockSession_RejectsBadName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
 			params := mustJSON(t, map[string]any{
 				"name":      "lock_session",
 				"arguments": map[string]any{"session": tc.name},
@@ -114,6 +121,8 @@ func TestHandle_LockSession_RejectsBadName(t *testing.T) {
 // that lock_session against an unknown session surfaces
 // CodeSessionNotFound (-32000), mirroring session_kill / clear_history.
 func TestHandle_LockSession_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -154,6 +163,8 @@ func TestHandle_LockSession_MissingSessionMapsCode(t *testing.T) {
 // invalid-params from the up-front empty-session guard, keeping the
 // wire contract uniform.
 func TestHandle_LockSession_RejectsExtraField(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	// Send `name` instead of `session` (typo case the schema would
@@ -177,6 +188,8 @@ func TestHandle_LockSession_RejectsExtraField(t *testing.T) {
 // schema endpoint. Also verifies the schema is locked
 // (additionalProperties=false, required=["session"]).
 func TestHandle_ToolsList_IncludesLockSession(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)

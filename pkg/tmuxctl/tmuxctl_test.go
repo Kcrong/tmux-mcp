@@ -29,6 +29,8 @@ func skipIfNoTmux(t *testing.T) {
 // WaitForStable, KillSession, Shutdown. If this test compiles and
 // passes, downstream consumers can rely on the same surface.
 func TestPublicSurface_CreateAndList(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 
 	c, err := tmuxctl.New()
@@ -38,9 +40,9 @@ func TestPublicSurface_CreateAndList(t *testing.T) {
 	t.Cleanup(func() { c.Shutdown(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
-	if err := c.CreateSession(ctx, tmuxctl.SessionSpec{
+	if err = c.CreateSession(ctx, tmuxctl.SessionSpec{
 		Name:    "public-smoke",
 		Command: "/bin/sh",
 		Width:   80,
@@ -57,7 +59,7 @@ func TestPublicSurface_CreateAndList(t *testing.T) {
 		t.Fatalf("unexpected sessions: %v", names)
 	}
 
-	if err := c.SendKeys(ctx, "public-smoke",
+	if err = c.SendKeys(ctx, "public-smoke",
 		[]string{"echo PUBLIC_OK_42", "Enter"}, false); err != nil {
 		t.Fatalf("SendKeys: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestPublicSurface_CreateAndList(t *testing.T) {
 		t.Fatalf("captured body did not contain sentinel:\n%s", body)
 	}
 
-	if err := c.KillSession(ctx, "public-smoke"); err != nil {
+	if err = c.KillSession(ctx, "public-smoke"); err != nil {
 		t.Fatalf("KillSession: %v", err)
 	}
 }
@@ -80,6 +82,8 @@ func TestPublicSurface_CreateAndList(t *testing.T) {
 // argument. This is the kind of thing a consumer is likely to do, so we
 // pin the behaviour explicitly.
 func TestCaptureModeConstants(t *testing.T) {
+	t.Parallel()
+
 	if tmuxctl.CaptureVisible == tmuxctl.CaptureScrollback {
 		t.Fatal("CaptureVisible and CaptureScrollback must differ")
 	}

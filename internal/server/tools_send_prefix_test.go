@@ -17,6 +17,8 @@ import (
 // particular shell's echo semantics — and "no error" is exactly what
 // the JSON-RPC dispatcher promises clients.
 func TestHandle_SendPrefix_RoundTrip(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -59,6 +61,8 @@ func TestHandle_SendPrefix_RoundTrip(t *testing.T) {
 // than falling through to tmux with an empty -t value (which tmux
 // would resolve to whatever pane it considers current).
 func TestHandle_SendPrefix_RejectsMissingTarget(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -78,6 +82,8 @@ func TestHandle_SendPrefix_RejectsMissingTarget(t *testing.T) {
 // `target` so a stray quote/whitespace can't slip through to the tmux
 // argv.
 func TestHandle_SendPrefix_RejectsBadTarget(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	params := mustJSON(t, map[string]any{
@@ -102,6 +108,8 @@ func TestHandle_SendPrefix_RejectsBadTarget(t *testing.T) {
 // translation; this test exists so a future refactor that drops the
 // translation would fail at the boundary contract clients depend on.
 func TestHandle_SendPrefix_MissingSessionMapsCode(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -138,6 +146,8 @@ func TestHandle_SendPrefix_MissingSessionMapsCode(t *testing.T) {
 // schema endpoint. This is the discovery half of the contract; the
 // dispatch case in tools.go is the runtime half.
 func TestHandle_ToolsList_IncludesSendPrefix(t *testing.T) {
+	t.Parallel()
+
 	skipIfNoTmux(t)
 	tools := newTools(t)
 	res, rerr := tools.Handle(context.Background(), "tools/list", nil)
