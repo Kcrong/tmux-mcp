@@ -1030,6 +1030,75 @@ ones have a human watching them:
 
 ---
 
+## `show_messages`
+
+Read-only. Returns tmux's per-client message log via
+`tmux show-messages [-JT] [-t CLIENT]`. This is the buffer tmux
+prints into the bottom status bar — useful for an agent that wants to
+introspect what tmux has been telling clients without having to
+attach. Each line tmux emitted is one element in the response slice;
+trailing `\n` is stripped per entry.
+
+### Input
+
+| Field              | Type    | Required | Notes                                                                                          |
+| ------------------ | ------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `client`           | string  | no       | client id (TTY path, e.g. `/dev/pts/3`); maps to `-t CLIENT`. Omit on a headless server.       |
+| `include_jobs`     | boolean | no       | When `true`, append the job log (`-J`). Defaults to `false`.                                   |
+| `include_terminal` | boolean | no       | When `true`, append the terminal log (`-T`). Defaults to `false`.                              |
+
+The schema sets `additionalProperties: false`, so any field other than
+the three above is rejected with `-32602` (invalid params) before
+tmux is consulted — a typo like `"clinet"` fails fast instead of
+silently behaving like the no-arg variant.
+
+### Output
+
+JSON text block with a flat object keyed by `messages`:
+
+```jsonc
+{
+  "messages": [
+    "2025-01-02T03:04:05Z client opened: /dev/pts/3",
+    "2025-01-02T03:04:09Z session created: demo"
+  ]
+}
+```
+
+| Field      | Type             | Notes                                                                       |
+| ---------- | ---------------- | --------------------------------------------------------------------------- |
+| `messages` | array of strings | One entry per line tmux emitted. Empty list when nothing is buffered.       |
+
+A server with no current client (the load-bearing case for the
+headless tmux daemons tmux-mcp owns) returns `{"messages": []}` —
+a clean empty list rather than an error — so callers can iterate the
+response without a separate "is this an error" branch. The same is
+true before the daemon has been spun up at all: zero messages exist
+by definition, so the call is safe to issue at any point.
+
+### Errors
+
+| Code     | Cause                                                                |
+| -------- | -------------------------------------------------------------------- |
+| `-32602` | `client` present but malformed, or an unknown field was sent.        |
+| `-32000` | `client` does not exist on this server (`errs.ErrSessionNotFound`).  |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).     |
+
+### Examples
+
+```jsonc
+// no-arg: read the current-client message log (empty on a headless server)
+{}
+
+// scope to a specific client and append the job log
+{ "client": "/dev/pts/3", "include_jobs": true }
+
+// both -J and -T
+{ "include_jobs": true, "include_terminal": true }
+```
+
+---
+
 ## `list_keys`
 
 Enumerate the key bindings on this controller's tmux server via
