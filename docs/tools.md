@@ -3476,3 +3476,89 @@ operator hands the server back to a human and wants every attached
 terminal to require authentication before resuming work, `lock_server`
 is the single call that does it without disturbing any running
 process.
+
+---
+
+## `command_prompt`
+
+Open the targeted client's interactive command-prompt UI via
+`tmux command-prompt [-1iIN] [-p PROMPTS] [-I INPUTS] [-t TARGET] [TEMPLATE]`.
+Useful for an agent that wants to programmatically launch a preset
+prompt dialog (e.g. a rename-window flow whose template is
+`rename-window %%`). On a headless server (no client attached, no
+`client` pinned) the call is a successful no-op — the prompt has
+nowhere to render — and the response still echoes back the caller's
+arguments with `opened: true` so a chained workflow stays
+deterministic.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                          |
+| ------------- | ------- | -------- | ------------------------------------------------------------------------------ |
+| `client`      | string  | no       | Optional target client TTY path (e.g. `/dev/pts/3`); maps to `-t TARGET`.       |
+| `prompts`     | string  | no       | Optional comma-separated prompt strings (`-p PROMPTS`); one per `%%` placeholder. |
+| `inputs`      | string  | no       | Optional comma-separated default inputs (`-I INPUTS`); aligned positionally with `prompts`. |
+| `template`    | string  | no       | Optional tmux command tmux runs once the prompt is filled. `%%` → user input.   |
+| `one_key`     | boolean | no       | When `true`, accept a single keypress without Enter (`-1`).                     |
+| `incremental` | boolean | no       | When `true`, run the command on every keystroke (`-i`).                         |
+| `multi_line`  | boolean | no       | When `true`, open the multi-line editor instead of single-line (`-N`). Rare.    |
+
+Every field is optional — tmux itself accepts a bare `command-prompt`
+invocation. In practice an agent will set at least one of `template` /
+`one_key` / `incremental` / `multi_line` to make the call do useful
+work; the schema does not enforce it. Each free-form string field is
+capped at 4096 bytes, must be valid UTF-8, must not contain NUL bytes,
+and must not contain control characters other than tab. Newlines /
+carriage returns inside `template` / `prompts` / `inputs` are
+explicitly rejected because tmux's command-prompt is single-shot per
+call.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "opened":      true,
+  "client":      "",
+  "prompts":     "name:",
+  "inputs":      "",
+  "template":    "rename-window %%",
+  "one_key":     false,
+  "incremental": false,
+  "multi_line":  false
+}
+```
+
+`opened` is `true` whenever the controller succeeded — that covers
+both the "actually rendered to a client" branch and the headless
+no-op. The remaining fields echo the caller's logical arguments back
+so a chained workflow can correlate the response with the original
+invocation.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | A free-form string field exceeded 4096 bytes, contained a control byte, was not UTF-8, or carried a newline. |
+| `-32000` | An explicit `client` did not match any attached TTY (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason.                        |
+
+### Example
+
+```jsonc
+// Preset rename-window dialog. Headless server: returns a successful
+// no-op; attached client: opens the prompt with "name: " label and
+// the current window name as the default input.
+{
+  "template": "rename-window %%",
+  "prompts":  "name:",
+  "inputs":   ""
+}
+```
+
+`command_prompt` is **not** in the read-only allowlist: even a
+template like `rename-window %%` mutates server state once the user
+fills the prompt, and a more aggressive template (`kill-server`) would
+mutate it directly. Operators running with `-read-only` will see
+`-32011` (`CodeReadOnly`) for any `command_prompt` call.
