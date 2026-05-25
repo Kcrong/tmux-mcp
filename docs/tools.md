@@ -5241,6 +5241,59 @@ process.
 }
 ```
 
+---
+
+## `if_shell`
+
+Conditional dispatch via
+`tmux if-shell [-bF] SHELL_COMMAND TMUX_COMMAND [ELSE_TMUX_COMMAND]`.
+tmux runs `shell_command` through `/bin/sh -c` (or evaluates it as a
+`#{format}` expression when `format_expand=true`). On success — exit
+code 0, or a non-empty / non-zero / non-`"0"` expansion — tmux
+dispatches `then_command`. On failure (any other exit code, or an
+empty/zero expansion) tmux dispatches `else_command` when set;
+otherwise the failure branch is a no-op. The canonical agent pattern
+is "if a process is running, do X; else Y" — e.g.
+`pgrep -x build-watch && wc -l build.log` deciding between
+`display-message running` and `display-message stopped`.
+
+`if_shell` is the conditional sibling of `run_shell` (the unconditional
+"run a /bin/sh command on the controller host" surface). Reach for
+`run_shell` when you just need stdout; reach for `if_shell` when the
+agent's next action depends on the shell command's exit code.
+
+> **CAUTION** — `if_shell` runs `shell_command` on the controller host
+> via `/bin/sh -c`. **The command itself is not sandboxed by this
+> server**, so an agent that can call this tool can run arbitrary shell
+> on the host. Operators must trust the agents reaching for `if_shell`
+> — gate the surface away from untrusted clients with the `-allowlist`
+> flag (see [`docs/flags.md`](flags.md)) or remove the tool from the
+> registry entirely.
+>
+> Mutating in spirit (it spawns a shell pipeline AND dispatches a tmux
+> command), so `if_shell` is **not** allowed under `-read-only`.
+
+### Input
+
+| Field           | Type    | Required | Default | Notes                                                                                                          |
+| --------------- | ------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `shell_command` | string  | yes      | —       | Shell pipeline tmux runs via `/bin/sh -c` (or a `#{format}` expression when `format_expand=true`).             |
+| `then_command`  | string  | yes      | —       | tmux command line dispatched on success (exit 0 / non-empty expansion).                                        |
+| `else_command`  | string  | no       | `""`    | tmux command line dispatched on failure. Omit / empty → no-op on the failure branch.                          |
+| `background`    | boolean | no       | `false` | When true, runs `shell_command` detached (`-b`); the call returns immediately and the branch fires later.       |
+| `format_expand` | boolean | no       | `false` | When true, treat `shell_command` as a tmux `#{format}` expression (`-F`) instead of running it through /bin/sh. |
+
+All three command strings are bounded at 4096 bytes; NUL bytes and
+other ASCII control characters (newline, ESC, DEL, …) are rejected up
+front. Tab (0x09) is allowed for spacing.
+
+### Output
+
+JSON block: `{"dispatched": true}`. The boundary deliberately does not
+echo the resolved argv because tmux gives no useful confirmation back —
+a follow-up `display_message` / `capture` against the targeted session
+is the natural way to confirm the chosen branch ran.
+
 ### Errors
 
 | Code     | Cause                                                                                                            |
@@ -5456,3 +5509,45 @@ template like `rename-window %%` mutates server state once the user
 fills the prompt, and a more aggressive template (`kill-server`) would
 mutate it directly. Operators running with `-read-only` will see
 `-32011` (`CodeReadOnly`) for any `command_prompt` call.
+| `-32602` | Missing/empty `shell_command` or `then_command`, or any of the three commands violating the length / control-char policy. |
+| `-32603` | tmux refused the dispatch for any other reason — typically a syntax error or unknown command in `then_command` / `else_command`. |
+
+`if_shell` does not take `-t`, so there is no `-32000`
+`session_not_found` mapping here. A bad target inside
+`then_command` / `else_command` surfaces as the generic tmux error
+text wrapped in `-32603`.
+
+### Examples
+
+If a build watcher is running, log a "still up" message; otherwise log
+"stopped":
+
+```jsonc
+{
+  "shell_command": "pgrep -x build-watch >/dev/null",
+  "then_command":  "display-message 'build-watch up'",
+  "else_command":  "display-message 'build-watch stopped'"
+}
+```
+
+Use a `#{format}` expression (no fork+exec) to branch on the active
+session name:
+
+```jsonc
+{
+  "shell_command": "#{==:#{session_name},build}",
+  "then_command":  "display-message 'on build session'",
+  "else_command":  "display-message 'on a different session'",
+  "format_expand": true
+}
+```
+
+Fire-and-forget (the call returns before the shell command exits):
+
+```jsonc
+{
+  "shell_command": "sleep 5; pgrep -x my-daemon",
+  "then_command":  "display-message 'daemon recovered'",
+  "background":    true
+}
+```

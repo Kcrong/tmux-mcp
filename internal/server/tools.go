@@ -776,6 +776,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.lockSession(ctx, call.Arguments)
 	case "pipe_pane":
 		return t.pipePane(ctx, call.Arguments)
+	case "if_shell":
+		return t.ifShell(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
 	case "has_session":
