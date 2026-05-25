@@ -1292,6 +1292,58 @@ returned snapshot stays small even after hours of activity:
 
 ---
 
+## `clock_mode`
+
+Put a pane into tmux's built-in clock-mode screensaver via
+`tmux clock-mode [-t <target>]`. The targeted pane (or the current
+pane when `target` is omitted) renders a large digital clock until the
+next key arrives — the running process keeps running underneath, only
+the visual takeover is added on top. Useful for "parking" a pane
+visually (demo recording, status board, idle indicator) without typing
+keys into the running program.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                                              |
+| -------- | ------ | -------- | -------------------------------------------------------------------------------------------------- |
+| `target` | string | no       | Optional pane target (`session`, `session:window`, `session:window.pane`, or a `%N` pane id). Omit to target the server's current pane. Length capped at 256. |
+
+`target` (when present) must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$`
+or `^%[0-9]+$` — the same conservative shape every other pane-target
+tool accepts.
+
+### Output
+
+JSON block: `{"clock_mode": true}`. The boundary deliberately does not
+echo the resolved target — tmux clock-mode is fire-and-forget, and a
+follow-up `display_message` with `format="#{pane_mode}"` is one call
+away if the agent wants to confirm the pane actually entered
+clock-mode.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed `target` (regex/length policy) or unknown property in arguments (`additionalProperties: false`). |
+| `-32000` | `target` does not resolve on this server, or the controller is headless (no tmux server running). Both surface `errs.ErrSessionNotFound`. |
+| `-32603` | tmux refused the call for any other reason (e.g. internal tmux failure).                           |
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1" }
+```
+
+Park a pane on the clock and confirm with `display_message`:
+
+```jsonc
+{ "name": "clock_mode",      "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "session": "demo", "format": "#{pane_mode}" } }
+// → { "value": "clock-mode" }
+```
+
+---
+
 ## `pane_swap`
 
 Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux
