@@ -175,6 +175,49 @@ number.
 
 ---
 
+## `start_server`
+
+Pre-spawn this controller's tmux daemon via `tmux start-server` without
+creating any session. Pairs well with `session_create` — agents that
+expect to issue a flurry of `session_create` calls right after startup
+can warm the daemon once with `start_server` instead of paying the
+spawn cost on the first `session_create`'s critical path.
+
+Idempotent: when a server is already listening on the controller's
+socket the call is a no-op and returns success. Deployment scripts can
+run it unconditionally on every startup. Mutating in spirit (it spawns
+a daemon process), so it is **not** allowed under `-read-only`.
+
+### Input
+
+No fields. Pass `{}` (or `null` — the handler accepts an empty
+arguments value).
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "started": true }
+```
+
+The ack is identical whether the daemon was just spawned or was
+already running because tmux's `start-server` itself does not
+distinguish the two.
+
+### Errors
+
+- `-32603` — tmux failed to start the daemon (e.g. socket parent
+  directory is not writable).
+
+### Example
+
+```jsonc
+{}
+```
+
+---
+
 ## `session_describe`
 
 Return structured metadata for a single session: window count, total
