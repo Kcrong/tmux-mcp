@@ -752,6 +752,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.paneResize(ctx, call.Arguments)
 	case "pane_break":
 		return t.paneBreak(ctx, call.Arguments)
+	case "last_pane":
+		return t.lastPane(ctx, call.Arguments)
 	case "move_pane":
 		return t.movePane(ctx, call.Arguments)
 	case "respawn_pane":
