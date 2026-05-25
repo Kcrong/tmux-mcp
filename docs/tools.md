@@ -3338,3 +3338,73 @@ popup, default border, the user's shell:
 { "name": "display_popup", "arguments": {} }
 ```
 
+---
+
+## `lock_client`
+
+Lock a single attached tmux client via `tmux lock-client [-t <client>]`.
+Distinct from a session-scoped lock (which would target every client
+attached to a named session): this tool either targets one specific
+attached client by its TTY-path name (the value `list_clients` reports
+as `tty`, e.g. `/dev/pts/0`) or, with `client` omitted, asks tmux to
+lock the caller's current client. This is a **mutating** tool — the
+lock screen replaces the live session view on the targeted terminal —
+so a `-read-only` deployment rejects it with `-32011`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                                                                                                |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client` | string | no       | tmux client name (the path-like key shown in `list_clients`, e.g. `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Omit to lock the current client. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`client` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"clinet"` fails fast instead of silently
+behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `locked`:
+
+```jsonc
+{ "locked": true }
+```
+
+| Field    | Type    | Notes                                                                          |
+| -------- | ------- | ------------------------------------------------------------------------------ |
+| `locked` | boolean | Always `true` on success. The shape leaves room for future extensions without breaking callers that read only the boolean. |
+
+A headless server with nothing attached returns `{"locked": true}` —
+a clean success rather than an error — so callers can fire-and-forget
+a lock without first running `list_clients` to know whether there is
+anything to lock. The boundary swallows tmux's `no current client`
+stderr in this case; any other tmux failure surfaces as `-32603`.
+
+### Errors
+
+| Code     | Cause                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| `-32602` | Malformed args (bad regex / over the length cap on `client`) or an unknown field on the schema.  |
+| `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
+| `-32011` | Server is running in `-read-only` mode (this tool mutates client state).                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+
+### Examples
+
+```jsonc
+// lock the caller's current client (no-op on a headless server)
+{}
+
+// lock a specific attached terminal by TTY path
+{ "client": "/dev/pts/0" }
+```
+
+Pair with `list_clients` to discover an attached terminal's TTY
+before locking it:
+
+```jsonc
+{ "name": "list_clients", "arguments": {} }
+{ "name": "lock_client",  "arguments": { "client": "/dev/pts/0" } }
+```
+
