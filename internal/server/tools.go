@@ -778,6 +778,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listClients(ctx, call.Arguments)
 	case "list_keys":
 		return t.listKeys(ctx, call.Arguments)
+	case "bind_key":
+		return t.bindKey(ctx, call.Arguments)
 	case "unbind_key":
 		return t.unbindKey(ctx, call.Arguments)
 	case "choose_tree":
