@@ -80,7 +80,7 @@ jobs:
       - name: Install gosec
         run: |
           set -eux
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
           "$(go env GOPATH)/bin/gosec" -version
 
       - name: Run gosec (SARIF)
