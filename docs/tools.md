@@ -1030,6 +1030,92 @@ ones have a human watching them:
 
 ---
 
+## `choose_client`
+
+Open an interactive client-chooser via
+`tmux choose-client [-N] [-Z] [-r] [-t TARGET-PANE] [-F FORMAT]
+[-f FILTER] [-K KEY-FORMAT] [-O SORT-ORDER] [TEMPLATE]`. tmux draws the
+chooser inside `target` (or the active pane of the active client when
+omitted) and lets the attached client pick which connected tmux client
+to act on. The optional flags map one-for-one onto tmux's: `no_preview`
+suppresses the preview pane (`-N`), `zoom` zooms the chooser (`-Z`),
+`reverse` reverses the sort order (`-r`). `format` / `filter` /
+`key_format` / `sort_order` / `template` are forwarded verbatim when
+non-empty so callers can re-skin the menu without rebuilding tmux.
+
+Useful when an agent is co-driving a session with a human and wants to
+hand control over to a specific connected terminal — pair with
+`list_clients` to enumerate the candidates first, then drop the
+chooser inside whichever pane the human can see.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                            |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------- |
+| `target`     | string  | no       | Pane target (`session`, `session:window`, `session:window.pane`, or `%N`).       |
+| `format`     | string  | no       | tmux format string for each menu line (`-F`); max 4096 bytes, no newlines.       |
+| `filter`     | string  | no       | tmux conditional that hides clients evaluating to false (`-f`); same bounds.     |
+| `key_format` | string  | no       | tmux format for the per-row hotkey label (`-K`); same bounds.                    |
+| `sort_order` | string  | no       | Column to sort the menu by (`-O`), e.g. `name`, `size`, `creation`; same bounds. |
+| `template`   | string  | no       | tmux command template run against the chosen client (`TEMPLATE`); same bounds.   |
+| `no_preview` | boolean | no       | When true, suppress the preview pane (`-N`). Default `false`.                    |
+| `zoom`       | boolean | no       | When true, zoom the chooser pane (`-Z`). Default `false`.                        |
+| `reverse`    | boolean | no       | When true, reverse the sort order (`-r`). Default `false`.                       |
+
+The schema sets `additionalProperties: false`, so any field other than
+the ones above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"key-format"` (dash) fails fast instead of
+silently behaving like the default-flag variant.
+
+### Output
+
+JSON text block with a flat ack:
+
+```jsonc
+{ "opened": true }
+```
+
+The boundary deliberately does not echo the flag values back —
+`choose-client` is a fire-and-forget UX trigger, and a follow-up call
+(e.g. `list_clients` to confirm the chooser fired) is one tool away
+when the agent wants confirmation.
+
+### Errors
+
+| Code     | Cause                                                                           |
+| -------- | ------------------------------------------------------------------------------- |
+| `-32602` | malformed `target` or a free-form format that exceeds 4096 bytes / has newlines. |
+| `-32000` | `target` does not resolve to a live pane, or the server has no clients attached. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                 |
+
+The `-32000` headless case is the load-bearing failure: the chooser is
+a UX affordance and cannot do anything useful without a client to draw
+the menu in, so the controller refuses the call up front rather than
+silently queueing a chooser nobody can see.
+
+### Example
+
+```jsonc
+// minimal — all defaults
+{}
+
+// open a chooser inside a specific pane, with a custom row format
+{
+  "target": "demo:0.0",
+  "format": "#{client_tty} (#{client_session})",
+  "no_preview": true
+}
+
+// re-skin the chooser and run a tmux command on the picked client
+{
+  "sort_order": "name",
+  "reverse":    true,
+  "template":   "display-message -c '%%' #{client_tty}"
+}
+```
+
+---
+
 ## `show_messages`
 
 Read-only. Returns tmux's per-client message log via
