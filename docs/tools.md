@@ -330,6 +330,73 @@ would be empty).
 
 ---
 
+## `has_session`
+
+Report whether the named session currently exists on this server.
+Wraps tmux's `has-session` primitive — strictly the cheapest path
+when the caller only needs a yes/no answer (e.g. before deciding
+whether to `session_create` or jump straight to `send_keys`).
+
+A missing session is the literal answer the caller asked for, NOT
+an error: only malformed args (`-32602`) or genuine tmux failures
+(`-32603`) surface as JSON-RPC errors. This is the load-bearing
+contract that makes the tool worth using over `session_list` or
+`session_describe` — agents can ask "is X there?" without first
+having to catch a `-32000`.
+
+`has_session` is on the read-only allowlist, so a server running
+with `-read-only` still exposes it.
+
+### Input
+
+| Field  | Type   | Required | Notes                                    |
+| ------ | ------ | -------- | ---------------------------------------- |
+| `name` | string | yes      | len 1-64, regex `^[A-Za-z0-9_-]+$`       |
+
+The schema sets `additionalProperties: false`, so any field other
+than `name` is rejected with `-32602` before tmux is consulted.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "exists": true }
+```
+
+or
+
+```jsonc
+{ "exists": false }
+```
+
+The probe is cheap by design: a single tmux IPC and a one-bit
+answer. No layout, no PID, no creation time — reach for
+`session_describe` / `session_inspect` when those are needed.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name` (regex/length violation), or an unknown field was sent.     |
+| `-32603` | tmux refused the call for a genuine reason (e.g. server crashed, IO error). A non-existent session is **not** an error here — see the "false" output above. |
+
+### Example
+
+```jsonc
+{ "name": "demo" }
+```
+
+A typical chain looks like: probe before you act, then commit only
+when the session is already there.
+
+```jsonc
+{ "name": "has_session", "arguments": { "name": "demo" } }
+{ "name": "send_keys",   "arguments": { "session": "demo", "keys": ["echo hi", "Enter"] } }
+```
+
+---
+
 ## `session_rename`
 
 Rename an existing session via `tmux rename-session -t OLD NEW`. Useful
@@ -1518,6 +1585,76 @@ and then promote it into a window of its own:
 ```jsonc
 { "name": "pane_split",   "arguments": { "session": "demo", "direction": "horizontal", "detach": true } }
 { "name": "pane_break",   "arguments": { "target": "demo:0.1" } }
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+```
+
+---
+
+## `move_pane`
+
+Relocate a single pane to a different slot, window, or session via
+`tmux move-pane -s <src> -t <dst>` (with `-h` / `-b` / `-d` selected by
+the boolean knobs). Distinct from
+[`pane_swap`](#pane_swap) (which trades two existing panes in place,
+leaving counts unchanged) and
+[`pane_break`](#pane_break) (which detaches a pane into its own
+brand-new window): `move_pane` takes one source pane and re-homes it
+next to the destination, splitting the destination to make room. The
+source pane keeps its `#{pane_id}`, contents, and running process —
+only the layout slot changes — so follow-up `pane_select` /
+`send_keys` calls against the moved pane see the new placement
+immediately.
+
+When the donor window has no remaining panes after the move, tmux
+reaps it: a `list_windows` call after the move may return one fewer
+window than it did before.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                          |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------ |
+| `src`        | string  | yes      | Source pane target (`session`, `session:window`, `session:window.pane`, or `%N`) |
+| `dst`        | string  | yes      | Destination pane target (same target forms as `src`)                           |
+| `horizontal` | boolean | no       | When true, split the destination left/right (`-h`); default is top/bottom.     |
+| `before`     | boolean | no       | When true, insert the moved pane before the destination (`-b`); default is after. |
+| `no_focus`   | boolean | no       | When true, do not change the active pane after the move (`-d`).                |
+
+Both targets must match `^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a
+tmux `%N` pane id) — the same conservative shape the other pane tools
+accept.
+
+### Output
+
+JSON block: `{"moved": true, "src": "<src>", "dst": "<dst>"}`. The
+echoed `src` / `dst` are the logical (caller-supplied) values, so a
+`-session-prefix` deployment never leaks the prefixed identity back to
+the caller.
+
+### Errors
+
+| Code     | Cause                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `src` or `dst`, or a target that does not match the pane regex.                      |
+| `-32000` | Either target points at a session/window/pane this server does not know about (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the move for any other reason.                                                        |
+
+### Example
+
+```jsonc
+// Default: move into the destination window with a top/bottom split,
+// inserted after the destination, focus follows.
+{ "src": "demo:1.0", "dst": "demo:0.0" }
+
+// Horizontal split, place moved pane before destination, leave focus alone.
+{ "src": "demo:1.0", "dst": "demo:0.0", "horizontal": true, "before": true, "no_focus": true }
+```
+
+Pair with `list_windows` (before and after) when you need to confirm
+the donor window was reaped after the move:
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "move_pane",    "arguments": { "src": "demo:1.0", "dst": "demo:0.0", "no_focus": true } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
 
