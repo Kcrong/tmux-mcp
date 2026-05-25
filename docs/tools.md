@@ -3031,3 +3031,81 @@ assigned name, then read it back.
 { "name": "show_buffer",  "arguments": { "name": "buffer0" } }
 ```
 
+## `switch_client`
+
+Redirect a tmux client between sessions on the same server via
+`tmux switch-client [-c <client>] [-t <target>] [-l|-n|-p] [-r]`.
+Use this to bounce an attached terminal from one session to another
+without detaching: pass `target` to land on a specific session, or
+set exactly one of `last` / `next` / `prev` to walk the session
+list. `client` (the path-like name shown in `list_clients`,
+e.g. `/dev/pts/0`) scopes the redirect to one terminal; omit it to
+redirect the caller's current client. `read_only=true` toggles the
+client's read-only / ignore-size flags (the same `-r` semantics as
+`attach-session`).
+
+`switch_client` is **mutating** (it changes which session a client
+is bound to) so it is NOT on the read-only allowlist; a server
+running with `-read-only` rejects it before any handler runs.
+
+Headless servers with nothing attached are a successful no-op — the
+boundary swallows tmux's `no current client` stderr so callers can
+fire-and-forget without a separate `list_clients` round-trip.
+
+### Input
+
+| Field       | Type    | Required | Notes                                                                                                                                          |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client`    | string  | no       | Optional tmux client name (typically a TTY path like `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, max 256 bytes. Omit for the caller's client. |
+| `target`    | string  | mostly   | Target session name (or `session:window[.pane]` / `%pane`). Required unless exactly one of `last` / `next` / `prev` is true.                   |
+| `last`      | boolean | no       | Walk to the last (most-recently-visited) session via `-l`.                                                                                     |
+| `next`      | boolean | no       | Walk forward to the next session via `-n`.                                                                                                     |
+| `prev`      | boolean | no       | Walk backward to the previous session via `-p`.                                                                                                |
+| `read_only` | boolean | no       | Toggle the client's read-only / ignore-size flags via `-r` on top of the directional choice.                                                   |
+
+Exactly one of `target`, `last`, `next`, `prev` must be set; passing
+zero or more than one is rejected with `-32602`. `read_only` rides
+alongside any of those.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "switched": true
+}
+```
+
+The boolean is always `true` on the success path, including the
+headless no-op. Future fields (e.g. an echoed client name or a
+resolved target) will land alongside without breaking callers that
+only read `switched`.
+
+### Errors
+
+| Code     | Cause                                                                                                       |
+| -------- | ----------------------------------------------------------------------------------------------------------- |
+| `-32602` | malformed args, unknown field, or zero/multiple of `target` / `last` / `next` / `prev`.                     |
+| `-32000` | named `client` is not attached, or named `target` session does not exist (`errs.ErrSessionNotFound`).       |
+| `-32603` | tmux refused the switch for an unexpected reason.                                                           |
+
+### Examples
+
+Land an attached client on a specific session:
+
+```jsonc
+{
+  "name": "switch_client",
+  "arguments": { "client": "/dev/pts/0", "target": "build" }
+}
+```
+
+Walk every client to the previous session and toggle read-only:
+
+```jsonc
+{
+  "name": "switch_client",
+  "arguments": { "prev": true, "read_only": true }
+}
+```
