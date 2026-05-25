@@ -1769,6 +1769,60 @@ surfaces as `-32603`.
 | `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
 | `-32005` | Server is running in `-read-only` mode (this tool mutates client state).                         |
 | `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+## `unset_hook`
+
+Remove a previously-set tmux hook via
+`tmux set-hook -u [-g | -w] [-t TARGET] HOOK-NAME` — the inverse of
+`set_hook`. Useful for an agent tearing down a hook installed earlier
+in the session, or for a recovery loop that wants to clear a
+supervisor's `pane-died` / `client-attached` handler before
+re-installing it from scratch.
+
+### Input
+
+| Field    | Type    | Required | Notes                                                                                                                              |
+| -------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `hook`   | string  | yes      | Hook event name to clear (e.g. `"pane-died"`, `"client-attached"`, `"session-created"`). Regex `^[a-z][a-z0-9_-]*$`, len 1-256.   |
+| `target` | string  | no\*     | Per-session clear target (`-t TARGET`); required when neither `global=true` nor `window=true`. Same regex/length policy as session names. Optional under `window=true` (omit to use the current window). |
+| `global` | boolean | no       | When true, clear on the server-wide options table (`-g`); `target` is ignored. Mutually exclusive with `window=true`. Default `false`. |
+| `window` | boolean | no       | When true, clear on the window-options table (`-w`); `target` may name a window or be omitted for the current window. Mutually exclusive with `global=true`. Default `false`. |
+
+\* When neither `global=true` nor `window=true` is set, the clear lands
+on the per-session options of the resolved `target` session, and
+`target` is required. tmux's `-g` / `-w` / `-t TARGET` shapes are
+mutually exclusive on the unset path; the handler refuses
+`global=true` + `window=true` with `-32602` (invalid params) so
+callers see a clean error rather than tmux's version-dependent stderr.
+
+The schema sets `additionalProperties: false`, so any field other
+than the four above is rejected with `-32602` (invalid params)
+before tmux is consulted — a typo like `"hook_name"` (instead of
+`"hook"`) fails fast.
+
+### Output
+
+JSON text block with a flat ack object:
+
+```jsonc
+{ "unset": true, "global": false, "window": false, "hook": "pane-died" }
+```
+
+Idempotent by design. tmux's `set-hook -u` against a hook that was
+never set (or was already cleared by a prior call) succeeds silently
+— no stderr, exit code 0 — so the boundary returns the same
+`{"unset": true, ...}` ack uniformly whether the binding existed or
+not. A recovery loop re-issuing the same teardown frame sees a clean
+ack on the second iteration.
+
+### Errors
+
+| Code     | Cause                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `hook` missing or malformed (length, regex); `target` malformed when `global=false` and `window=false`; both `global=true` and `window=true`; or an unknown field was sent. |
+| `-32000` | `target` names a session that does not exist on this controller's tmux server (`CodeSessionNotFound`). Also returned when the daemon is headless on the per-session clear path so a missing-target outcome surfaces with a single stable code. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, etc.). Idempotent shapes (clearing a hook that was already absent) are NOT errors. |
+
+Mutating: not allowed under `-read-only`.
 
 ### Examples
 
@@ -1919,6 +1973,23 @@ verb X?" so the agent doesn't have to guess against an older release:
 { "name": "list_commands",   "arguments": { "command": "display-message" } }
 { "name": "display_message", "arguments": { "format": "#{session_name}", "session": "demo" } }
 ```
+// Clear a per-session hook installed earlier on session "supervisor".
+{ "hook": "pane-died", "target": "supervisor" }
+
+// Clear a global supervisor hook (server-wide).
+{ "hook": "client-attached", "global": true }
+
+// Clear a window-scoped hook on session "supervisor"'s current window.
+{ "hook": "pane-died", "target": "supervisor", "window": true }
+
+// Clear a window-scoped hook on the current window (no target).
+{ "hook": "pane-died", "window": true }
+```
+
+Pair with `set_hook` to install hooks (when available) and re-run
+your teardown unconditionally — the idempotent ack means a recovery
+loop can issue `unset_hook` before re-binding without first probing
+whether the hook is currently set.
 
 ---
 
