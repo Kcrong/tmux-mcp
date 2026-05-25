@@ -4165,6 +4165,64 @@ slot ordering actually shifted:
 { "name": "rotate_window",  "arguments": { "target": "demo" } }
 { "name": "list_panes",     "arguments": { "session": "demo" } }
 ```
+## `next_layout`
+
+Cycle the targeted window onto the next preset layout via
+`tmux next-layout -t <target>`. Walks tmux's ordered preset ring
+(`even-horizontal` → `even-vertical` → `main-horizontal` →
+`main-vertical` → `tiled`) and wraps to the first preset after the
+last. tmux applies the cycle to the targeted session's active window —
+the agent does not need to know which window is current to use this.
+
+Pairs with `select_layout` (which takes a SPECIFIC layout name) by
+offering the "give me the next preset" affordance an agent reaches for
+when it doesn't care which layout, just wants to rotate. Use
+`next_layout` when the goal is "try a different arrangement"; use
+`select_layout` when the goal is "land on this exact preset".
+
+### Input
+
+| Field    | Type   | Required | Default | Notes                                                                   |
+| -------- | ------ | -------- | ------- | ----------------------------------------------------------------------- |
+| `target` | string | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. tmux applies the cycle to the session's active window. |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front with `-32602`.
+
+### Output
+
+A small text block containing the literal string `ok`. tmux's
+`next-layout` itself produces no useful stdout; chain
+`display_message` against `#{window_layout}` (or `list_windows`) if
+you need to confirm the new arrangement.
+
+### Errors
+
+| Code     | Cause                                                                                           |
+| -------- | ----------------------------------------------------------------------------------------------- |
+| `-32602` | Missing or malformed `target` (regex / length policy violation), or an unknown field was sent.  |
+| `-32000` | `target` does not match any session on this server (`errs.ErrSessionNotFound`).                 |
+| `-32603` | tmux refused the cycle for an unexpected reason (e.g. a single-pane window that has no layout). |
+
+### Example
+
+Rotate the active window of `demo` onto its next preset:
+
+```jsonc
+{ "name": "next_layout", "arguments": { "target": "demo" } }
+```
+
+Drive a "try another arrangement" loop until something looks right:
+
+```jsonc
+{ "name": "display_message", "arguments": { "session": "demo", "format": "#{window_layout}" } }
+{ "name": "next_layout",     "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "session": "demo", "format": "#{window_layout}" } }
+```
+
+`next_layout` mutates tmux state (it changes the active window's pane
+arrangement), so it is rejected with `-32011` (`CodeReadOnly`) when
+the server runs with `-read-only`.
 
 ---
 
