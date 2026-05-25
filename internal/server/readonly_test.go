@@ -80,6 +80,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"run_shell",
 		"display_popup",
 		"lock_session",
+		"pipe_pane",
 		"send_signal",
 		"resize",
 		"pane_select",

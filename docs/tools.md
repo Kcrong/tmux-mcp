@@ -2080,6 +2080,80 @@ Park a pane on the clock and confirm with `display_message`:
 
 ---
 
+## `pipe_pane`
+
+Pipe a pane's output through a shell command via
+`tmux pipe-pane [-IO] -t <target> [shell-command]`. The canonical way to
+log pane output to a file:
+`{"target": "demo:0", "shell_command": "cat > /tmp/demo.log"}` flushes
+every byte tmux writes to the pty into `/tmp/demo.log` until a
+follow-up call clears the pipe. Calling `pipe_pane` again with
+`shell_command` empty/omitted sends a bare `pipe-pane` to tmux, which
+tears down any existing pipe on that pane (the documented "stop
+logging" form).
+
+> **CAUTION** — `pipe_pane` spawns a shell pipeline on the tmux server.
+> tmux runs `shell_command` via `/bin/sh -c`; **the command itself is
+> not sandboxed by this server**, so an agent that can call this tool
+> can run arbitrary shell on the server. Operators must trust the agents
+> reaching for `pipe_pane` — gate the surface away from untrusted
+> clients with the `-allowlist` flag (see [`docs/flags.md`](flags.md))
+> or remove the tool from the registry entirely.
+>
+> Mutating in spirit (it spawns a shell pipeline), so `pipe_pane` is
+> **not** allowed under `-read-only`.
+
+### Input
+
+| Field           | Type    | Required | Default | Notes                                                                                       |
+| --------------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------- |
+| `target`        | string  | yes      | —       | Pane target (`session`, `session:window`, or `session:window.pane`).                         |
+| `shell_command` | string  | no       | `""`    | Shell pipeline tmux runs via `/bin/sh -c`. Empty/omitted **stops** an existing pipe.        |
+| `output_only`   | boolean | no       | `false` | When true, adds `-O`: only output written by tmux is piped, not input typed at the pane.    |
+| `also_input`    | boolean | no       | `false` | When true, adds `-I`: also pipe input. Combine with `output_only` to mirror both directions.|
+
+`shell_command` is bounded at 4096 bytes; NUL bytes and other ASCII
+control characters (newline, ESC, DEL, …) are rejected up front. Tab
+(0x09) is allowed for spacing.
+
+### Output
+
+JSON block: `{"piped": true}`. The boundary deliberately does not echo
+the resolved argv because tmux gives no useful confirmation back — a
+follow-up read of the operator's log file is the natural way to
+confirm the pipe is flowing.
+
+### Errors
+
+| Code     | Cause                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, malformed `target` (regex/length policy), or `shell_command` violating the length / control-char policy. |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`).                               |
+| `-32603` | tmux refused the pipe for any other reason (e.g. internal tmux failure).                            |
+
+### Example
+
+Start logging the visible pane to a file:
+
+```jsonc
+{ "target": "demo:0", "shell_command": "cat > /tmp/demo.log" }
+```
+
+Stop the pipe (no `shell_command`):
+
+```jsonc
+{ "target": "demo:0" }
+```
+
+Mirror both directions through `tee`:
+
+```jsonc
+{ "target": "demo:0", "shell_command": "tee /tmp/demo.log",
+  "output_only": true, "also_input": true }
+```
+
+---
+
 ## `pane_swap`
 
 Exchange two panes in place via `tmux swap-pane -s <src> -t <dst>`. tmux
