@@ -3415,3 +3415,90 @@ popup, default border, the user's shell:
 { "name": "display_popup", "arguments": {} }
 ```
 
+---
+
+## `show_hooks`
+
+Enumerate every hook binding the tmux server currently holds. Wraps
+`tmux show-options -H` / `-wH` (the `-H` flag exposes hook entries
+that are otherwise hidden from `show-options` output). Sister of
+[`set_hook`](#set_hook), the mutating verb that installs / removes
+the bindings this tool surfaces — pair them in a "ensure / inspect"
+loop to confirm a hook landed where the agent expected it to.
+
+When `target` is omitted, the response covers the **server-global**
+hook tables (`-gH` for server/session-class events like
+`client-attached`, `-gwH` for window-class events like `pane-died`)
+**and** every existing session's hook tables (the controller iterates
+the live session list and probes each one). When `target` names a
+session, only that session's hook tables are scanned, so the response
+is scoped to bindings the named session actually carries — useful for
+"show me only what's on this tenant" inspections.
+
+Read-only: this tool issues nothing but `show-options -H` invocations
+under the hood. It is allowed under `-read-only`.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                                                                                                                |
+| -------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target` | string | no       | optional session name; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64). When set, scope the scan to this session. When omitted, scan everything. |
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "hooks": [
+    {
+      "name":    "pane-died",                  // hook event (no [idx] suffix; multi-binding hooks fan out into multiple rows).
+      "command": "display-message \"x\"",      // tmux command bound to the event, verbatim from show-options.
+      "target":  ""                             // empty for server-global bindings; the session name for per-session bindings.
+    },
+    {
+      "name":    "alert-bell",
+      "command": "display-message \"bell\"",
+      "target":  "demo"
+    }
+  ]
+}
+```
+
+`hooks` is **always** a non-nil array — an empty server (no hooks set
+yet) returns `{"hooks": []}` rather than `null`, so a caller iterating
+the array never has to special-case the "no bindings" path.
+
+When tmux normalises a command's quoting on store (e.g. it strips
+non-essential surrounding quotes around a single arg without
+whitespace), the `command` field reflects the **stored** form, not
+the original input the caller passed to `set_hook`. Bodies with
+embedded whitespace round-trip verbatim because tmux preserves the
+surrounding quotes; bodies without whitespace may come back unquoted.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `target` outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | `target` names a session that does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the show for an unexpected reason (rare; typically a fork/exec error). |
+
+### Examples
+
+```jsonc
+// List every binding the server currently holds (global + every session).
+{ "name": "show_hooks", "arguments": {} }
+
+// Scope the scan to a single session.
+{ "name": "show_hooks", "arguments": { "target": "demo" } }
+```
+
+A typical install-then-verify chain pairs with
+[`set_hook`](#set_hook):
+
+```jsonc
+{ "name": "set_hook",  "arguments": { "name": "pane-died", "command": "display-message \"x\"", "target": "demo" } }
+{ "name": "show_hooks", "arguments": { "target": "demo" } }
+```
+

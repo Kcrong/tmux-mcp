@@ -60,6 +60,11 @@ var readOnlyTools = map[string]struct{}{
 	// path runs in this handler, so it belongs on the inspection
 	// allowlist alongside show_options.
 	"show_window_options": {},
+	// show_hooks enumerates the server's hook bindings via
+	// `tmux show-options -H` / `-wH` — strictly inspection, never
+	// installs or removes a binding (that is set_hook's mutating
+	// surface). Allowed under -read-only.
+	"show_hooks": {},
 	// "display_message" is the registered tool name; "show_message" is
 	// the spec-named alias the read-only feature reserves so callers
 	// targeting either name see the same policy.
