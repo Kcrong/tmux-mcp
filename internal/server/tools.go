@@ -706,6 +706,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sessionKill(ctx, call.Arguments)
 	case "send_keys":
 		return t.sendKeys(ctx, call.Arguments)
+	case "send_prefix":
+		return t.sendPrefix(ctx, call.Arguments)
 	case "capture":
 		return t.capture(ctx, call.Arguments)
 	case "wait_for_stable":
