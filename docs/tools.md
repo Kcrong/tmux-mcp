@@ -4009,6 +4009,26 @@ The schema sets `additionalProperties: false`, and the handler enforces
 it at runtime — a typo'd field (e.g. `val` instead of `value`) is
 rejected with `-32602` before any tmux command runs, rather than
 silently behaving like the remove form.
+## `paste_buffer`
+
+Inject the contents of a tmux paste buffer into the targeted pane via
+`tmux paste-buffer [-d] [-p] [-b NAME] -t TARGET`. Useful when an
+agent has staged a snippet via `set_buffer` and now wants to deliver
+it into a running shell or TUI without paying the per-keystroke cost
+of `send_keys` on a long payload — tmux forwards the stored bytes
+through its paste machinery, exactly as if the user had hit the
+configured paste key. Pair with `set_buffer` upstream and (optionally)
+`delete_after=true` for a one-shot snippet that does not linger in
+the server's buffer table.
+
+### Input
+
+| Field          | Type    | Required | Notes                                                                                                                                |
+| -------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `target`       | string  | yes      | tmux pane target (`"session"`, `"session:window"`, or `"session:window.pane"`). Same regex / length rules as elsewhere on the boundary. |
+| `buffer_name`  | string  | no       | optional buffer to paste; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, the most-recently-added buffer is pasted (the bare `paste-buffer` CLI default). |
+| `delete_after` | boolean | no       | when true, drop the buffer from tmux's list after the paste lands (`-d`). Defaults to false.                                          |
+| `bracketed`    | boolean | no       | when true, wrap the paste in bracketed-paste escape sequences (`-p`) for applications that opt into bracketed-paste mode. Defaults to false. |
 
 ### Output
 
@@ -4030,6 +4050,22 @@ two — and surfacing that detail would push every caller to write a
 | `-32602` | An unknown field was supplied on `arguments` (the schema is closed).                                               |
 | `-32000` | No daemon is running on this controller's socket (`errs.ErrSessionNotFound`). Reuses the standard "named target does not exist" code shared with `lock_session` / `lock_client` / `list_clients` / `session_kill`. |
 | `-32603` | tmux refused the lock for an unexpected reason.                                                                    |
+{
+  "pasted": true
+}
+```
+
+The pasted bytes themselves do not appear in the response — they land
+in the pane's pty and are observable via `capture` once the receiving
+process has rendered them.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `target` missing / outside the pane-target regex; `buffer_name` outside the regex/length policy; or an unknown field on `arguments`. |
+| `-32000` | The named buffer (or the targeted session/pane) does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the paste for an unexpected reason.                   |
 
 ### Example
 
@@ -4086,3 +4122,18 @@ process.
 the server is armed with `-read-only` (CodeReadOnly, `-32011`). Use
 the read-only tool surface (`show_options`, `capture`, `session_list`,
 `list_buffers`, …) for inspection-only access.
+// Stash a snippet, then paste it into the session's active pane.
+{ "name": "set_buffer",
+  "arguments": { "data": "echo HELLO_FROM_PASTE\n", "name": "snippet" } }
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0", "buffer_name": "snippet" } }
+
+// Default-name path: paste the most-recently-added buffer.
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0" } }
+
+// One-shot snippet: paste then delete so the buffer does not linger.
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0", "buffer_name": "snippet", "delete_after": true } }
+```
+

@@ -830,6 +830,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.setEnvironment(ctx, call.Arguments)
 	case "delete_buffer":
 		return t.deleteBuffer(ctx, call.Arguments)
+	case "paste_buffer":
+		return t.pasteBuffer(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path
