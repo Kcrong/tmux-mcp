@@ -70,6 +70,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"kill_server",
 		"detach_client",
 		"clear_history",
+		"clock_mode",
 		"send_signal",
 		"resize",
 		"pane_select",
