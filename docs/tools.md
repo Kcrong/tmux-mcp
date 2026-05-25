@@ -2003,6 +2003,100 @@ the donor window was reaped after the move:
 
 ---
 
+## `run_shell`
+
+Execute a one-shot shell command on the tmux server host via
+`tmux run-shell [-b] [-c <start_dir>] [-t <target>] <command>` and
+return the captured stdout. Distinct from
+[`pipe_pane`](#pipe_pane) (which hooks pane I/O to a long-running
+shell pipeline) and [`send_keys`](#send_keys) (which types into a
+pane and lets the running process see the input): `run_shell` runs
+**outside** any pane and surfaces the command's stdout back through
+the JSON response.
+
+The implementation redirects the command's stdout/stderr into a
+private temp file (path under `os.TempDir`, removed before the call
+returns) because tmux's own `run-shell` writes output to view-mode in
+the active pane rather than back to the calling client; the
+controller wraps the user payload as `{ <command>; } >'<tmpfile>' 2>&1`
+so the bytes round-trip cleanly. With `background=true` the wrapper
+is bypassed: tmux runs the command detached, returns immediately, and
+the response carries an empty `stdout`.
+
+> **CAUTION** — `run_shell` runs ARBITRARY shell commands on the
+> tmux-mcp host. tmux executes `command` via `/bin/sh`; **the command
+> itself is not sandboxed by this server**, so an agent that can call
+> this tool can run any program the server's uid is allowed to run.
+> Operators must trust the agents reaching for `run_shell` — gate the
+> surface away from untrusted clients with the `-allowlist` flag (see
+> [`docs/flags.md`](flags.md)) or run the server with `-read-only`,
+> which excludes `run_shell` (and every other mutating tool) from the
+> dispatcher entirely.
+>
+> Mutating in spirit (it executes shell side effects), so `run_shell`
+> is **not** allowed under `-read-only`.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                                                                                          |
+| ------------ | ------- | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `command`    | string  | yes      | —       | Shell pipeline tmux runs via `/bin/sh`. Capped at 4096 bytes; NUL and other ASCII control bytes (except tab) are rejected. |
+| `start_dir`  | string  | no       | `""`    | When set, tmux chdir's into this directory before exec'ing /bin/sh (`-c <start-dir>`). Must be an absolute path. |
+| `target`     | string  | no       | `""`    | Pane/session target (`session`, `session:window`, or `session:window.pane`) tmux uses for format-string evaluation (`-t`). |
+| `background` | boolean | no       | `false` | When true, run the command detached (`-b`); tmux returns immediately and stdout is discarded. |
+
+`command` must be valid UTF-8; the boundary rejects NUL bytes and
+ASCII control characters (newline, ESC, DEL, …). Tab (0x09) is
+allowed for spacing. `target`, when supplied, must match the same
+conservative pane-target regex used elsewhere on the surface.
+
+### Output
+
+JSON block: `{"stdout": "<captured>"}`. `stdout` is the raw bytes
+the shell wrote to fd 1+2 inside the wrapper (tmux's own `run-shell`
+output discipline does not reach the caller, so what you get back
+is the brace group's combined stdout/stderr). With `background=true`
+`stdout` is always the empty string — tmux discards the detached
+command's output and the controller has nothing to return.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Empty/oversize/non-UTF-8/control-character `command`, malformed `target`, or non-absolute `start_dir`.                |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`). The handler runs an up-front `has-session` probe because tmux's `run-shell -t <missing>` would otherwise silently fall back to the current/global context. |
+| `-32603` | The wrapped shell command exited non-zero, or tmux refused the call for any other reason. The shell's own diagnostics land in the captured `stdout` (combined fd 1+2), so the caller can read them after handling the error. |
+
+### Example
+
+Capture a command's output:
+
+```jsonc
+{ "command": "git rev-parse HEAD" }
+```
+
+Run a build in a specific working directory:
+
+```jsonc
+{ "command": "make build", "start_dir": "/srv/projects/demo" }
+```
+
+Fire-and-forget a notification (no output captured, returns
+immediately):
+
+```jsonc
+{ "command": "curl -fsS https://hooks.example/ping &", "background": true }
+```
+
+Pin format-string evaluation to a specific session (tmux substitutes
+`#{}` against that session's context before exec'ing /bin/sh):
+
+```jsonc
+{ "command": "echo target=#{session_name}", "target": "demo" }
+```
+
+---
+
 ## `respawn_pane`
 
 Restart the command running in an existing pane via
