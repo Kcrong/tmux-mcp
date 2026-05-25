@@ -4831,6 +4831,34 @@ reload that does not blow up on missing or out-of-version directives.
 | ------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `path`  | string  | yes      | absolute filesystem path to the tmux.conf. Max 4096 bytes; rejects NUL, control characters, and `..` traversal segments.             |
 | `quiet` | boolean | no       | when true, pass `-q` so tmux suppresses non-fatal errors (unknown options, missing file). Defaults to false.                         |
+## `set_hook`
+
+Bind or unbind a tmux command to a server / session-scoped event via
+`tmux set-hook`. Hooks let an agent react to tmux's own lifecycle —
+pane death, client attach, session creation — without polling, so
+long-running supervisors can install once and forget.
+
+`name` is the event (e.g. `pane-died`, `client-attached`,
+`session-created`); `command` is the tmux command line tmux will run
+when the event fires (e.g. `display-message "x"`,
+`run-shell ./on-pane-died.sh`). Set `unset=true` to clear an existing
+hook (`-u`); on the unset path `command` is ignored. Set
+`global=true` to bind on the server-wide options table (`-g`) so
+every current and future session inherits the hook; otherwise
+`target` names the session whose options table the hook lands on
+(`-t TARGET`). Mutating: hooks change the daemon's behaviour for
+every subsequent event, so this tool is **not** allowed under
+`-read-only`.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                                                            |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `name`    | string  | yes      | hook event name; len 1-128, regex `^[A-Za-z0-9_-]+$`.                                                            |
+| `command` | string  | conditional | required when `unset=false`; len 0-4096, no NUL or other ASCII control bytes (tab is allowed). Ignored when `unset=true`. |
+| `unset`   | boolean | no       | when true, clear the hook (`-u`) instead of binding it. Defaults to false.                                       |
+| `global`  | boolean | no       | when true, bind on the server-wide options table (`-g`); `target` is ignored. Defaults to false.                  |
+| `target`  | string  | conditional | required when `global=false`; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64).         |
 
 ### Output
 
@@ -4898,6 +4926,21 @@ The reload is observable via `show_options` — for instance, sourcing a
 `escape-time` value to `"17"` immediately, so an agent that wants to
 confirm the reload took effect can chain into `show_options`.
 
+```jsonc
+{
+  "set":    true,
+  "unset":  false,    // mirrors the input flag so a caller can branch on the resolved mode.
+  "global": false,    // mirrors the input flag.
+  "name":   "pane-died" // echoes the hook name back verbatim.
+}
+```
+
+The ack shape is identical on the bind and unset paths — only the
+`unset` flag distinguishes the two. Re-running the unset path against
+an already-cleared hook is a no-op (the wrapper preserves tmux's
+idempotent `-u` semantics) so deployment scripts can teardown
+unconditionally.
+
 ### Errors
 
 | Code     | Cause                                                              |
@@ -4952,6 +4995,9 @@ stderr in this case; any other tmux failure surfaces as `-32603`.
 | `-32602` | `path` missing, longer than 4096 bytes, relative, contains a control character / NUL byte, contains a `..` segment, or an unknown field on `arguments`. |
 | `-32000` | `path` does not exist on the filesystem (`errs.ErrSessionNotFound`); only when `quiet=false`. With `quiet=true` tmux silently swallows the missing-file case. |
 | `-32603` | tmux's source-file failed for an unexpected reason (rare; typically a fork/exec error or syntactically-broken config under quiet=false). |
+| `-32602` | `name` missing / outside regex/length policy; `command` missing on bind path or > 4 KiB / contains NUL or other control bytes; `target` missing on the per-session bind path or outside the session-name policy; unknown field on `arguments`. |
+| `-32000` | Target session does not exist (`errs.ErrSessionNotFound`); also covers tmux's "no such window" / "invalid option" stderr shapes for an unknown hook name on the unset path. |
+| `-32603` | tmux refused the set-hook for an unexpected reason (rare; typically a fork/exec error). |
 
 ### Examples
 
@@ -5020,5 +5066,23 @@ Pair with `show_options` to confirm the reload took effect:
 ```jsonc
 { "name": "source_file",  "arguments": { "path": "/etc/tmux-mcp/tmux.conf" } }
 { "name": "show_options", "arguments": { "scope": "server" } }
+// Bind a hook on a single session.
+{ "name": "pane-died", "command": "display-message \"a pane just died\"", "target": "demo" }
+
+// Bind globally so every session inherits the hook.
+{ "name": "client-attached", "command": "run-shell ./on-attach.sh", "global": true }
+
+// Clear a hook a previous run installed.
+{ "name": "pane-died", "target": "demo", "unset": true }
+
+// Clear the global variant.
+{ "name": "client-attached", "global": true, "unset": true }
+```
+
+A typical install-then-clear chain:
+
+```jsonc
+{ "name": "set_hook", "arguments": { "name": "pane-died", "command": "display-message x", "target": "demo" } }
+{ "name": "set_hook", "arguments": { "name": "pane-died", "target": "demo", "unset": true } }
 ```
 

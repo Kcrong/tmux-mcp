@@ -872,6 +872,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.lockClient(ctx, call.Arguments)
 	case "source_file":
 		return t.sourceFile(ctx, call.Arguments)
+	case "set_hook":
+		return t.setHook(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path
