@@ -808,6 +808,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.nextWindow(ctx, call.Arguments)
 	case "last_window":
 		return t.lastWindow(ctx, call.Arguments)
+	case "previous_window":
+		return t.previousWindow(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
 	case "find_window":
