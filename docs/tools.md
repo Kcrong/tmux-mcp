@@ -1686,6 +1686,64 @@ rewriting a status variable:
 { "name": "display_message",  "arguments": { "format": "#{status-format[0]}" } }
 // agent flips the option via shell / a future set_options tool
 { "name": "refresh_client",   "arguments": { "status_only": true } }
+## `lock_session`
+
+Lock every client attached to a session via
+`tmux lock-session -t SESSION`. tmux runs the configured `lock-command`
+(default `lock -np`) on each attached terminal, so the human user has
+to authenticate before resuming work. Running processes inside the
+session are left untouched and the session itself stays valid for
+follow-up tools — only the attached clients see the lock screen.
+
+Useful when an agent is handing a long-running session back to a human
+and wants the screen secured. Headless servers (the common case for
+tmux-mcp) have nothing to lock; tmux still exits 0 because the loop
+over attached clients is empty, so the call is safe to make from
+automation that does not know whether anyone is currently attached.
+
+This tool mutates state (it writes the lock screen to every attached
+client) and is therefore **not** in the `-read-only` allowlist — a
+read-only agent that calls it sees `-32011` (`errs.ErrReadOnly`)
+before any tmux command runs.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                  |
+| --------- | ------ | -------- | ------------------------------------------------------ |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$` |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` is rejected with `-32602` before tmux is consulted — a typo
+like `"sesion"` fails fast.
+
+### Output
+
+JSON text block: `{"locked": true}`. The boundary deliberately does
+not echo which clients were locked — `tmux lock-session` reports
+nothing of the sort itself, and a follow-up `list_clients` is one
+call away if the agent wants to inspect the affected terminals.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, or an unknown field was sent.           |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32011` | Server started with `-read-only`; lock_session mutates state and is rejected (`errs.ErrReadOnly`). |
+| `-32603` | tmux refused the lock for an unexpected reason.                    |
+
+### Example
+
+```jsonc
+{ "session": "demo" }
+```
+
+Pair with `list_clients` to confirm exactly which terminals were
+affected when handing the session back to a human:
+
+```jsonc
+{ "name": "list_clients",  "arguments": { "session": "demo" } }
+{ "name": "lock_session",  "arguments": { "session": "demo" } }
 ```
 
 ---
