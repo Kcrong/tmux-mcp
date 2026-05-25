@@ -65,9 +65,13 @@ func TestHandle_SwitchClient_DirectionalIsHeadlessNoop(t *testing.T) {
 		"name": "sc_d_b", "command": "/bin/sh",
 	})
 
+	// Subtests run serially: the three switch-client invocations all
+	// hit the same tmux server, and a 3-way fan-out under heavy macOS
+	// arm64 load can starve the server's command queue and trip the
+	// 10 s context deadline before the first call returns.
+	//nolint:paralleltest // intentional serial execution to avoid macOS arm64 starvation
 	for _, flag := range []string{"last", "next", "prev"} {
 		t.Run(flag, func(t *testing.T) {
-			t.Parallel()
 			body := extractText(t, callTool(t, tools, ctx, "switch_client", map[string]any{
 				flag: true,
 			}))
