@@ -44,6 +44,10 @@ var readOnlyTools = map[string]struct{}{
 	"list_clients":  {},
 	"list_buffers":  {},
 	"list_keys":     {},
+	// list_commands wraps `tmux list-commands` — pure introspection
+	// of the tmux command surface (every verb tmux exposes plus its
+	// argument signature). Never mutates server state.
+	"list_commands": {},
 	// choose_tree is the snapshot form of `tmux choose-tree` — it
 	// only ever runs `tmux list-windows -F ...` under the hood and
 	// never mutates server state.
@@ -57,8 +61,12 @@ var readOnlyTools = map[string]struct{}{
 	// Buffer / option / message inspectors. show_buffer and
 	// show_options are spec-named for forward compatibility — neither
 	// is registered today, but adding them here means the policy is
-	// already correct on the day they land.
+	// already correct on the day they land. save_buffer is the
+	// canonical "I want the whole buffer payload" read path; it is
+	// inspection-only by construction (it never mutates tmux state)
+	// so it lives next to show_buffer here.
 	"show_buffer":  {},
+	"save_buffer":  {},
 	"show_options": {},
 	// show_window_options is the read-side sibling of set_window_option:
 	// it wraps `tmux show-window-options [-g] [-t TARGET] [OPTION]` and
@@ -66,6 +74,17 @@ var readOnlyTools = map[string]struct{}{
 	// path runs in this handler, so it belongs on the inspection
 	// allowlist alongside show_options.
 	"show_window_options": {},
+	// show_environment reads the per-session or server-wide
+	// environment table that future panes will inherit
+	// (`tmux show-environment`). It never mutates server state — the
+	// write counterpart is set_environment, which is deliberately
+	// kept off this list.
+	"show_environment": {},
+	// show_hooks enumerates the server's hook bindings via
+	// `tmux show-options -H` / `-wH` — strictly inspection, never
+	// installs or removes a binding (that is set_hook's mutating
+	// surface). Allowed under -read-only.
+	"show_hooks": {},
 	// "display_message" is the registered tool name; "show_message" is
 	// the spec-named alias the read-only feature reserves so callers
 	// targeting either name see the same policy.

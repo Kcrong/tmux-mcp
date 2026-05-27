@@ -327,6 +327,64 @@ func (c *Controller) LinkWindow(ctx context.Context, src, dst string, kill bool)
 	return nil
 }
 
+// UnlinkWindow removes the window reference addressed by target via
+// `tmux unlink-window -t <target>` (with `-k` when kill is true). It is
+// the inverse of LinkWindow: where link-window grafts a window's
+// `#{window_id}` into a second session's slot, unlink-window detaches
+// the named slot from that session — leaving the window itself alive in
+// any other sessions still referencing the same id. target uses tmux's
+// standard `<session>:<window>` form; the boundary is responsible for
+// the regex/length validation of each half.
+//
+// kill maps to tmux's `-k` flag: when false (the default), tmux refuses
+// to unlink a window whose only reference is the one being removed
+// (because doing so would also reap the underlying window itself); when
+// true, the call proceeds even on the last reference, which destroys
+// the window. The two flag values map to the two complementary
+// use-cases: `kill=false` for "stop sharing into this session, but
+// leave the window running where it lives", and `kill=true` for
+// "destroy the linked window now that no session needs it any longer".
+//
+// A missing session/window surfaces as a wrapped errs.ErrSessionNotFound
+// for the same reason described on SelectWindow: tmux's unlink-window
+// emits "can't find window" / "can't find session" when the target does
+// not exist, and we fold both into the typed sentinel here so the
+// JSON-RPC dispatcher maps the failure to CodeSessionNotFound the same
+// way every other window method does.
+//
+// Other failures — most notably the kill=false / last-reference refusal
+// tmux phrases as "session has only one window" or "session would be
+// destroyed" — pass through as-is so the JSON-RPC layer surfaces them
+// via CodeInternal. The caller can read the wrapped tmux stderr to
+// branch on the exact failure mode without us baking another sentinel
+// into errs for a case the boundary already dissuades by inverting the
+// kill flag.
+func (c *Controller) UnlinkWindow(ctx context.Context, target string, kill bool) error {
+	if target == "" {
+		return errors.New("target required")
+	}
+	args := []string{"unlink-window", "-t", target}
+	if kill {
+		// -k means "unlink even if this is the last reference, destroying
+		// the window". Append at the end so the argv order stays easy to
+		// diff against tmux's man page (`unlink-window -t … [-k]`).
+		args = append(args, "-k")
+	}
+	if _, err := c.run(ctx, args...); err != nil {
+		// `tmux unlink-window -t <target>` rejects an unknown
+		// session/window with "can't find window" — which run() does not
+		// translate by itself — so fold it into errs.ErrSessionNotFound
+		// here, mirroring SelectWindow / SwapWindow / LinkWindow's
+		// handling of the same phrasing.
+		if !errors.Is(err, errs.ErrSessionNotFound) &&
+			strings.Contains(strings.ToLower(err.Error()), "can't find window") {
+			return fmt.Errorf("%s: %w", err.Error(), errs.ErrSessionNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // MoveWindow relocates the window addressed by src onto the dst slot via
 // `tmux move-window -s <src> -t <dst>`. Both src and dst use tmux's
 // standard `<session>:<window>` target form; dst may carry an empty

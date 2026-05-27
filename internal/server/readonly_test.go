@@ -31,11 +31,15 @@ func TestIsReadOnlyTool_AllowlistMembers(t *testing.T) {
 		"list_clients",
 		"list_buffers",
 		"list_keys",
+		"list_commands",
 		"choose_tree",
 		"find_window",
 		"show_buffer",
+		"save_buffer",
 		"show_options",
 		"show_window_options",
+		"show_environment",
+		"show_hooks",
 		"display_message",
 		"show_message",
 		"show_messages",
@@ -63,6 +67,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{
 		"send_keys",
+		"send_prefix",
 		"session_create",
 		"session_kill",
 		"session_rename",
@@ -73,11 +78,16 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"display_panes",
 		"clear_history",
 		"clock_mode",
+		"customize_mode",
 		"run_shell",
 		"display_popup",
+		"lock_session",
+		"pipe_pane",
+		"if_shell",
 		"send_signal",
 		"resize",
 		"pane_select",
+		"select_pane",
 		"pane_split",
 		"pane_kill",
 		"pane_swap",
@@ -86,6 +96,7 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"pane_break",
 		"last_pane",
 		"move_pane",
+		"copy_mode",
 		"window_create",
 		"window_kill",
 		"window_select",
@@ -93,14 +104,43 @@ func TestIsReadOnlyTool_RejectsMutators(t *testing.T) {
 		"window_move",
 		"new_window",
 		"swap_window",
+		"select_layout",
+		"bind_key",
+		"rotate_window",
 		"unbind_key",
 		"link_window",
+		"set_option",
 		"set_window_option",
 		"switch_client",
 		"lock_server",
+		"refresh_client",
+		"paste_buffer",
+		"source_file",
+		"next_window",
+		"respawn_window",
+		"unlink_window",
+		"set_hook",
+		"next_layout",
+		"previous_layout",
+		"unset_hook",
+		"server_access",
+		"attach_session",
 		"wait_for_stable",
 		"snapshot_diff",
 		"choose_client",
+		"set_environment",
+		// delete_buffer drops a paste buffer from the tmux server, so
+		// the read-only spec must reject it just like every other
+		// mutating verb. We pin it here so a future contributor cannot
+		// silently flip the policy by adding the name to readOnlyTools.
+		"delete_buffer",
+		"command_prompt",
+		"confirm_before",
+		"choose_buffer",
+		"source_buffer",
+		"wait_for",
+		"suspend_client",
+		"display_menu",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -311,7 +351,8 @@ func TestServe_ReadOnly_RejectionInvokesAuditAndMetrics(t *testing.T) {
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, in, syncWriter, handler,
+		done <- Serve(
+			ctx, in, syncWriter, handler,
 			WithReadOnly(true),
 			WithAudit(audit),
 		)

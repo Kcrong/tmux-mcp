@@ -193,6 +193,18 @@ type Tools struct {
 	// Set from the operator-supplied -session-prefix CLI flag and
 	// validated at startup against the same regex used for session names.
 	SessionPrefix string
+	// MaxResponseBytes mirrors the operator-supplied -max-response-bytes
+	// CLI flag at the handler layer so a tool that wants to enforce the
+	// cap up front (today: save_buffer's `error_on_truncation=true`
+	// path) can reject oversize bodies before the dispatcher's framing-
+	// level [WithMaxResponseBytes] guard sees the response. Most handlers
+	// continue to ignore this field — the dispatcher already enforces
+	// the cap by replacing oversize bodies with a typed
+	// [errs.CodeOversizedResponse] error after the fact — so wiring it
+	// at construction time is no-op for the existing tool surface.
+	// Zero or negative disables the per-handler check, matching the
+	// dispatcher's "<= 0 means uncapped" contract.
+	MaxResponseBytes int64
 
 	// mu guards defs, dyn, and notify.
 	//
@@ -706,6 +718,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.sessionKill(ctx, call.Arguments)
 	case "send_keys":
 		return t.sendKeys(ctx, call.Arguments)
+	case "send_prefix":
+		return t.sendPrefix(ctx, call.Arguments)
 	case "capture":
 		return t.capture(ctx, call.Arguments)
 	case "wait_for_stable":
@@ -722,12 +736,16 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.startServer(ctx, call.Arguments)
 	case "kill_server":
 		return t.handleKillServer(ctx, call.Arguments)
+	case "server_access":
+		return t.serverAccess(ctx, call.Arguments)
 	case "kill_window":
 		return t.killWindow(ctx, call.Arguments)
 	case "list_panes":
 		return t.listPanes(ctx, call.Arguments)
 	case "pane_select":
 		return t.paneSelect(ctx, call.Arguments)
+	case "select_pane":
+		return t.selectPane(ctx, call.Arguments)
 	case "pane_split":
 		return t.paneSplit(ctx, call.Arguments)
 	case "pane_kill":
@@ -744,14 +762,26 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.lastPane(ctx, call.Arguments)
 	case "move_pane":
 		return t.movePane(ctx, call.Arguments)
+	case "copy_mode":
+		return t.copyMode(ctx, call.Arguments)
 	case "respawn_pane":
 		return t.respawnPane(ctx, call.Arguments)
+	case "respawn_window":
+		return t.respawnWindow(ctx, call.Arguments)
 	case "clear_history":
 		return t.clearHistory(ctx, call.Arguments)
 	case "clock_mode":
 		return t.clockMode(ctx, call.Arguments)
+	case "customize_mode":
+		return t.customizeMode(ctx, call.Arguments)
 	case "run_shell":
 		return t.runShell(ctx, call.Arguments)
+	case "lock_session":
+		return t.lockSession(ctx, call.Arguments)
+	case "pipe_pane":
+		return t.pipePane(ctx, call.Arguments)
+	case "if_shell":
+		return t.ifShell(ctx, call.Arguments)
 	case "session_describe":
 		return t.sessionDescribe(ctx, call.Arguments)
 	case "has_session":
@@ -764,6 +794,8 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.displayMessage(ctx, call.Arguments)
 	case "display_popup":
 		return t.displayPopup(ctx, call.Arguments)
+	case "display_menu":
+		return t.displayMenu(ctx, call.Arguments)
 	case "send_signal":
 		return t.sendSignal(ctx, call.Arguments)
 	case "window_create":
@@ -782,6 +814,20 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.swapWindow(ctx, call.Arguments)
 	case "link_window":
 		return t.linkWindow(ctx, call.Arguments)
+	case "select_layout":
+		return t.selectLayout(ctx, call.Arguments)
+	case "next_window":
+		return t.nextWindow(ctx, call.Arguments)
+	case "last_window":
+		return t.lastWindow(ctx, call.Arguments)
+	case "previous_window":
+		return t.previousWindow(ctx, call.Arguments)
+	case "unlink_window":
+		return t.unlinkWindow(ctx, call.Arguments)
+	case "rotate_window":
+		return t.rotateWindow(ctx, call.Arguments)
+	case "next_layout":
+		return t.nextLayout(ctx, call.Arguments)
 	case "list_windows":
 		return t.listWindows(ctx, call.Arguments)
 	case "find_window":
@@ -796,18 +842,38 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.detachClient(ctx, call.Arguments)
 	case "display_panes":
 		return t.displayPanes(ctx, call.Arguments)
+	case "suspend_client":
+		return t.suspendClient(ctx, call.Arguments)
 	case "list_keys":
 		return t.listKeys(ctx, call.Arguments)
+	case "bind_key":
+		return t.bindKey(ctx, call.Arguments)
 	case "unbind_key":
 		return t.unbindKey(ctx, call.Arguments)
+	case "list_commands":
+		return t.listCommands(ctx, call.Arguments)
+	case "unset_hook":
+		return t.unsetHook(ctx, call.Arguments)
 	case "choose_tree":
 		return t.chooseTree(ctx, call.Arguments)
+	case "refresh_client":
+		return t.refreshClient(ctx, call.Arguments)
+	case "choose_buffer":
+		return t.chooseBuffer(ctx, call.Arguments)
 	case "show_options":
 		return t.showOptions(ctx, call.Arguments)
 	case "set_window_option":
 		return t.setWindowOption(ctx, call.Arguments)
 	case "show_window_options":
 		return t.showWindowOptions(ctx, call.Arguments)
+	case "set_option":
+		return t.setOption(ctx, call.Arguments)
+	case "show_environment":
+		return t.showEnvironment(ctx, call.Arguments)
+	case "show_hooks":
+		return t.showHooks(ctx, call.Arguments)
+	case "attach_session":
+		return t.attachSession(ctx, call.Arguments)
 	case "set_buffer":
 		return t.setBuffer(ctx, call.Arguments)
 	case "load_buffer":
@@ -816,10 +882,34 @@ func (t *Tools) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcErr
 		return t.listBuffers(ctx, call.Arguments)
 	case "show_buffer":
 		return t.showBuffer(ctx, call.Arguments)
+	case "save_buffer":
+		return t.saveBuffer(ctx, call.Arguments)
 	case "switch_client":
 		return t.switchClient(ctx, call.Arguments)
 	case "lock_server":
 		return t.lockServer(ctx, call.Arguments)
+	case "set_environment":
+		return t.setEnvironment(ctx, call.Arguments)
+	case "delete_buffer":
+		return t.deleteBuffer(ctx, call.Arguments)
+	case "paste_buffer":
+		return t.pasteBuffer(ctx, call.Arguments)
+	case "lock_client":
+		return t.lockClient(ctx, call.Arguments)
+	case "source_file":
+		return t.sourceFile(ctx, call.Arguments)
+	case "set_hook":
+		return t.setHook(ctx, call.Arguments)
+	case "previous_layout":
+		return t.previousLayout(ctx, call.Arguments)
+	case "command_prompt":
+		return t.commandPrompt(ctx, call.Arguments)
+	case "confirm_before":
+		return t.confirmBefore(ctx, call.Arguments)
+	case "source_buffer":
+		return t.sourceBuffer(ctx, call.Arguments)
+	case "wait_for":
+		return t.waitFor(ctx, call.Arguments)
 	}
 	// Fall back to the dynamic registry. Tools added via RegisterTool
 	// don't have a hard-coded case above, so this is the only path

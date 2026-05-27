@@ -83,17 +83,29 @@ func TestShowMessages_MissingClientWrapsSentinel(t *testing.T) {
 // empty-slice result for every combination. A future regression that
 // dropped the `-J` / `-T` mapping would still surface as a divergent
 // argv shape in the unit-tested matrix below.
+//
+// Subtests run serially (no inner t.Parallel) on purpose: every case
+// shares the same Controller and so the same tmux server, and a
+// 4-way fan-out into the same daemon under heavy CI load (race +
+// shuffle + lots of unrelated parallel tests) can starve the server's
+// command queue and trip a 5 s context deadline. Serial execution
+// keeps the tmux side single-shot per case while the outer
+// t.Parallel() still lets this test run alongside other test
+// functions.
 func TestShowMessages_FlagsSelectArgv(t *testing.T) {
 	t.Parallel()
 	skipIfNoTmux(t)
 	c := newCtl(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 
 	if err := c.CreateSession(ctx, SessionSpec{Name: "sm_flags", Command: "/bin/sh"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
+	// Serialised on purpose to single-shot the tmux server's command
+	// queue per case — see the function-level doc comment.
+	//nolint:paralleltest // intentional serial execution
 	for _, tc := range []struct {
 		name string
 		jobs bool
@@ -105,7 +117,6 @@ func TestShowMessages_FlagsSelectArgv(t *testing.T) {
 		{"jobs_and_terminal", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := c.ShowMessages(ctx, "", tc.jobs, tc.term)
 			if err != nil {
 				t.Fatalf("ShowMessages(%v, %v): %v", tc.jobs, tc.term, err)

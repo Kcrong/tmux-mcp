@@ -30,7 +30,7 @@ Tool calls fail with a JSON-RPC `error` object. Codes are stable:
 | `-32002` | `errs.ErrTimeout`              | A polling wait (`wait_for_*`) exceeded its `timeout_ms` budget.                  |
 | `-32003` | `context.Canceled` / `DeadlineExceeded` | Caller (or its transport) cancelled the request mid-call.               |
 | `-32004` | `errs.ErrSessionExists`        | A session name collides with an existing one (e.g. `session_rename` to a name in use). |
-| `-32005` | `errs.ErrPaneActive`           | `respawn_pane` targeted a pane whose original command is still running and `kill` was not set; retry with `kill=true`. |
+| `-32005` | `errs.ErrPaneActive`           | `respawn_pane` / `respawn_window` targeted a pane or window whose original command is still running and `kill` was not set; retry with `kill=true`. |
 | `-32010` | `errs.ErrOversizedResponse`    | Marshalled response exceeded the `-max-response-bytes` ceiling; the original payload was suppressed. The underlying call did execute. |
 
 Sentinels live in [`internal/errs`](../internal/errs/errs.go); the
@@ -707,6 +707,41 @@ Status text block: `ok`.
 
 ```jsonc
 { "session": "demo", "keys": ["echo hello", "Enter"] }
+```
+
+---
+
+## `send_prefix`
+
+Deliver tmux's configured prefix key (default `C-b`, or `C-a` /
+whatever the running server has bound) to a target pane via
+`tmux send-prefix [-2] -t <target>`. Useful when an inner TUI (vim,
+htop, weechat, …) running inside the pane has captured the prefix
+chord for its own purposes and an agent needs to forward the literal
+prefix keystroke through to that inner program. Set `secondary: true`
+to deliver the secondary prefix (`-2`, configured via `prefix2`).
+
+### Input
+
+| Field       | Type    | Required | Default | Notes                                                                       |
+| ----------- | ------- | -------- | ------- | --------------------------------------------------------------------------- |
+| `target`    | string  | yes      | —       | pane target: `"session"`, `"session:window"`, or `"session:window.pane"` |
+| `secondary` | boolean | no       | `false` | when `true`, send the secondary prefix (`-2`) instead of the primary one    |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+- `-32602` — missing/malformed `target`.
+- `-32000` — session or pane does not exist.
+- `-32603` — tmux send-prefix failed.
+
+### Example
+
+```jsonc
+{ "target": "demo:0.1", "secondary": false }
 ```
 
 ---
@@ -1453,6 +1488,80 @@ which terminal to draw on:
 
 ---
 
+## `suspend_client`
+
+Send `SIGTSTP` to a tmux client via
+`tmux suspend-client [-t TARGET-CLIENT]` so the user can resume it
+later with `fg`. Strictly less destructive sibling of
+`detach_client`: the client process is paused but the session itself
+stays intact, and unattached clients are unaffected. Useful for an
+agent that wants to politely yield the terminal back to its operator
+without tearing the session down. This is a **mutating** tool — it
+changes a client process's run state (sends `SIGTSTP`) — so a
+`-read-only` deployment rejects it with `-32005`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field           | Type   | Required | Notes                                                                                                                                                      |
+| --------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target_client` | string | no       | tmux client target; regex `^[A-Za-z0-9_./:%-]+$`, max 256 bytes. Maps to `-t TARGET-CLIENT`. Accepts a TTY path like `/dev/pts/3`, a session-qualified name like `demo:0`, or an internal `%client-1` handle. Omit to let tmux pick its "current" client. |
+
+The schema sets `additionalProperties: false`, so a typo like
+`"client"` (instead of `"target_client"`) is rejected with `-32602`
+before tmux is consulted. Empty payload (`{}`) and entirely-absent
+`arguments` are both accepted as the "no `-t` flag" shape.
+
+### Output
+
+JSON text block with a flat object keyed by `suspended`:
+
+```jsonc
+{ "suspended": true }
+```
+
+| Field       | Type    | Notes                                                                                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `suspended` | boolean | Always `true` on success. Same shape as `detach_client`'s `detached` so callers can chain mutations against a stable wire-shape. |
+
+A headless server (no clients attached) with no `target_client`
+returns `{"suspended": true}` — a clean no-op rather than an error —
+so callers can fire-and-forget a suspend without first running
+`list_clients` to know whether anyone is watching. The boundary
+swallows tmux's `no current client` stderr in this case.
+
+### Errors
+
+| Code     | Cause                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed `target_client` (bad regex / over the 256-byte cap) or an unknown field on the schema.                            |
+| `-32000` | `target_client` named a client that is not currently attached (`errs.ErrSessionNotFound`).                                  |
+| `-32005` | Server is running in `-read-only` mode (this tool sends `SIGTSTP`).                                                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                                            |
+
+### Examples
+
+```jsonc
+// Suspend whoever is currently watching (no-op on a headless server)
+{}
+
+// Suspend a specific TTY (e.g. found via list_clients)
+{ "target_client": "/dev/pts/0" }
+
+// Suspend by internal client handle
+{ "target_client": "%client-1" }
+```
+
+Pair with `list_clients` to discover the live roster before picking
+a target to suspend:
+
+```jsonc
+{ "name": "list_clients",   "arguments": { "session": "demo" } }
+{ "name": "suspend_client", "arguments": { "target_client": "/dev/pts/0" } }
+```
+
+---
+
 ## `list_keys`
 
 Enumerate the key bindings on this controller's tmux server via
@@ -1535,6 +1644,78 @@ doesn't have to memorise the default tmux key map:
 { "name": "send_keys", "arguments": { "session": "demo", "keys": ["C-b", "?"] } }
 ```
 
+To install a new binding (rather than just read the existing map),
+pair `list_keys` with [`bind_key`](#bind_key) below — the two tools
+read and write the same keymap and share the same `key_table` regex
+so a name that round-trips through one will round-trip through the
+other.
+
+---
+
+## `bind_key`
+
+Register a tmux key binding via `tmux bind-key [-T TABLE] [-r] KEY COMMAND`.
+The write counterpart of [`list_keys`](#list_keys), which reads the
+same keymap back. Useful when an agent (or an init script the agent
+drives) wants to install a custom chord — `bind_key` answers "make
+F12 fire `display-message hello`" without dropping out to the shell.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                                                                        |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`        | string  | yes      | Keysym string tmux's parser knows (e.g. `"C-Space"`, `"M-x"`, `"Up"`). len 1-256, no NUL or other ASCII control bytes (DEL allowed because tmux uses literal keysym strings).                |
+| `command`    | string  | yes      | Entire tmux command line to bind to the chord; passed verbatim as a single argv element (do NOT split on whitespace — tmux parses it server-side). len 1-4096, no NUL or non-tab control bytes. |
+| `key_table`  | string  | no       | Keymap name (e.g. `"prefix"`, `"root"`, `"copy-mode"`, `"copy-mode-vi"`); maps to `-T TABLE`. Same shape as `list_keys.key_table` — len 1-64, regex `^[A-Za-z0-9_-]+$`. Omit to land in tmux's default table (`"prefix"` on tmux 3.4). |
+| `repeatable` | boolean | no       | When `true`, add `-r` so the binding can repeat while the prefix table stays armed (used by tmux's built-in resize / select-pane chords). Default `false`.                                  |
+
+The schema sets `additionalProperties: false`, so any field other than
+the four above is rejected with `-32602` (invalid params) before tmux
+is consulted — a typo like `"table"` (instead of `"key_table"`) fails
+fast instead of silently landing in the default table.
+
+### Output
+
+JSON text block: `{"bound": true, "key": "<key>", "table": "<key_table>"}`.
+The `key` and `table` fields echo the caller's inputs verbatim so an
+agent can confirm what tmux now thinks (an empty `table` means the
+binding landed in the default table). On every code path that reaches
+this envelope, `bound` is `true` — failures surface via the JSON-RPC
+error object instead.
+
+### Errors
+
+| Code     | Cause                                                                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | `key` or `command` missing/empty/oversized, contains a control byte, or `key_table` is malformed; or an unknown field was sent.                  |
+| `-32603` | tmux refused the bind (e.g. `command` references an unknown verb, the command string has a syntax error, the named `key_table` does not exist). |
+
+`bind-key` has no equivalent of "session not found" — it does not
+look up live state, so failures are purely syntactic and surface
+through the generic internal-error code rather than a typed sentinel.
+
+### Examples
+
+```jsonc
+// Install F12 → display a message; lands in the default (prefix) table.
+{ "key": "F12", "command": "display-message hello" }
+
+// Install in copy-mode so it only fires while copy-mode is active.
+{ "key": "F11", "command": "send-keys -X cancel", "key_table": "copy-mode" }
+
+// Repeatable resize binding: hold the prefix and tap C-Right repeatedly.
+{ "key": "C-Right", "command": "resize-pane -R 5", "repeatable": true }
+```
+
+Pair with [`list_keys`](#list_keys) to confirm the binding landed and
+then drive it with `send_keys`:
+
+```jsonc
+{ "name": "bind_key",  "arguments": { "key": "F12", "command": "display-message hello" } }
+{ "name": "list_keys", "arguments": { "key_table": "prefix" } }
+{ "name": "send_keys", "arguments": { "session": "demo", "keys": ["F12"] } }
+```
+
 ---
 
 ## `unbind_key`
@@ -1612,6 +1793,376 @@ the teardown landed:
 
 ---
 
+## `refresh_client`
+
+Force a tmux client redraw via `tmux refresh-client [-S] [-t <client>]`.
+Useful when an agent has rewritten an option that affects what the
+client renders (for example `status-format`, `status-style`,
+`window-status-format`) and wants the change to take effect
+immediately rather than on the next tmux render tick. This is a
+**mutating** tool — it changes what the client's terminal displays —
+so a `-read-only` deployment rejects it with `-32005`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                                                              |
+| ------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `client`      | string  | no       | tmux client name (the path-like key shown in `list_clients`, e.g. `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Omit to refresh every attached client. |
+| `status_only` | boolean | no       | When `true`, pass `-S` to redraw only the status line (cheaper than a full screen redraw). Defaults to `false`.                    |
+
+The schema sets `additionalProperties: false`, so any field other than
+`client` / `status_only` is rejected with `-32602` (invalid params)
+before tmux is consulted — a typo like `"clinet"` fails fast instead
+of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `refreshed`:
+
+```jsonc
+{ "refreshed": true }
+```
+
+| Field       | Type    | Notes                                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------------ |
+| `refreshed` | boolean | Always `true` on success. The shape leaves room for future extensions without breaking callers that read only the boolean. |
+
+A headless server with nothing attached returns `{"refreshed": true}`
+— a clean success rather than an error — so callers can fire-and-
+forget a refresh without first running `list_clients` to know whether
+there is anything to refresh. The boundary swallows tmux's
+`no current client` stderr in this case; any other tmux failure
+surfaces as `-32603`.
+
+### Errors
+
+| Code     | Cause                                                                            |
+| -------- | -------------------------------------------------------------------------------- |
+| `-32602` | Malformed args (bad regex / over the length cap on `client`) or an unknown field on the schema. |
+| `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
+| `-32005` | Server is running in `-read-only` mode (this tool mutates client state).                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+## `unset_hook`
+
+Remove a previously-set tmux hook via
+`tmux set-hook -u [-g | -w] [-t TARGET] HOOK-NAME` — the inverse of
+`set_hook`. Useful for an agent tearing down a hook installed earlier
+in the session, or for a recovery loop that wants to clear a
+supervisor's `pane-died` / `client-attached` handler before
+re-installing it from scratch.
+
+### Input
+
+| Field    | Type    | Required | Notes                                                                                                                              |
+| -------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `hook`   | string  | yes      | Hook event name to clear (e.g. `"pane-died"`, `"client-attached"`, `"session-created"`). Regex `^[a-z][a-z0-9_-]*$`, len 1-256.   |
+| `target` | string  | no\*     | Per-session clear target (`-t TARGET`); required when neither `global=true` nor `window=true`. Same regex/length policy as session names. Optional under `window=true` (omit to use the current window). |
+| `global` | boolean | no       | When true, clear on the server-wide options table (`-g`); `target` is ignored. Mutually exclusive with `window=true`. Default `false`. |
+| `window` | boolean | no       | When true, clear on the window-options table (`-w`); `target` may name a window or be omitted for the current window. Mutually exclusive with `global=true`. Default `false`. |
+
+\* When neither `global=true` nor `window=true` is set, the clear lands
+on the per-session options of the resolved `target` session, and
+`target` is required. tmux's `-g` / `-w` / `-t TARGET` shapes are
+mutually exclusive on the unset path; the handler refuses
+`global=true` + `window=true` with `-32602` (invalid params) so
+callers see a clean error rather than tmux's version-dependent stderr.
+
+The schema sets `additionalProperties: false`, so any field other
+than the four above is rejected with `-32602` (invalid params)
+before tmux is consulted — a typo like `"hook_name"` (instead of
+`"hook"`) fails fast.
+
+### Output
+
+JSON text block with a flat ack object:
+
+```jsonc
+{ "unset": true, "global": false, "window": false, "hook": "pane-died" }
+```
+
+Idempotent by design. tmux's `set-hook -u` against a hook that was
+never set (or was already cleared by a prior call) succeeds silently
+— no stderr, exit code 0 — so the boundary returns the same
+`{"unset": true, ...}` ack uniformly whether the binding existed or
+not. A recovery loop re-issuing the same teardown frame sees a clean
+ack on the second iteration.
+
+### Errors
+
+| Code     | Cause                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `hook` missing or malformed (length, regex); `target` malformed when `global=false` and `window=false`; both `global=true` and `window=true`; or an unknown field was sent. |
+| `-32000` | `target` names a session that does not exist on this controller's tmux server (`CodeSessionNotFound`). Also returned when the daemon is headless on the per-session clear path so a missing-target outcome surfaces with a single stable code. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, etc.). Idempotent shapes (clearing a hook that was already absent) are NOT errors. |
+
+Mutating: not allowed under `-read-only`.
+
+### Examples
+
+```jsonc
+// refresh every attached client (full redraw)
+{}
+
+// status-line refresh only — fastest path after a status-format change
+{ "status_only": true }
+
+// scope to a single client (e.g. after `list_clients` returned its TTY)
+{ "client": "/dev/pts/0" }
+
+// status-line refresh, scoped to one terminal
+{ "client": "/dev/pts/0", "status_only": true }
+```
+
+Pair with `set-option`-style introspection to redraw immediately after
+rewriting a status variable:
+
+```jsonc
+{ "name": "display_message",  "arguments": { "format": "#{status-format[0]}" } }
+// agent flips the option via shell / a future set_options tool
+{ "name": "refresh_client",   "arguments": { "status_only": true } }
+## `lock_session`
+
+Lock every client attached to a session via
+`tmux lock-session -t SESSION`. tmux runs the configured `lock-command`
+(default `lock -np`) on each attached terminal, so the human user has
+to authenticate before resuming work. Running processes inside the
+session are left untouched and the session itself stays valid for
+follow-up tools — only the attached clients see the lock screen.
+
+Useful when an agent is handing a long-running session back to a human
+and wants the screen secured. Headless servers (the common case for
+tmux-mcp) have nothing to lock; tmux still exits 0 because the loop
+over attached clients is empty, so the call is safe to make from
+automation that does not know whether anyone is currently attached.
+
+This tool mutates state (it writes the lock screen to every attached
+client) and is therefore **not** in the `-read-only` allowlist — a
+read-only agent that calls it sees `-32011` (`errs.ErrReadOnly`)
+before any tmux command runs.
+
+### Input
+
+| Field     | Type   | Required | Notes                                                  |
+| --------- | ------ | -------- | ------------------------------------------------------ |
+| `session` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$` |
+
+The schema sets `additionalProperties: false`, so any field other than
+`session` is rejected with `-32602` before tmux is consulted — a typo
+like `"sesion"` fails fast.
+
+### Output
+
+JSON text block: `{"locked": true}`. The boundary deliberately does
+not echo which clients were locked — `tmux lock-session` reports
+nothing of the sort itself, and a follow-up `list_clients` is one
+call away if the agent wants to inspect the affected terminals.
+## `list_commands`
+
+Enumerate every command this tmux build advertises via
+`tmux list-commands`. Useful for an agent that needs to introspect
+the tmux command surface before sending one through the rest of the
+boundary, or to confirm a command exists on the deployed tmux
+release. Each entry carries `{ name, alias, args }` — `alias` is the
+short form (e.g. `lsk` for `list-keys`) and is empty when the command
+has no alias; `args` is the verbatim flag/argument signature tmux
+printed (empty for no-arg commands like `kill-server`).
+
+### Input
+
+| Field     | Type   | Required | Notes                                                                              |
+| --------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `command` | string | no       | optional command name (e.g. `"list-keys"`, `"send-keys"`); maps to the trailing positional `tmux list-commands NAME`. len 1-64, regex `^[A-Za-z][A-Za-z0-9-]*$`. Omit to list every command. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`command` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"name"` (instead of `"command"`) fails fast
+instead of silently behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `commands`:
+
+```jsonc
+{
+  "commands": [
+    { "name": "list-keys",    "alias": "lsk", "args": "[-1aN] [-P prefix-string] [-T key-table] [key]" },
+    { "name": "kill-server",  "alias": "",    "args": "" }
+## `server_access`
+
+Manage the per-user ACL on the tmux server's shared socket via
+`tmux server-access [-adlrw] [USER]` (introduced in tmux 3.4 alongside
+the shared-sessions feature). Useful for an operator running tmux
+against a multi-user host who wants to grant or revoke access to peers
+without restarting the daemon, or for an agent that needs to flip a
+peer between read-only spectatorship and full control.
+
+The tmux owner of the running server (and root) cannot be added,
+removed, or have their permissions changed — tmux rejects those
+shapes itself. Sockets created by tmux default to filesystem
+permissions that block every user other than the owner, so granting
+access here is only half the story: the socket file's group / other
+permissions must also allow the peer to connect.
+
+### Input
+
+| Field  | Type   | Required           | Notes                                                                                              |
+| ------ | ------ | ------------------ | -------------------------------------------------------------------------------------------------- |
+| `op`   | string | yes                | One of `"add"`, `"delete"`, `"list"`, `"read_only"`, `"write"`. Picks the underlying tmux flag.    |
+| `user` | string | yes (except `list`) | POSIX username; len 1-32, regex `^[a-z_][a-z0-9_-]*$`. Must be omitted when `op="list"`.           |
+
+The schema sets `additionalProperties: false`, so any field other than
+`op` and `user` is rejected with `-32602` (invalid params) before tmux
+is consulted. The `op`/`user` constraint (`user` required for every
+`op` except `list`, where it must be absent) is enforced by the
+handler — JSON Schema cannot express the rule directly.
+
+`op` mapping to tmux flags:
+
+| `op`        | tmux flag    | Effect                                                              |
+| ----------- | ------------ | ------------------------------------------------------------------- |
+| `add`       | `-a USER`    | Grants USER access. Defaults to read-only on tmux's side.           |
+| `delete`    | `-d USER`    | Revokes access. tmux detaches USER's currently-attached clients.    |
+| `list`      | `-l`         | Returns the current access table (no USER allowed).                 |
+| `read_only` | `-r USER`    | Switches an existing entry to read-only.                            |
+| `write`     | `-w USER`    | Switches an existing entry to read+write.                           |
+
+### Output
+
+JSON text block.
+
+For mutating ops (`add`, `delete`, `read_only`, `write`):
+
+```jsonc
+{ "ok": true, "op": "add", "user": "alice" }
+```
+
+For `list`:
+
+```jsonc
+{
+  "entries": [
+    { "user": "alice", "permission": "R/W" },
+    { "user": "bob",   "permission": "R" }
+  ]
+}
+```
+
+| Field   | Type   | Notes                                                                                                |
+| ------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| `name`  | string | Canonical command name (the verb you'd pass to `tmux <name>`).                                       |
+| `alias` | string | tmux's short form for the command (e.g. `lsk` for `list-keys`); empty when the command has no alias. |
+| `args`  | string | The verbatim flag/argument signature tmux printed; empty for no-arg commands like `kill-server`.     |
+
+A filter that does not match a known command returns
+`{"commands": []}` — a clean empty list rather than an error — so
+callers can iterate the response without a separate "is this an
+error" branch. (tmux 3.0–3.3 exits 1 on an unknown filter; 3.4+ exits
+0 with empty stdout. The boundary collapses both into the same empty
+list.)
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `session`, or an unknown field was sent.           |
+| `-32000` | `session` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32011` | Server started with `-read-only`; lock_session mutates state and is rejected (`errs.ErrReadOnly`). |
+| `-32603` | tmux refused the lock for an unexpected reason.                    |
+
+### Example
+
+```jsonc
+{ "session": "demo" }
+```
+
+Pair with `list_clients` to confirm exactly which terminals were
+affected when handing the session back to a human:
+
+```jsonc
+{ "name": "list_clients",  "arguments": { "session": "demo" } }
+{ "name": "lock_session",  "arguments": { "session": "demo" } }
+| `-32602` | `command` outside the regex/length policy, or an unknown field was sent. |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).   |
+`entries` is always a non-null array (empty on a server with no access
+entries, or when no daemon is running yet — see below). `permission`
+is tmux's permission token: `"R/W"` for read+write, `"R"` for
+read-only, and the empty string for the server-owner row tmux prints
+without a permission column.
+
+`list` is also the only op that gracefully degrades on a headless
+server: when no tmux daemon is yet listening on the controller's
+socket, the call returns `{"entries":[]}` rather than an error,
+mirroring the behaviour of `session_list`. The other ops require a
+running daemon (start one via `start_server` or any
+session-creating tool) and surface tmux's stderr on failure.
+
+### Errors
+
+| Code     | Cause                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `op`; missing `user` for a mutating op; `user` set on `op="list"`; user fails the regex / length cap; unknown field. |
+| `-32603` | tmux failed (no such OS user, daemon not running for a mutating op, etc.). The original stderr is wrapped into the message.    |
+
+### Examples
+
+```jsonc
+// Every command tmux exposes.
+{}
+
+// Just the signature for one command.
+{ "command": "list-keys" }
+```
+
+Pair with `display_message` once you've discovered a command of
+interest — `list_commands` answers "does this tmux build support
+verb X?" so the agent doesn't have to guess against an older release:
+
+```jsonc
+{ "name": "list_commands",   "arguments": { "command": "display-message" } }
+{ "name": "display_message", "arguments": { "format": "#{session_name}", "session": "demo" } }
+```
+// Clear a per-session hook installed earlier on session "supervisor".
+{ "hook": "pane-died", "target": "supervisor" }
+
+// Clear a global supervisor hook (server-wide).
+{ "hook": "client-attached", "global": true }
+
+// Clear a window-scoped hook on session "supervisor"'s current window.
+{ "hook": "pane-died", "target": "supervisor", "window": true }
+
+// Clear a window-scoped hook on the current window (no target).
+{ "hook": "pane-died", "window": true }
+```
+
+Pair with `set_hook` to install hooks (when available) and re-run
+your teardown unconditionally — the idempotent ack means a recovery
+loop can issue `unset_hook` before re-binding without first probing
+whether the hook is currently set.
+// Inspect the current access list. Safe even before any session exists.
+{ "name": "server_access", "arguments": { "op": "list" } }
+
+// Grant a peer read-only access (tmux defaults to read-only on `-a`).
+{ "name": "server_access", "arguments": { "op": "add",  "user": "alice" } }
+
+// Promote them to read+write so they can drive panes too.
+{ "name": "server_access", "arguments": { "op": "write", "user": "alice" } }
+
+// Demote back to read-only (e.g. before showing them a sensitive pane).
+{ "name": "server_access", "arguments": { "op": "read_only", "user": "alice" } }
+
+// Kick them off entirely. Detaches their attached clients in flight.
+{ "name": "server_access", "arguments": { "op": "delete", "user": "alice" } }
+```
+
+`server_access` is rejected under `-read-only` even for `op="list"`:
+the surface is gated as a unit because four of its five ops mutate
+server state. An operator who wants to inspect the access list under
+`-read-only` should drop the flag for that one tool — there is no
+per-op carve-out.
+
+---
+
 ## `pane_select`
 
 Make `target` the active pane of its window. Subsequent `send_keys` /
@@ -1619,6 +2170,11 @@ Make `target` the active pane of its window. Subsequent `send_keys` /
 newly selected pane. Useful for multi-pane TUIs (vim+terminal split,
 zellij-style layouts) where the agent needs to flip focus between
 panes between commands.
+
+For mark/unmark, last-active jumps, directional walks, input toggling,
+or zoom, reach for [`select_pane`](#select_pane) instead — it accepts
+the same `target` plus the full optional flag set `tmux select-pane`
+understands.
 
 ### Input
 
@@ -1639,6 +2195,68 @@ Status text block: `ok`.
 
 ```jsonc
 { "target": "demo:0.1" }
+```
+
+---
+
+## `select_pane`
+
+The capable sibling of [`pane_select`](#pane_select): wraps
+`tmux select-pane -t TARGET` with the full optional flag set so an
+agent can mark / unmark the pane, jump back to the last-active pane,
+walk one step toward a directional neighbour, toggle pane input, or
+zoom the window — atomic on tmux's side. Use this when the bare
+"make this pane active" semantics of `pane_select` aren't enough.
+
+The flag pairs `mark` / `unmark` and `enable_input` / `disable_input`
+are mutually exclusive; requesting both members of a pair returns
+`-32602` before any tmux command runs (tmux's silent last-flag-wins
+behaviour is rarely what the caller intended).
+
+### Input
+
+| Field            | Type    | Required | Notes                                                                              |
+| ---------------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `target`         | string  | yes      | tmux pane target (`session`, `session:window`, `session:window.pane`, or `%N`)     |
+| `mark`           | boolean | no       | when `true`, mark the pane (`-m`) so swap-pane / join-pane can pick it up         |
+| `unmark`         | boolean | no       | when `true`, clear the marked-pane state (`-M`)                                    |
+| `last`           | boolean | no       | when `true`, jump to the last-active pane (`-l`) of the target's window            |
+| `direction`      | string  | no       | walk one step toward the named neighbour: `"up"` (-U), `"down"` (-D), `"left"` (-L), `"right"` (-R) |
+| `enable_input`   | boolean | no       | when `true`, enable input on the pane (`-e`)                                       |
+| `disable_input`  | boolean | no       | when `true`, disable input on the pane (`-d`)                                      |
+| `zoom`           | boolean | no       | when `true`, also zoom the window on the target pane (`-Z`)                        |
+
+### Output
+
+Status text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, malformed pane target, unknown `direction`, or both members of `mark`/`unmark` (or `enable_input`/`disable_input`) set. |
+| `-32000` | tmux could not resolve the target (`errs.ErrSessionNotFound`).                                                                           |
+| `-32603` | tmux select-pane failed for any other reason.                                                                                            |
+
+### Example
+
+Walk one pane to the right, marking it as the implicit swap-source for
+a subsequent `pane_swap`:
+
+```jsonc
+{ "target": "demo:0.0", "direction": "right", "mark": true }
+```
+
+Disable input on a side-car log pane while leaving focus on it:
+
+```jsonc
+{ "target": "demo:0.1", "disable_input": true }
+```
+
+Toggle zoom on the active pane of a window:
+
+```jsonc
+{ "target": "demo:0", "zoom": true }
 ```
 
 ---
@@ -1838,6 +2456,184 @@ Park a pane on the clock and confirm with `display_message`:
 { "name": "clock_mode",      "arguments": { "target": "demo" } }
 { "name": "display_message", "arguments": { "session": "demo", "format": "#{pane_mode}" } }
 // → { "value": "clock-mode" }
+```
+
+---
+
+## `pipe_pane`
+
+Pipe a pane's output through a shell command via
+`tmux pipe-pane [-IO] -t <target> [shell-command]`. The canonical way to
+log pane output to a file:
+`{"target": "demo:0", "shell_command": "cat > /tmp/demo.log"}` flushes
+every byte tmux writes to the pty into `/tmp/demo.log` until a
+follow-up call clears the pipe. Calling `pipe_pane` again with
+`shell_command` empty/omitted sends a bare `pipe-pane` to tmux, which
+tears down any existing pipe on that pane (the documented "stop
+logging" form).
+
+> **CAUTION** — `pipe_pane` spawns a shell pipeline on the tmux server.
+> tmux runs `shell_command` via `/bin/sh -c`; **the command itself is
+> not sandboxed by this server**, so an agent that can call this tool
+> can run arbitrary shell on the server. Operators must trust the agents
+> reaching for `pipe_pane` — gate the surface away from untrusted
+> clients with the `-allowlist` flag (see [`docs/flags.md`](flags.md))
+> or remove the tool from the registry entirely.
+>
+> Mutating in spirit (it spawns a shell pipeline), so `pipe_pane` is
+> **not** allowed under `-read-only`.
+
+### Input
+
+| Field           | Type    | Required | Default | Notes                                                                                       |
+| --------------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------- |
+| `target`        | string  | yes      | —       | Pane target (`session`, `session:window`, or `session:window.pane`).                         |
+| `shell_command` | string  | no       | `""`    | Shell pipeline tmux runs via `/bin/sh -c`. Empty/omitted **stops** an existing pipe.        |
+| `output_only`   | boolean | no       | `false` | When true, adds `-O`: only output written by tmux is piped, not input typed at the pane.    |
+| `also_input`    | boolean | no       | `false` | When true, adds `-I`: also pipe input. Combine with `output_only` to mirror both directions.|
+
+`shell_command` is bounded at 4096 bytes; NUL bytes and other ASCII
+control characters (newline, ESC, DEL, …) are rejected up front. Tab
+(0x09) is allowed for spacing.
+
+### Output
+
+JSON block: `{"piped": true}`. The boundary deliberately does not echo
+the resolved argv because tmux gives no useful confirmation back — a
+follow-up read of the operator's log file is the natural way to
+confirm the pipe is flowing.
+
+### Errors
+
+| Code     | Cause                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, malformed `target` (regex/length policy), or `shell_command` violating the length / control-char policy. |
+| `-32000` | `target` does not resolve on this server (`errs.ErrSessionNotFound`).                               |
+| `-32603` | tmux refused the pipe for any other reason (e.g. internal tmux failure).                            |
+
+### Example
+
+Start logging the visible pane to a file:
+
+```jsonc
+{ "target": "demo:0", "shell_command": "cat > /tmp/demo.log" }
+```
+
+Stop the pipe (no `shell_command`):
+
+```jsonc
+{ "target": "demo:0" }
+```
+
+Mirror both directions through `tee`:
+
+```jsonc
+{ "target": "demo:0", "shell_command": "tee /tmp/demo.log",
+  "output_only": true, "also_input": true }
+## `confirm_before`
+
+Stage a tmux command behind an interactive y/n prompt via
+`tmux confirm-before [-p prompt] [-t target-client] command`. tmux pops
+a confirmation prompt up in the matching client and only runs `command`
+if the user accepts — the controller surfaces this as a single
+fire-and-forget call so an agent can stage destructive ops without
+making the tmux UI silently auto-execute.
+
+The boundary is deliberately NOT idempotent on a headless server: with
+no client attached there is no terminal to display the prompt on, so
+the call surfaces `-32000` (`CodeSessionNotFound`) rather than a silent
+success. Returning a successful no-op there would let an agent believe
+a destructive command was queued behind a confirmation when in fact
+nobody ever saw the prompt — exactly the auto-execute behaviour the
+tool exists to prevent.
+
+### Input
+
+| Field     | Type   | Required | Default | Notes                                                                                          |
+| --------- | ------ | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `command` | string | yes      | —       | tmux command to run if the user accepts; len 1-4096                                            |
+| `prompt`  | string | no       | tmux's `Confirm 'CMD'? (y/n)` | y/n prompt text; len 0-128                                            |
+| `target`  | string | no       | caller's current client | tmux client target (typically a TTY path like `/dev/pts/0`); regex `^[A-Za-z0-9/_.\-]+$`, len 0-128 |
+
+### Output
+
+JSON block: `{"ack": true, "prompt": "<text>"}`. The `prompt` field
+echoes whatever the caller passed (empty when omitted) so an agent can
+log exactly which confirmation it queued.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/empty `command`, oversized field, or malformed `target` (regex/length policy). |
+| `-32000` | No client attached (headless server) or named `target` does not resolve (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason. |
+## `customize_mode`
+
+Open the interactive options/key-bindings editor in a target pane via
+`tmux customize-mode [-N] [-Z] [-t TARGET] [-F FORMAT] [-f FILTER]`.
+tmux's customize-mode is the same UI exposed from `:customize-mode` on
+the command line — a row-oriented browser over server, session,
+window, and pane options (plus key bindings) that the user can tweak
+in place. Useful for an LLM agent that wants to drive the editor from
+a tool call without knowing the option's name in advance. Every
+argument is optional: omit `target` to land on the server's
+current/active pane; pass `no_close=true` to keep the editor open
+after each commit (`-N`), `zoom=true` to zoom the target pane while
+the editor is up (`-Z`), `format` for a custom row format string
+(`-F FORMAT`), or `filter` for a predicate that hides non-matching
+rows (`-f FILTER`).
+
+### Input
+
+| Field      | Type    | Required | Notes                                                                                                           |
+| ---------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `target`   | string  | no       | Pane target (`session`, `session:window`, `session:window.pane`, or `%N`). 256-char cap. Omit for the active pane. |
+| `format`   | string  | no       | tmux format string mapped to `-F FORMAT`. Must not contain newlines. 256-char cap.                              |
+| `filter`   | string  | no       | tmux filter predicate mapped to `-f FILTER`. Must not contain newlines. 256-char cap.                           |
+| `no_close` | boolean | no       | `-N`: keep the editor open after each commit (default `false`).                                                  |
+| `zoom`     | boolean | no       | `-Z`: zoom the target pane while the editor is up (default `false`).                                             |
+
+The schema is `additionalProperties: false`: an unknown field is far
+more likely a typo than a future capability and is rejected up front
+with `-32602`.
+
+### Output
+
+JSON block: `{"opened": true}`. The boundary deliberately does not
+echo the editor contents — the editor is interactive. Confirm the
+pane is in mode with a follow-up `display_message` against
+`#{?pane_in_mode,1,0}` (returns `"1"` while the editor is up).
+
+### Errors
+
+| Code     | Cause                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------- |
+| `-32602` | Malformed `target` (regex/length policy), newline in `format` or `filter`, or oversize string (>256 chars). |
+| `-32000` | `target` does not resolve on this server, or no tmux server is running (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason (e.g. internal tmux failure).                    |
+
+### Example
+
+```jsonc
+{ "command": "kill-session -t demo", "prompt": "really kill demo?" }
+```
+
+Stage a destructive kill behind an explicit confirmation, leaving the
+final say with the human at the terminal. With a specific
+`target` the prompt is routed at one attached client rather than
+"whoever tmux thinks is current":
+
+```jsonc
+{ "command": "kill-session -t demo", "target": "/dev/pts/0" }
+{ "target": "demo" }
+```
+
+Verify the pane is in mode with a follow-up `display_message`:
+
+```jsonc
+{ "name": "customize_mode",  "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "format": "#{?pane_in_mode,1,0}", "session": "demo" } }
 ```
 
 ---
@@ -2267,6 +3063,75 @@ Pin format-string evaluation to a specific session (tmux substitutes
 
 ---
 
+## `copy_mode`
+
+Enter (or leave) tmux's copy-mode in a target pane via
+`tmux copy-mode [-Hu] [-q] [-M] [-s SRC_PANE] [-t TARGET_PANE]`.
+copy-mode puts the pane into scrollback / selection mode so a
+subsequent [`send_keys`](#send_keys) call can drive copy-mode key
+bindings (cursor motion, search, copy-selection, …); pass
+`exit=true` to leave copy-mode and return the pane to its normal "type
+commands at the shell" state. Distinct from
+[`capture`](#capture) (which reads scrollback into a string without
+touching pane state) and [`send_keys`](#send_keys) (which types into
+whatever mode the pane is already in): `copy_mode` is the verb that
+flips the mode state itself, so an agent can pre-position the pane
+before sending the copy-mode key bindings that drive selection / yank.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                                       |
+| ------------- | ------- | -------- | ------------------------------------------------------------------------------------------- |
+| `target`      | string  | yes      | Pane target (`session`, `session:window`, `session:window.pane`, or `%N`).                  |
+| `src_pane`    | string  | no       | Optional source pane whose scrollback is cloned into the target before entry (`-s`).        |
+| `exit`        | boolean | no       | When true, quit copy-mode immediately if the target is in it (`-q`); default false.         |
+| `scroll_down` | boolean | no       | When true, anchor the cursor at the bottom of the visible region (`-u`); default false.     |
+| `mouse`       | boolean | no       | When true, start copy-mode in mouse-drag selection (`-M`); default false.                   |
+| `drag_mode`   | boolean | no       | When true, enter HALFLINE drag-mode (`-H`, equivalent of pressing `H` interactively).       |
+
+`target` and `src_pane` must match
+`^[A-Za-z0-9_-]+(:[0-9]+(\.[0-9]+)?)?$` (or a tmux `%N` pane id) — the
+same conservative shape the other pane tools accept. tmux's `-e`
+("exit when status-bar drag finishes") is intentionally not surfaced;
+add it later if a concrete need shows up.
+
+### Output
+
+JSON block: `{"ok": true, "target": "<target>", "exit": <bool>}`. When
+`src_pane` was supplied the echo also carries it as `"src_pane":
+"<src>"`. The echoed `target` / `src_pane` are the logical
+(caller-supplied) values, so a `-session-prefix` deployment never
+leaks the prefixed identity back to the caller.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/empty `target`, or a `target` / `src_pane` that does not match the pane regex.                               |
+| `-32000` | The target session/window/pane does not exist on this server (`errs.ErrSessionNotFound`).                            |
+| `-32603` | tmux refused the copy-mode call for any other reason.                                                                |
+
+### Example
+
+```jsonc
+// Enter copy-mode on the active pane of session "demo" so a follow-up
+// send_keys can drive Up / PageUp / "?pattern" / Enter / "y" bindings.
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0" } }
+
+// Clone another pane's scrollback before entering copy-mode (useful
+// for inspecting a sibling pane's history without making it active).
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0", "src_pane": "demo:0.1" } }
+
+// Done inspecting — leave copy-mode and return to the shell.
+{ "name": "copy_mode", "arguments": { "target": "demo:0.0", "exit": true } }
+```
+
+Pair with `send_keys` to drive the copy-mode bindings, and with
+`capture` (or `display_message #{?pane_in_mode,1,0}`) to confirm the
+pane really is in copy-mode before issuing the key sequence.
+
+---
+
 ## `respawn_pane`
 
 Restart the command running in an existing pane via
@@ -2335,6 +3200,175 @@ with (typically the user's default shell):
 ```jsonc
 { "name": "respawn_pane",
   "arguments": { "session": "demo", "window": "0", "pane": "1" } }
+```
+
+When the failed process owned the *whole* window (a build watcher in a
+single-pane window, an interactive TUI that filled the window) reach
+for [`respawn_window`](#respawn_window) instead — it re-runs the command
+at window scope and shares the same `-32005` recovery contract.
+
+---
+
+## `respawn_window`
+
+Restart the command in an existing window via
+`tmux respawn-window [-k] [-c <cwd>] -t <session>:<window> [command]`.
+Window-scoped sibling of [`respawn_pane`](#respawn_pane): where
+`respawn_pane` re-runs a single pane's command, `respawn_window`
+re-runs the whole window. Reach for it when a window-level workflow
+(a build watcher that owned its window's only pane, a REPL inside a
+single-pane window, a long-running daemon) has exited and the agent
+wants to bring it back without recreating the window and reshuffling
+the surrounding session layout. The `#{window_id}` and the window's
+slot in the session are preserved — only the foreground process
+changes.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                              |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------- |
+| `session` | string  | yes      | session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                                     |
+| `window`  | string  | yes      | window name (`^[A-Za-z0-9_-]+$`, len 1-64) or numeric index (`^[0-9]+$`)           |
+| `command` | string  | no       | optional command (≤ 4096 bytes, no newlines); empty re-runs the window's original  |
+| `cwd`     | string  | no       | optional starting directory; absolute path required if set (tmux `-c`)             |
+| `kill`    | boolean | no       | when `true`, tmux SIGKILLs the running process before respawning (`-k`); default `false` |
+
+`command` is forwarded to tmux as a single trailing argv and run via
+`/bin/sh -c` on the tmux side. Newlines (`\n` / `\r`) are rejected
+up front — they would otherwise break the "single command" contract
+when tmux hands the string to the shell. The `cwd` field uses the
+same absolute-path policy as `session_create`.
+
+### Output
+
+JSON block: `{"respawned": true}`. The window keeps its tmux
+`#{window_id}` and its slot in the session — only the foreground
+process is replaced. Follow up with `capture` / `wait_for_text` if
+you need to observe the restarted command's output.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/malformed `session` / `window`, relative `cwd`, or `command` with newline / over 4096 bytes. |
+| `-32000` | `session:window` does not resolve on this server (`errs.ErrSessionNotFound`).      |
+| `-32005` | Window is still running its original command and `kill` was not set (`errs.ErrPaneActive`). Retry with `kill=true`. The same code [`respawn_pane`](#respawn_pane) emits — clients can branch on it once and reuse the recovery path for both tools. |
+| `-32603` | tmux refused the respawn for any other reason (e.g. internal tmux failure).        |
+
+### Example
+
+Bring a crashed build watcher back to life at window scope without
+disturbing other windows in the session. The first attempt without
+`kill` will trip `-32005` if the old process is still running; the
+typed code lets the agent recover deterministically:
+
+```jsonc
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "build",
+                 "command": "npm run watch" } }
+
+// If the previous command is still active, retry with kill=true:
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "build",
+                 "command": "npm run watch", "kill": true } }
+```
+
+Reuse the original starting command but switch to a fresh working
+directory (e.g. after `git worktree remove` left the old path
+dangling):
+
+```jsonc
+{ "name": "respawn_window",
+  "arguments": { "session": "demo", "window": "0",
+                 "cwd": "/srv/build/v2", "kill": true } }
+```
+
+For pane-level recovery use [`respawn_pane`](#respawn_pane) — it shares
+the same `kill` semantics and `-32005` recovery contract.
+
+---
+
+## `select_layout`
+
+Apply a preset or stored pane layout to a window via
+`tmux select-layout -t <session>:<window> [-n] [-p] [-E] [layout]`.
+`layout` accepts either one of the five preset names tmux ships out of
+the box (`even-horizontal`, `even-vertical`, `main-horizontal`,
+`main-vertical`, `tiled`) or a stored layout dump string previously
+read from `#{window_layout}` (the value `display_message` /
+`list-windows` surfaces). Optional `next` (-n) and `previous` (-p)
+cycle through the preset ring; optional `spread` (-E) spreads the
+current pane and its neighbours out evenly. Pairs with `pane_split`
+to populate the panes a layout will reshape and with `display_message`
+(`#{window_layout}`) to dump the post-call layout for later restore.
+
+### Input
+
+| Field      | Type    | Required | Default | Notes                                                                                          |
+| ---------- | ------- | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `target`   | string  | yes      | —       | window target in `<session>:<window>` form (e.g. `demo:0`); session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index. |
+| `layout`   | string  | yes      | —       | preset name or stored layout dump; len ≤ 4096, newlines refused.                               |
+| `next`     | boolean | no       | `false` | when true, cycle to the next preset layout (`-n`).                                             |
+| `previous` | boolean | no       | `false` | when true, cycle to the previous preset layout (`-p`).                                         |
+| `spread`   | boolean | no       | `false` | when true, spread the current pane and its neighbours out evenly (`-E`).                       |
+
+`next` and `previous` are mutually exclusive — passing both rejects
+with `-32602` ("next and previous are mutually exclusive") before tmux
+is consulted. The schema sets `additionalProperties: false`, so any
+unknown field is rejected up front.
+
+`select_layout` mutates tmux state and is therefore NOT in the
+read-only allowlist: a server started with `-read-only` will reject
+the call with `-32011` (`errs.ErrReadOnly`).
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "selected": true }
+```
+
+The boundary deliberately does not echo the resulting layout dump — a
+follow-up `display_message` against `#{window_layout}` is one call
+away if the caller wants to capture the dump for later restore.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target` or `layout`; `target` not in `<session>:<window>` form; `layout` empty / over 4096 bytes / contains newlines; `next` and `previous` both true; or an unknown field was sent. |
+| `-32000` | `session` does not exist on this server, or the targeted window does not match (`errs.ErrSessionNotFound`). |
+| `-32011` | Server is running with `-read-only` and refuses mutating tools (`errs.ErrReadOnly`). |
+| `-32603` | tmux refused the layout for an unexpected reason (e.g. a stored dump that does not match the current pane count). |
+
+### Examples
+
+```jsonc
+// Apply the "tiled" preset to the first window of the session.
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "tiled" } }
+
+// Cycle to the next preset (anchor on a known preset first if the
+// ring's starting position matters).
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "tiled", "next": true } }
+
+// Restore a layout previously dumped via `#{window_layout}`.
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0",
+                 "layout": "bb62,159x48,0,0{79x48,0,0,79x48,80,0}" } }
+```
+
+A typical capture-and-restore chain:
+
+```jsonc
+{ "name": "display_message",
+  "arguments": { "session": "demo", "window": "0",
+                 "format": "#{window_layout}" } }
+// ... later, after experimenting with other presets ...
+{ "name": "select_layout",
+  "arguments": { "target": "demo:0", "layout": "<saved value>" } }
 ```
 
 ---
@@ -2670,6 +3704,60 @@ window, drive it.
 
 ---
 
+## `last_window`
+
+Switch the named session back to its previously-active window via
+`tmux last-window -t <target>`. tmux remembers the last active window
+per session and toggles between the "current" and the "last" slot —
+the equivalent of the interactive `prefix + l` (or the customary
+`Alt-a`) hot key, which agents reach for to flip between two related
+contexts (editor / build, code / repl) without having to remember the
+destination's index or name. Pairs with `window_select` for explicit
+targets and `window_create` / `window_kill` for lifecycle.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                   |
+| -------- | ------ | -------- | ------------------------------------------------------- |
+| `target` | string | yes      | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$` |
+
+The schema sets `additionalProperties: false`, so a typo like `session`
+(the natural reflex from `window_select`) is rejected with `-32602`
+before tmux is consulted, rather than silently behaving like a no-op
+against the default target.
+
+### Output
+
+Plain text block: `ok`.
+
+### Errors
+
+| Code     | Cause                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.                                                              |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`).                                                  |
+| `-32603` | tmux refused the toggle for an unexpected reason — most commonly "no last window" when the session has only ever had one window. |
+
+### Example
+
+```jsonc
+{ "target": "demo" }
+```
+
+A typical "flip back-and-forth" chain looks like:
+
+```jsonc
+{ "name": "window_select", "arguments": { "session": "demo", "target": "editor" } }
+{ "name": "window_select", "arguments": { "session": "demo", "target": "build" } }
+{ "name": "last_window",   "arguments": { "target": "demo" } }   // ➔ back to "editor"
+{ "name": "last_window",   "arguments": { "target": "demo" } }   // ➔ back to "build"
+```
+
+`last_window` mutates the active-window pointer, so it is **not**
+included in the `-read-only` allowlist.
+
+---
+
 ## `window_rename`
 
 Rename a window via `tmux rename-window -t <session>:<target> <name>`.
@@ -2845,6 +3933,100 @@ that produced it.
 
 ---
 
+## `set_option`
+
+Set or clear a tmux option via `tmux set-option`. Mirrors the read-side
+`show_options` tool so an agent that wants to flip a runtime knob
+(`status-interval`, `automatic-rename`, `remain-on-exit`, …) does not
+have to spawn a subshell. **Mutates tmux state**, so this tool is
+excluded from the read-only allowlist.
+
+Scopes mirror `show_options` and tmux's own flag set:
+
+- `server` — server-wide options (`tmux set-option -s NAME VALUE`). The
+  `target` argument is ignored — server options have no
+  session/window/pane qualifier.
+- `session` — per-session override on the named session
+  (`tmux set-option -t SESSION NAME VALUE`). This is the default scope.
+- `window` — per-window override on `SESSION:WINDOW`
+  (`tmux set-option -w -t SESSION:WINDOW NAME VALUE`).
+- `pane` — per-pane override on a specific pane (`tmux set-option -p -t
+  PANE NAME VALUE`). Pane options are a tmux 3.4+ concept; older builds
+  reject `-p` and the call surfaces as `-32603`.
+
+Pass `unset: true` to clear the override (`tmux set-option -u`); the
+`value` field is ignored on this path and may be omitted. tmux's own
+contract for `set-option -u` is "if no override exists, do nothing and
+exit 0", so an over-eager unset is a no-op rather than an error —
+matching the behaviour an agent would see from the CLI.
+
+### Input
+
+| Field    | Type    | Required                                  | Default     | Notes                                                                                                                                |
+| -------- | ------- | ----------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`   | string  | yes                                       | —           | option name; len 1-128, regex `^[A-Za-z0-9_-]+$`                                                                                     |
+| `value`  | string  | yes when `unset` is `false`               | —           | option value, capped at 4096 bytes. Empty string is a legitimate value tmux will store verbatim                                      |
+| `scope`  | string  | no                                        | `"session"` | one of `server`, `session`, `window`, `pane`                                                                                         |
+| `target` | string  | yes when `scope` is `session`/`window`/`pane` | —       | session name (`scope=session`); `SESSION:WINDOW` (`scope=window`); `SESSION:WINDOW.PANE` or `%N` (`scope=pane`)                      |
+| `unset`  | boolean | no                                        | `false`     | when true, clear the override (`-u`) instead of setting a value                                                                      |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front.
+
+### Output
+
+JSON block echoing the resolved scope and the branch taken so a caller
+inspecting the response can tell which side of the set/unset switch
+landed:
+
+```jsonc
+{
+  "set":   true,
+  "unset": false,
+  "name":  "status-interval",
+  "scope": "session"
+}
+```
+
+When `unset=true`, the envelope flips to `{"set": false, "unset": true,
+…}`.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `name`; missing `target` for session/window/pane scope; unknown `scope`; `value` over the 4 KiB cap; or an unknown field was sent.   |
+| `-32000` | Referenced session does not exist on this server (`errs.ErrSessionNotFound`).                                                                        |
+| `-32603` | tmux refused the call (unknown option name, version mismatch on `scope=pane`, etc.).                                                                 |
+
+### Examples
+
+```jsonc
+// Server-wide: bump the maximum buffer count.
+{ "name": "buffer-limit", "value": "75", "scope": "server" }
+
+// Session-scoped (default): faster status-line refresh on the "demo" session.
+{ "name": "status-interval", "value": "1", "target": "demo" }
+
+// Window-scoped: turn off automatic renaming for the first window.
+{ "name": "automatic-rename", "value": "off", "scope": "window", "target": "demo:0" }
+
+// Pane-scoped (tmux 3.4+): keep a pane open after its command exits.
+{ "name": "remain-on-exit", "value": "on", "scope": "pane", "target": "demo:0.0" }
+
+// Unset: drop the per-session override and revert to the default.
+{ "name": "status-interval", "scope": "session", "target": "demo", "unset": true }
+```
+
+Pair with `show_options` to confirm the override actually landed:
+
+```jsonc
+{ "name": "set_option",   "arguments": { "name": "status-interval", "value": "5", "target": "demo" } }
+{ "name": "show_options", "arguments": { "scope": "session", "session": "demo" } }
+```
+
+---
+
 ## `set_window_option`
 
 Set or clear a tmux **window** option via
@@ -2998,6 +4180,236 @@ verify the live value:
 
 ---
 
+## `show_environment`
+
+Inspect the environment future panes will inherit, via
+`tmux show-environment`. Read-only counterpart of
+[`set_environment`](#set_environment): use `set_environment` to
+mutate the table, `show_environment` to read it back. Works against
+either the per-session table (the default) or the server-wide global
+table. Pass `name` to narrow the response to a single variable, or
+omit it to dump the full scope.
+
+Scopes mirror tmux's own flag set:
+
+- `session` (default) — read the named target session's environment
+  table (`tmux show-environment -t TARGET`). `target` is required.
+  Future panes spawned inside that session inherit the entries
+  reported here; existing panes keep whatever environment they
+  already have.
+- `global` — read the server-wide table
+  (`tmux show-environment -g`). New sessions inherit these entries on
+  creation; `target` is ignored.
+
+tmux marks variables that have been *explicitly removed* in a scope
+(typically because the session has hidden an inherited global) with a
+leading dash on the `show-environment` line (e.g. `-FOO`). The tool
+surfaces these as `present=false` so a caller can tell "tmux has a
+record that this variable is unset" apart from "tmux has no record
+of this variable at all" — the latter, queried via the single-`name`
+form, also comes back with `present=false` so an agent's "is FOO
+set?" check is always a single read.
+
+### Input
+
+| Field    | Type   | Required                  | Default     | Notes                                                                                |
+| -------- | ------ | ------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| `name`   | string | no                        | —           | Variable name to narrow the response to a single entry. Len 1-128, regex `^[A-Za-z_][A-Za-z0-9_]*$`. |
+| `scope`  | string | no                        | `"session"` | One of `session`, `global`.                                                          |
+| `target` | string | yes when `scope=session`  | —           | Target session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. Ignored for `scope=global`.   |
+
+`additionalProperties: false` — typo'd field names are rejected at
+the boundary with `-32602`.
+
+### Output
+
+Two response shapes, picked by whether `name` was supplied.
+
+**Whole-table form (`name` omitted):**
+
+```jsonc
+{
+  "vars": {
+    "EDITOR": "vim",
+    "MCP_FOO": "bar",
+    "EMPTY":   ""        // legal "set to empty" — distinct from removed
+  },
+  "removed": ["LEGACY_VAR"]   // entries tmux reported with a leading dash
+}
+```
+
+`vars` carries every entry tmux currently reports as present (the
+common case — an agent asking "what env will future panes see?"
+needs a single key lookup). `removed` is a flat list of names tmux
+emitted with a leading `-` (i.e. explicitly hidden on top of the
+inherited scope); the slice is empty when no removals exist.
+
+**Single-name form (`name` supplied):**
+
+```jsonc
+{
+  "name":    "MCP_FOO",
+  "value":   "bar",
+  "present": true
+}
+```
+
+`present=false` covers two related cases on purpose:
+
+- tmux has no record of the variable in this scope (the
+  never-set case). tmux's `unknown variable: NAME` stderr is
+  translated into `present=false`, not a wire error, so an agent's
+  "is FOO set?" probe is always a single call.
+- tmux has a record but it is the explicit `-NAME` removal form.
+
+If you need to distinguish those two — auditing whether someone
+actively cleared a global default vs. whether the variable simply
+was never assigned — fall back to the whole-table form and look for
+the name in the `removed` slice.
+
+### Errors
+
+| Code     | Cause                                                                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Unknown `scope`; `target` missing for `scope=session`; bad `name` (regex/length); unknown field on `arguments`. |
+| `-32000` | Referenced session does not exist on this server (`errs.ErrSessionNotFound`).                                  |
+| `-32603` | tmux refused the call for any other reason.                                                                    |
+## `attach_session`
+
+Drive `tmux attach-session [-dDErXx] [-c WORKING-DIRECTORY] [-f FLAGS]
+[-t TARGET-SESSION]` against the named session. This is a **mutating**
+tool — it changes the server's client roster — so a `-read-only`
+deployment rejects it with `-32011` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Headless interpretation (important)
+
+`tmux attach-session` is a foreground terminal-bound operation: it
+hijacks the calling process's controlling TTY to render the target
+session. The MCP server, by definition, does NOT own a controlling
+terminal — every call arrives over JSON-RPC over stdio. As a result
+this tool implements the only semantically honest interpretation
+available from a headless context:
+
+- When at least one of `detach_others=true` /
+  `detach_others_including_self=true` is set, the call clears the
+  target session's client roster (via `tmux detach-client -s
+  <session>` under the hood) so a follow-up real attach — issued
+  from a terminal elsewhere — lands on a clean roster.
+- When neither detach flag is set the call is rejected with
+  `-32602` and a message suggesting the caller run
+  `tmux attach -t <name>` themselves from a terminal.
+
+The forward-compat fields (`read_only`, `working_directory`,
+`skip_environment_update`, `flags`, `no_environment_apply`) are
+validated for shape today but otherwise inert under the headless
+detach path. They are accepted so MCP clients can populate them once
+a future build of tmux-mcp grows real TTY support, without seeing a
+schema-level rejection in the meantime.
+
+### Input
+
+| Field                          | Type    | Required | Default | Notes                                                                                                                         |
+| ------------------------------ | ------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `target_session`               | string  | yes      | —       | tmux session name; len 1-64, regex `^[A-Za-z0-9_-]+$`. Maps to `-t TARGET-SESSION`.                                           |
+| `detach_others`                | boolean | no       | `false` | When `true`, pass `-d`. Headless interpretation: clear every other client off the target session.                             |
+| `detach_others_including_self` | boolean | no       | `false` | When `true`, pass `-D` (tmux 3.5+). Headless interpretation routes through `detach-client -s SESSION`, which works on every supported tmux. |
+| `read_only`                    | boolean | no       | `false` | When `true`, pass `-r`. Forward-compat only.                                                                                  |
+| `working_directory`            | string  | no       | —       | Optional `-c WORKING-DIRECTORY`. Must be an absolute path; rejected with `-32602` otherwise. Forward-compat only.             |
+| `skip_environment_update`      | boolean | no       | `false` | When `true`, pass `-E`. Forward-compat only.                                                                                  |
+| `flags`                        | string  | no       | —       | Optional `-f FLAGS`. Comma-separated client flags; len 0-256, character set `[A-Za-z0-9,_-]+`. Forward-compat only.           |
+| `no_environment_apply`         | boolean | no       | `false` | When `true`, pass `-X` (tmux 3.5+). Forward-compat only.                                                                      |
+
+The schema sets `additionalProperties: false`, so any field other than
+the eight above is rejected with `-32602` (invalid params) before
+tmux is consulted.
+
+### Output
+
+JSON text block with a flat object keyed by `attached`:
+
+```jsonc
+{ "attached": true, "target_session": "demo" }
+```
+
+| Field            | Type    | Notes                                                                                                                  |
+| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `attached`       | boolean | Always `true` on success. Reflects "the headless detach completed", NOT a real interactive attach.                     |
+| `target_session` | string  | Echoes the caller-supplied logical name (pre `-session-prefix` resolution) so chained tools can reuse it as-is.        |
+
+### Errors
+
+| Code     | Cause                                                                                                                                                             |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target_session`; relative `working_directory`; `flags` outside `[A-Za-z0-9,_-]+`; **OR** neither detach flag is set (the headless TTY refusal). |
+| `-32000` | `target_session` does not exist on this server (`errs.ErrSessionNotFound`).                                                                                       |
+| `-32011` | Server is running in `-read-only` mode (this tool mutates client state).                                                                                          |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error, unsupported `-D` / `-X` flag on an older tmux build).                                             |
+
+### Examples
+
+```jsonc
+// Whole table for a single session.
+{ "scope": "session", "target": "demo" }
+
+// Default scope is "session" — same call, terser.
+{ "target": "demo" }
+
+// Single variable on a session.
+{ "name": "MCP_FOO", "target": "demo" }
+
+// Whole server-wide global table.
+{ "scope": "global" }
+
+// Single variable from the global table.
+{ "name": "EDITOR", "scope": "global" }
+```
+
+Common chain: write a value with `set_environment`, then confirm it
+landed where future panes will see it.
+
+```jsonc
+{ "name": "set_environment",  "arguments": { "name": "MCP_FOO", "value": "bar", "target": "demo" } }
+{ "name": "show_environment", "arguments": { "name": "MCP_FOO", "target": "demo" } }
+```
+
+This is read-only and on the `-read-only` allowlist alongside other
+inspection tools.
+
+// Headless interpretation: clear the client roster on session "demo"
+{ "target_session": "demo", "detach_others": true }
+
+// Same, but ask tmux to detach including any "self" attachments (3.5+)
+{ "target_session": "demo", "detach_others_including_self": true }
+
+// Forward-compat shape (today these fields are inert under the
+// headless detach path; the call still succeeds as a clean roster
+// reset, and the same JSON shape will work unchanged when tmux-mcp
+// grows real TTY support).
+{
+  "target_session":          "demo",
+  "detach_others":           true,
+  "read_only":               true,
+  "working_directory":       "/srv/run/demo",
+  "skip_environment_update": true,
+  "flags":                   "active-pane,read-only",
+  "no_environment_apply":    true
+}
+```
+
+If you actually want an interactive attach, run `tmux attach -t <name>`
+from a terminal yourself — the MCP server cannot do this for you. Use
+`attach_session` to **prepare** the session (clear stale clients) and
+then run the real `tmux attach` from a shell:
+
+```jsonc
+{ "name": "attach_session", "arguments": { "target_session": "demo", "detach_others_including_self": true } }
+// then, in a real terminal:
+//   tmux attach -t demo
+```
+
+---
+
 ## `swap_window`
 
 Exchange two windows of the same session in place via
@@ -3060,6 +4472,274 @@ the layout actually flipped:
 { "name": "swap_window",  "arguments": { "session": "demo", "src": "0", "dst": "1", "no_select": true } }
 { "name": "list_windows", "arguments": { "session": "demo" } }
 ```
+
+---
+
+## `next_window`
+
+Advance the session's active window pointer to the next window via
+`tmux next-window -t <target>`. tmux walks the session's window list in
+index order and wraps around at the end, so calling this on the last
+window lands on the first one. Pairs with `window_select` (jump to a
+specific target) by offering the "step forward" idiom an agent reaches
+for when it does not know the concrete next index up front.
+
+This tool **mutates** session state: it changes which window is active.
+It is therefore **not** included in the `-read-only` allowlist — a
+server armed with `-read-only` rejects `next_window` calls with
+`CodeReadOnly` (`-32011`) before any handler runs.
+## `previous_window`
+
+Move the targeted session's active window pointer one slot backward
+via `tmux previous-window -t <target>`. tmux wraps from index 0 to
+the highest-numbered window so a session sitting on its first window
+does not refuse the call — it lands on the last one instead. Useful
+for an agent stepping backward through a sequence of sibling windows
+without having to enumerate them via `list_windows` first.
+
+Sibling of `next_window`; the two tools are deliberately symmetric so
+an agent that drives one does not need to relearn the schema for the
+other. Mutates state (it shifts the session's active-window pointer)
+so it is **not** allowed under `-read-only`.
+
+### Input
+
+| Field        | Type    | Required | Default | Notes                                                                              |
+| ------------ | ------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `target`     | string  | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`                            |
+| `with_alert` | boolean | no       | `false` | when `true`, skip to the next window with a monitor-activity / monitor-bell alert (tmux's `-a` flag) |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected with `-32602` before tmux is consulted.
+
+`with_alert=true` is the load-bearing setting for an agent watching a
+long-lived session for whatever raised an alert: without it a session
+with many idle windows is stepped through one-by-one, with it the
+pointer hops directly to whichever window has new activity. This is
+the same semantics tmux's interactive `next-window -a` keybinding
+produces.
+
+### Output
+
+Plain text block: `ok`.
+
+The boundary deliberately does not echo the post-step layout — a
+follow-up `list_windows` is one call away if the caller wants to
+confirm which window the pointer landed on.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.            |
+| `-32000` | `target` does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32011` | Server is armed with `-read-only`; `next_window` is not on the inspection allowlist. |
+| `-32603` | tmux refused the step for an unexpected reason.                    |
+| `with_alert` | boolean | no       | `false` | when `true`, tmux skips windows that are not alert-flagged and lands on the previous one that *is* (`-a`) |
+
+The schema sets `additionalProperties: false`, so any field other than
+`target` / `with_alert` is rejected with `-32602` (invalid params)
+before tmux is consulted.
+## `unlink_window`
+
+Remove a window reference from a session via
+`tmux unlink-window -t <session>:<window>`. The inverse of
+`link_window`: where link-window grafts a window's `#{window_id}` into
+a second session's slot, unlink-window detaches the named slot from
+that session — leaving the window itself alive in any other sessions
+still referencing the same id. Pairs with `link_window` (graft) and
+`window_move` (relocate, removing the source).
+
+### Input
+
+| Field    | Type    | Required | Default | Notes                                                                                |
+| -------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------ |
+| `target` | string  | yes      | —       | window reference like `mysession:0`; session 1-64 [A-Za-z0-9_-], window name (same regex/length policy) or numeric index (`\d+`) |
+| `kill`   | boolean | no       | `false` | when `true`, unlink even the last reference (destroys the window) — tmux's `-k` flag |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front (a typo like `"targets"` fails fast instead of
+silently producing a missing-target rejection).
+
+`kill=false` (the default) is the right setting when the window lives
+in another session that should keep it: tmux refuses to unlink the
+last reference because doing so would also reap the underlying window,
+and the refusal is surfaced as `-32603` so the caller can react. Set
+`kill=true` once no session needs the linked window any longer — that
+flag tells tmux to proceed even on the last reference, destroying the
+window in the process. The boundary does not pre-flight the reference
+count: letting tmux refuse yields the same answer with one fewer
+round-trip and avoids racing a concurrent link/unlink.
+## `rotate_window`
+
+Cycle the panes inside a window through the existing layout slots via
+`tmux rotate-window [-U|-D] -t <target>`. tmux keeps the layout shape
+(even-horizontal, main-vertical, tiled, …) intact and only rotates
+which pane occupies which slot — a three-pane row `A B C` becomes
+`B C A` under the default `-U`, and `C A B` under `-D`.
+
+This is **distinct** from a future `next_layout` / `previous_layout`
+pair (which would cycle through the preset layout templates):
+`rotate_window` leaves the active layout in place and only shuffles
+the panes within it. It also pairs with `swap_window` (which trades
+two *windows* between session slots) and `pane_swap` (which trades
+two *panes* in place without rotating the rest of the window).
+
+### Input
+
+| Field      | Type    | Required | Default | Notes                                                                                                  |
+| ---------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `target`   | string  | yes      | —       | Window target. Bare session name (`demo`) rotates the active window; `<session>:<window>` (`demo:0`) pins a specific window. Session 1-64, `^[A-Za-z0-9_-]+$`; window 1-64 (`^[A-Za-z0-9_-]+$`) or numeric (`\d+`). |
+| `downward` | boolean | no       | `false` | When `true`, rotate the other way (tmux's `-D`). Default `false` emits the tmux-default `-U`.          |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front. Empty `target` is rejected with `-32602` rather
+than letting tmux fall back to "the current window of the current
+client" — almost never what an agent meant.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{ "moved": true }
+```
+
+The boundary deliberately does not echo which window now carries the
+active flag — a follow-up `list_windows` is one call away if the
+caller wants to confirm the new slot.
+{ "unlinked": true }
+```
+
+The boundary deliberately does not echo the post-unlink layout — a
+follow-up `list_windows` is one call away if the caller wants to
+confirm the destination dropped the slot.
+{ "rotated": true }
+```
+
+The boundary deliberately does not echo the post-rotation pane order
+— a follow-up `list_panes` is one call away if the caller wants to
+confirm the new slot ordering.
+
+### Errors
+
+| Code     | Cause                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| `-32602` | Missing/invalid `target`, or an unknown field was sent.                            |
+| `-32000` | `target` does not name a session on this server (`errs.ErrSessionNotFound`).       |
+| `-32603` | tmux refused the call for an unexpected reason.                                    |
+| `-32602` | Missing/invalid `target` (empty, no `:`, empty session/window half, regex/length violation); or an unknown field was sent. |
+| `-32000` | A referenced session does not exist on this server, or the target does not match a window (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the unlink (e.g. `kill=false` against the only reference, or other unexpected tmux failure). |
+| `-32000` | `target` does not match an existing session/window (`errs.ErrSessionNotFound`).    |
+| `-32603` | tmux refused the rotation for an unexpected reason (e.g. a single-pane window).    |
+
+### Example
+
+```jsonc
+{ "target": "demo" }
+```
+
+A typical chain looks like: snapshot the layout, step forward, drive
+whichever window the pointer landed on.
+
+```jsonc
+{ "name": "list_windows", "arguments": { "session": "demo" } }
+{ "name": "next_window",  "arguments": { "target": "demo", "with_alert": true } }
+{ "name": "capture",      "arguments": { "session": "demo" } }
+Pair with `list_windows` (before and after) when you need to confirm
+the active flag actually flipped:
+
+```jsonc
+{ "name": "list_windows",    "arguments": { "session": "demo" } }
+{ "name": "previous_window", "arguments": { "target": "demo" } }
+{ "name": "list_windows",    "arguments": { "session": "demo" } }
+{ "target": "monitor:1" }
+```
+
+Pair with `link_window` to undo a share once the monitor session no
+longer needs the linked window — without `kill` the source session
+keeps its copy untouched:
+
+```jsonc
+{ "name": "link_window",   "arguments": { "src_session": "build", "src_window": "watch", "dst_session": "monitor", "dst_window": "1" } }
+{ "name": "unlink_window", "arguments": { "target": "monitor:1" } }
+```
+
+Or use `kill=true` to remove the last reference and destroy the
+underlying window in one call:
+
+```jsonc
+{ "name": "unlink_window", "arguments": { "target": "build:watch", "kill": true } }
+{ "target": "demo", "downward": false }
+```
+
+Pair with `list_panes` (before and after) when you need to confirm the
+slot ordering actually shifted:
+
+```jsonc
+{ "name": "list_panes",     "arguments": { "session": "demo" } }
+{ "name": "rotate_window",  "arguments": { "target": "demo" } }
+{ "name": "list_panes",     "arguments": { "session": "demo" } }
+```
+## `next_layout`
+
+Cycle the targeted window onto the next preset layout via
+`tmux next-layout -t <target>`. Walks tmux's ordered preset ring
+(`even-horizontal` → `even-vertical` → `main-horizontal` →
+`main-vertical` → `tiled`) and wraps to the first preset after the
+last. tmux applies the cycle to the targeted session's active window —
+the agent does not need to know which window is current to use this.
+
+Pairs with `select_layout` (which takes a SPECIFIC layout name) by
+offering the "give me the next preset" affordance an agent reaches for
+when it doesn't care which layout, just wants to rotate. Use
+`next_layout` when the goal is "try a different arrangement"; use
+`select_layout` when the goal is "land on this exact preset".
+
+### Input
+
+| Field    | Type   | Required | Default | Notes                                                                   |
+| -------- | ------ | -------- | ------- | ----------------------------------------------------------------------- |
+| `target` | string | yes      | —       | existing session id; len 1-64, regex `^[A-Za-z0-9_-]+$`. tmux applies the cycle to the session's active window. |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected up front with `-32602`.
+
+### Output
+
+A small text block containing the literal string `ok`. tmux's
+`next-layout` itself produces no useful stdout; chain
+`display_message` against `#{window_layout}` (or `list_windows`) if
+you need to confirm the new arrangement.
+
+### Errors
+
+| Code     | Cause                                                                                           |
+| -------- | ----------------------------------------------------------------------------------------------- |
+| `-32602` | Missing or malformed `target` (regex / length policy violation), or an unknown field was sent.  |
+| `-32000` | `target` does not match any session on this server (`errs.ErrSessionNotFound`).                 |
+| `-32603` | tmux refused the cycle for an unexpected reason (e.g. a single-pane window that has no layout). |
+
+### Example
+
+Rotate the active window of `demo` onto its next preset:
+
+```jsonc
+{ "name": "next_layout", "arguments": { "target": "demo" } }
+```
+
+Drive a "try another arrangement" loop until something looks right:
+
+```jsonc
+{ "name": "display_message", "arguments": { "session": "demo", "format": "#{window_layout}" } }
+{ "name": "next_layout",     "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "session": "demo", "format": "#{window_layout}" } }
+```
+
+`next_layout` mutates tmux state (it changes the active window's pane
+arrangement), so it is rejected with `-32011` (`CodeReadOnly`) when
+the server runs with `-read-only`.
 
 ---
 
@@ -3192,6 +4872,27 @@ refuses the call with "index in use" once the slot is occupied.
 `kill=false` (the default) is safer for one-shot links because it
 prevents an accidental overwrite of a window the user might still be
 attached to.
+## `delete_buffer`
+
+Drop a single named tmux paste buffer via `tmux delete-buffer -b NAME`.
+Useful for an agent that stashed a snippet via `set_buffer` and wants
+to release the storage once the value has been consumed — buffers
+persist on the tmux server until explicitly deleted (or until tmux's
+`buffer-limit` rotates them out), so a long-running agent that writes
+many buffers should clean up the ones it no longer needs.
+
+The boundary always requires `name`. tmux's bare `delete-buffer` (no
+`-b`) drops the most-recently-added buffer, but exposing that
+"delete the last thing you stored" path through a programmatic agent
+invites accidental destruction of buffers another caller just minted.
+Forcing the name keeps the operation deterministic from the caller's
+point of view.
+
+### Input
+
+| Field  | Type   | Required | Notes                                                                                            |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `name` | string | yes      | buffer name to drop; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty string is rejected with -32602.  |
 
 ### Output
 
@@ -3213,6 +4914,19 @@ itself. The src is omitted because the caller already supplied it.
 | `-32602` | Missing/invalid `src_session`, `src_window`, `dst_session`, or `dst_window`; both pairs equal; or an unknown field was sent. |
 | `-32000` | A referenced session does not exist on this server, or one of the targets does not match a window (`errs.ErrSessionNotFound`). |
 | `-32603` | tmux refused the link (e.g. `kill=false` with the dst slot already in use, or other unexpected tmux failure). |
+{
+  "deleted": true,
+  "name":    "pinned"   // echoed back so the caller can correlate the response with the request.
+}
+```
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `name` missing/empty, outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | The named buffer does not exist on this server (`errs.ErrSessionNotFound`); the same stable wire code `show_buffer` uses for the same conceptual outcome. |
+| `-32603` | tmux refused the delete for any other reason (e.g. internal tmux failure). |
 
 ### Example
 
@@ -3230,6 +4944,105 @@ the linked window landed in the expected slot:
 ```jsonc
 { "name": "link_window",  "arguments": { "src_session": "build", "src_window": "watch", "dst_session": "monitor", "dst_window": "1" } }
 { "name": "list_windows", "arguments": { "session": "monitor" } }
+{ "name": "pinned" }
+```
+
+A typical chain looks like: stash a snippet under a known name, read
+it back once, then drop it so the buffer table stays small.
+
+```jsonc
+{ "name": "set_buffer",    "arguments": { "data": "the value", "name": "shared" } }
+{ "name": "show_buffer",   "arguments": { "name": "shared" } }
+{ "name": "delete_buffer", "arguments": { "name": "shared" } }
+## `choose_buffer`
+
+Open tmux's interactive paste-buffer chooser inside the target pane via
+`tmux choose-buffer [-N] [-Z] [-r] [-t TARGET-PANE] [-F FORMAT]
+[-f FILTER] [-K KEY-FORMAT] [-O SORT-ORDER] [TEMPLATE]`. The pane
+enters tmux's `buffer-mode` (`#{?pane_in_mode,1,0}` flips to `1` and
+`#{pane_mode}` reads `buffer-mode`) so a follow-up `send_keys` (or a
+real client attached to the server) can step through the buffer list.
+
+Unlike `choose_tree`, this tool does not synthesise a structured
+snapshot — it is a "fire-and-forget" entrance into tmux's native
+picker. The boundary forwards the eight optional flags verbatim
+(plus the positional `template`) so an agent can shape the chooser's
+row presentation, sort order, and per-row key shortcut without
+re-implementing the navigation UI on the JSON-RPC side.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                              |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target`     | string  | no       | optional pane target (`session`, `session:window`, `session:window.pane`, or `%N`). Omit to let tmux resolve the current pane.                     |
+| `format`     | string  | no       | tmux `-F FORMAT` per-row template (e.g. `#{buffer_name}`). Capped at 4 KiB; must not contain newlines.                                             |
+| `filter`     | string  | no       | tmux `-f FILTER` Boolean format that prunes the row set (e.g. `#{>=:#{buffer_size},10}`). Capped at 4 KiB; must not contain newlines.              |
+| `key_format` | string  | no       | tmux `-K KEY-FORMAT` per-row key-shortcut template (alnum, dot, dash, underscore — same character class tmux uses for key descriptors).            |
+| `sort_order` | string  | no       | tmux `-O SORT-ORDER`; one of `"time"`, `"name"`, `"size"`.                                                                                          |
+| `template`   | string  | no       | positional TEMPLATE — the tmux command run against the selected buffer (e.g. `paste-buffer -b %%`). Capped at 4 KiB; must not contain newlines.    |
+| `no_preview` | boolean | no       | when true, pass `-N` so the chooser does not render a preview of the selected buffer.                                                              |
+| `zoom`       | boolean | no       | when true, pass `-Z` so the chooser pane is zoomed for the duration of the picker.                                                                 |
+| `reverse`    | boolean | no       | when true, pass `-r` so the chooser lists rows in reverse sort order.                                                                              |
+
+The schema sets `additionalProperties: false`, so any field other
+than the nine documented above is rejected with `-32602` before tmux
+is consulted.
+
+### Output
+
+JSON text block carrying a single boolean flag:
+
+```jsonc
+{
+  "entered": true
+}
+```
+
+`entered=true` indicates `tmux choose-buffer` returned cleanly and
+the target pane has been put into buffer-mode. There is no failure
+shape: a non-zero tmux exit (e.g. unknown target, no server running)
+is surfaced via the JSON-RPC error envelope below instead of via a
+`false` value here.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `target` outside the regex/length policy; `format` / `filter` / `template` contains newlines or exceeds 4 KiB; `key_format` outside the alnum/dot/dash class; `sort_order` not in {time, name, size}; or an unknown field on `arguments`. |
+| `-32000` | `target` does not resolve to an existing pane, or no tmux server is running on the controller's socket (both wrap `errs.ErrSessionNotFound`).            |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                                                                         |
+
+### Examples
+
+```jsonc
+// Drop the demo session's pane into the buffer chooser, no flags.
+{ "target": "demo" }
+
+// Limit the chooser to buffers larger than 10 bytes, sorted by size.
+{
+  "target":     "demo",
+  "filter":     "#{>=:#{buffer_size},10}",
+  "sort_order": "size"
+}
+
+// Zoom the chooser pane and skip the buffer preview, then run
+// `paste-buffer -b %%` on whichever buffer the user selects.
+{
+  "target":     "demo:0.0",
+  "no_preview": true,
+  "zoom":       true,
+  "template":   "paste-buffer -b %%"
+}
+```
+
+Pair with `set_buffer` and `display_message` to verify the chooser
+landed:
+
+```jsonc
+{ "name": "set_buffer",      "arguments": { "data": "snippet" } }
+{ "name": "choose_buffer",   "arguments": { "target": "demo" } }
+{ "name": "display_message", "arguments": { "format": "#{pane_mode}", "session": "demo" } }
+// → { "value": "buffer-mode" }
 ```
 
 ---
@@ -3386,6 +5199,24 @@ preferable.
 | `data`   | string  | yes      | buffer payload, streamed verbatim over stdin. Empty string is allowed (creates an empty buffer; tmux 3.4 may drop empty buffers). Capped at 1 MiB (1 048 576 bytes). |
 | `name`   | string  | no       | optional buffer name to pin; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, tmux assigns the next `bufferN`.                     |
 | `append` | boolean | no       | when true, concatenate onto an existing buffer (`-a`) instead of replacing it. Defaults to false.                                     |
+## `save_buffer`
+
+Return the raw text content of a tmux paste buffer via
+`tmux save-buffer - [-b NAME]` — semantically equivalent to
+`show_buffer` but signals "this is the canonical save-path read".
+The headline difference is `error_on_truncation`: when true (the
+default), the handler returns a typed `-32010 oversized response`
+directly if the marshalled body would exceed the server's configured
+`-max-response-bytes` cap, so a caller cannot silently receive a
+truncated payload. Pair with `list_buffers` to discover the names a
+server is currently holding.
+
+### Input
+
+| Field                 | Type    | Required | Notes                                                                                                                                                                                                                                            |
+| --------------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                | string  | no       | optional buffer name; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty / omitted → most-recent buffer.                                                                                                                                                  |
+| `error_on_truncation` | boolean | no       | when true (the default), the handler refuses oversize bodies up front with `-32010` instead of letting the framing-level guard rewrite them after the fact. Pass `false` to ship the payload verbatim and let the dispatcher's cap fire if needed. |
 
 ### Output
 
@@ -3430,6 +5261,40 @@ Pair with `show_buffer` to round-trip a snippet:
 ```jsonc
 { "name": "load_buffer", "arguments": { "data": "the value", "name": "shared" } }
 { "name": "show_buffer", "arguments": { "name": "shared" } }
+  "name": "pinned",         // echoed back when the caller pinned a name; empty otherwise.
+  "data": "the quick brown fox"
+}
+```
+
+`data` is the buffer body verbatim — tmux does not append a trailing
+newline, so an agent that expects one should add it explicitly.
+
+### Errors
+
+| Code     | Cause                                                                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `name` outside the regex/length policy, or an unknown field on `arguments`.                                                                                          |
+| `-32000` | The named buffer does not exist on this server (`errs.ErrSessionNotFound`).                                                                                          |
+| `-32010` | `error_on_truncation=true` and the marshalled body would exceed the server's configured `-max-response-bytes` cap. Retry with a smaller scope or pass `false` to allow the dispatcher's framing-level handling. |
+| `-32603` | tmux refused the save for an unexpected reason.                                                                                                                      |
+
+### Example
+
+```jsonc
+// Strict read: error out if the canonical payload would not fit.
+{ "name": "pinned" }
+
+// Permissive read: ship whatever fits and let the dispatcher's
+// framing-level cap rewrite the response if it gets too big.
+{ "name": "pinned", "error_on_truncation": false }
+```
+
+A typical chain looks like: stash a snippet, list to discover the
+assigned name, then read it back via the canonical save-path.
+
+```jsonc
+{ "name": "list_buffers", "arguments": {} }
+{ "name": "save_buffer",  "arguments": { "name": "buffer0" } }
 ```
 
 ---
@@ -3483,6 +5348,8 @@ assigned name, then read it back.
 { "name": "list_buffers", "arguments": {} }
 { "name": "show_buffer",  "arguments": { "name": "buffer0" } }
 ```
+
+---
 
 ## `switch_client`
 
@@ -3680,10 +5547,150 @@ arguments value). The schema sets `additionalProperties: false`, so
 any stray field (e.g. a `"session"` borrowed from `lock_session`, or
 a `"client"` from `lock_client`) is rejected with `-32602` before tmux
 is consulted.
+## `set_environment`
+
+Set or remove an environment variable that future panes will inherit,
+via `tmux set-environment`. `scope=session` (the default) updates the
+named session's environment table (`-t SESSION`); `scope=global`
+updates the server-wide table (`-g`) so subsequently-created sessions
+inherit it. Pass `value` to set the variable; omit `value` to remove
+it (`-u NAME`).
+
+Existing panes keep whatever environment they already have — only
+newly spawned panes (e.g. via `new_window`, `pane_split`, or a fresh
+`session_create` for `scope=global`) pick up the change. This mirrors
+the underlying tmux semantics; the boundary does not invent an
+"reload-running-shells" affordance.
+
+### Input
+
+| Field     | Type   | Required                  | Notes                                                                                                                                                                |
+| --------- | ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`    | string | yes                       | environment variable name; len 1-128, regex `^[A-Za-z_][A-Za-z0-9_]*$` (POSIX shape — leading digit, dashes, dots and shell metachars are rejected at -32602).  |
+| `value`   | string | no                        | variable value. Omit to remove the variable (`-u NAME`); an explicit empty string `""` is a legal "set to empty", distinct from omission.                            |
+| `scope`   | string | no (default `"session"`)  | one of `session` (`-t SESSION`) or `global` (`-g`). Anything else is rejected at -32602.                                                                              |
+| `session` | string | yes when `scope=session`  | target session for `scope=session`; ignored when `scope=global`. Standard session-ref policy: len 1-64, regex `^[A-Za-z0-9_-]+$`. Routed through `-session-prefix` when configured. |
+
+The schema sets `additionalProperties: false`, and the handler enforces
+it at runtime — a typo'd field (e.g. `val` instead of `value`) is
+rejected with `-32602` before any tmux command runs, rather than
+silently behaving like the remove form.
+## `paste_buffer`
+
+Inject the contents of a tmux paste buffer into the targeted pane via
+`tmux paste-buffer [-d] [-p] [-b NAME] -t TARGET`. Useful when an
+agent has staged a snippet via `set_buffer` and now wants to deliver
+it into a running shell or TUI without paying the per-keystroke cost
+of `send_keys` on a long payload — tmux forwards the stored bytes
+through its paste machinery, exactly as if the user had hit the
+configured paste key. Pair with `set_buffer` upstream and (optionally)
+`delete_after=true` for a one-shot snippet that does not linger in
+the server's buffer table.
+
+### Input
+
+| Field          | Type    | Required | Notes                                                                                                                                |
+| -------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `target`       | string  | yes      | tmux pane target (`"session"`, `"session:window"`, or `"session:window.pane"`). Same regex / length rules as elsewhere on the boundary. |
+| `buffer_name`  | string  | no       | optional buffer to paste; len 1-128, regex `^[A-Za-z0-9_-]+$`. When omitted, the most-recently-added buffer is pasted (the bare `paste-buffer` CLI default). |
+| `delete_after` | boolean | no       | when true, drop the buffer from tmux's list after the paste lands (`-d`). Defaults to false.                                          |
+| `bracketed`    | boolean | no       | when true, wrap the paste in bracketed-paste escape sequences (`-p`) for applications that opt into bracketed-paste mode. Defaults to false. |
+## `source_file`
+
+Re-source a tmux config file via `tmux source-file PATH`. Useful for
+hot-reloading tweaks (status bar, key bindings, options) without
+restarting the tmux server. `path` must be an absolute filesystem
+path; the boundary rejects relative paths, control characters, NUL
+bytes, and `..` traversal segments before tmux is consulted. Set
+`quiet=true` to map to `-q`, which tells tmux to suppress non-fatal
+errors so a partially-incompatible config still reloads as far as it
+can — the same flag agents reach for when they want a best-effort
+reload that does not blow up on missing or out-of-version directives.
+
+### Input
+
+| Field   | Type    | Required | Notes                                                                                                                                |
+| ------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `path`  | string  | yes      | absolute filesystem path to the tmux.conf. Max 4096 bytes; rejects NUL, control characters, and `..` traversal segments.             |
+| `quiet` | boolean | no       | when true, pass `-q` so tmux suppresses non-fatal errors (unknown options, missing file). Defaults to false.                         |
+## `set_hook`
+
+Bind or unbind a tmux command to a server / session-scoped event via
+`tmux set-hook`. Hooks let an agent react to tmux's own lifecycle —
+pane death, client attach, session creation — without polling, so
+long-running supervisors can install once and forget.
+
+`name` is the event (e.g. `pane-died`, `client-attached`,
+`session-created`); `command` is the tmux command line tmux will run
+when the event fires (e.g. `display-message "x"`,
+`run-shell ./on-pane-died.sh`). Set `unset=true` to clear an existing
+hook (`-u`); on the unset path `command` is ignored. Set
+`global=true` to bind on the server-wide options table (`-g`) so
+every current and future session inherits the hook; otherwise
+`target` names the session whose options table the hook lands on
+(`-t TARGET`). Mutating: hooks change the daemon's behaviour for
+every subsequent event, so this tool is **not** allowed under
+## `previous_layout`
+
+Cycle the targeted window's pane arrangement one step BACKWARD through
+tmux's preset ring via `tmux previous-layout -t <target>`. The five
+presets tmux ships (`even-horizontal`, `even-vertical`,
+`main-horizontal`, `main-vertical`, `tiled`) walk in reverse — wrapping
+from the first preset to the last so the call never refuses on an
+edge. Sibling of `next_layout`; pair with `select_layout` when you want
+to jump to a specific preset or stored layout dump rather than step
+through the ring.
+
+`previous_layout` MUTATES tmux state (it changes a window's pane
+arrangement) so it is intentionally NOT part of the read-only
+allowlist and is rejected when the operator runs the server with
+`-read-only`.
+
+### Input
+
+| Field     | Type    | Required | Notes                                                                                                            |
+| --------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `name`    | string  | yes      | hook event name; len 1-128, regex `^[A-Za-z0-9_-]+$`.                                                            |
+| `command` | string  | conditional | required when `unset=false`; len 0-4096, no NUL or other ASCII control bytes (tab is allowed). Ignored when `unset=true`. |
+| `unset`   | boolean | no       | when true, clear the hook (`-u`) instead of binding it. Defaults to false.                                       |
+| `global`  | boolean | no       | when true, bind on the server-wide options table (`-g`); `target` is ignored. Defaults to false.                  |
+| `target`  | string  | conditional | required when `global=false`; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64).         |
+| Field    | Type   | Required | Notes                                                                              |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `target` | string | yes      | window in `<session>:<window>` form; session 1-64 `^[A-Za-z0-9_-]+$`, window may be a name (same regex) or numeric index (`\d+`). |
+
+The schema sets `additionalProperties: false`, so any unknown field is
+rejected by spec-compliant clients before tmux is consulted.
 
 ### Output
 
 JSON text block:
+## `lock_client`
+
+Lock a single attached tmux client via `tmux lock-client [-t <client>]`.
+Distinct from a session-scoped lock (which would target every client
+attached to a named session): this tool either targets one specific
+attached client by its TTY-path name (the value `list_clients` reports
+as `tty`, e.g. `/dev/pts/0`) or, with `client` omitted, asks tmux to
+lock the caller's current client. This is a **mutating** tool — the
+lock screen replaces the live session view on the targeted terminal —
+so a `-read-only` deployment rejects it with `-32011`
+(`errs.CodeReadOnly`) before the handler runs.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                                                                                                |
+| -------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client` | string | no       | tmux client name (the path-like key shown in `list_clients`, e.g. `/dev/pts/0`); regex `^/[A-Za-z0-9_./:-]+$`, len 1-256. Omit to lock the current client. |
+
+The schema sets `additionalProperties: false`, so any field other than
+`client` is rejected with `-32602` (invalid params) before tmux is
+consulted — a typo like `"clinet"` fails fast instead of silently
+behaving like the unscoped variant.
+
+### Output
+
+JSON text block with a flat object keyed by `locked`:
 
 ```jsonc
 { "locked": true }
@@ -3701,6 +5708,59 @@ two — and surfacing that detail would push every caller to write a
 | `-32602` | An unknown field was supplied on `arguments` (the schema is closed).                                               |
 | `-32000` | No daemon is running on this controller's socket (`errs.ErrSessionNotFound`). Reuses the standard "named target does not exist" code shared with `lock_session` / `lock_client` / `list_clients` / `session_kill`. |
 | `-32603` | tmux refused the lock for an unexpected reason.                                                                    |
+{
+  "pasted": true
+}
+```
+
+The pasted bytes themselves do not appear in the response — they land
+in the pane's pty and are observable via `capture` once the receiving
+process has rendered them.
+
+```jsonc
+{
+  "sourced": true
+}
+```
+
+The reload is observable via `show_options` — for instance, sourcing a
+`tmux.conf` that sets `set -g escape-time 17` flips the server-wide
+`escape-time` value to `"17"` immediately, so an agent that wants to
+confirm the reload took effect can chain into `show_options`.
+
+```jsonc
+{
+  "set":    true,
+  "unset":  false,    // mirrors the input flag so a caller can branch on the resolved mode.
+  "global": false,    // mirrors the input flag.
+  "name":   "pane-died" // echoes the hook name back verbatim.
+}
+```
+
+The ack shape is identical on the bind and unset paths — only the
+`unset` flag distinguishes the two. Re-running the unset path against
+an already-cleared hook is a no-op (the wrapper preserves tmux's
+idempotent `-u` semantics) so deployment scripts can teardown
+unconditionally.
+
+```jsonc
+{ "cycled": true }
+```
+
+`previous-layout` itself produces no useful stdout; a follow-up
+`display_message` against `#{window_layout}` is one call away if the
+caller wants to confirm the actual dump that landed.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | `target` missing / outside the pane-target regex; `buffer_name` outside the regex/length policy; or an unknown field on `arguments`. |
+| `-32000` | The named buffer (or the targeted session/pane) does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the paste for an unexpected reason.                   |
+| `-32602` | Missing/invalid `target` (empty, no `:`, bad regex on either half). |
+| `-32000` | The targeted session/window does not exist (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the cycle for an unexpected reason.                   |
 
 ### Example
 
@@ -3713,3 +5773,657 @@ operator hands the server back to a human and wants every attached
 terminal to require authentication before resuming work, `lock_server`
 is the single call that does it without disturbing any running
 process.
+{
+  "set":     true,
+  "name":    "FOO",      // echoed back verbatim from the input.
+  "removed": false       // true when `value` was omitted (the `-u NAME` path), false on a set.
+}
+```
+
+---
+
+## `if_shell`
+
+Conditional dispatch via
+`tmux if-shell [-bF] SHELL_COMMAND TMUX_COMMAND [ELSE_TMUX_COMMAND]`.
+tmux runs `shell_command` through `/bin/sh -c` (or evaluates it as a
+`#{format}` expression when `format_expand=true`). On success — exit
+code 0, or a non-empty / non-zero / non-`"0"` expansion — tmux
+dispatches `then_command`. On failure (any other exit code, or an
+empty/zero expansion) tmux dispatches `else_command` when set;
+otherwise the failure branch is a no-op. The canonical agent pattern
+is "if a process is running, do X; else Y" — e.g.
+`pgrep -x build-watch && wc -l build.log` deciding between
+`display-message running` and `display-message stopped`.
+
+`if_shell` is the conditional sibling of `run_shell` (the unconditional
+"run a /bin/sh command on the controller host" surface). Reach for
+`run_shell` when you just need stdout; reach for `if_shell` when the
+agent's next action depends on the shell command's exit code.
+
+> **CAUTION** — `if_shell` runs `shell_command` on the controller host
+> via `/bin/sh -c`. **The command itself is not sandboxed by this
+> server**, so an agent that can call this tool can run arbitrary shell
+> on the host. Operators must trust the agents reaching for `if_shell`
+> — gate the surface away from untrusted clients with the `-allowlist`
+> flag (see [`docs/flags.md`](flags.md)) or remove the tool from the
+> registry entirely.
+>
+> Mutating in spirit (it spawns a shell pipeline AND dispatches a tmux
+> command), so `if_shell` is **not** allowed under `-read-only`.
+
+### Input
+
+| Field           | Type    | Required | Default | Notes                                                                                                          |
+| --------------- | ------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `shell_command` | string  | yes      | —       | Shell pipeline tmux runs via `/bin/sh -c` (or a `#{format}` expression when `format_expand=true`).             |
+| `then_command`  | string  | yes      | —       | tmux command line dispatched on success (exit 0 / non-empty expansion).                                        |
+| `else_command`  | string  | no       | `""`    | tmux command line dispatched on failure. Omit / empty → no-op on the failure branch.                          |
+| `background`    | boolean | no       | `false` | When true, runs `shell_command` detached (`-b`); the call returns immediately and the branch fires later.       |
+| `format_expand` | boolean | no       | `false` | When true, treat `shell_command` as a tmux `#{format}` expression (`-F`) instead of running it through /bin/sh. |
+
+All three command strings are bounded at 4096 bytes; NUL bytes and
+other ASCII control characters (newline, ESC, DEL, …) are rejected up
+front. Tab (0x09) is allowed for spacing.
+
+### Output
+
+JSON block: `{"dispatched": true}`. The boundary deliberately does not
+echo the resolved argv because tmux gives no useful confirmation back —
+a follow-up `display_message` / `capture` against the targeted session
+is the natural way to confirm the chosen branch ran.
+
+### Errors
+
+| Code     | Cause                                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `name` missing or outside the regex/length policy; `scope=session` without `session`; unknown `scope`; unknown field on `arguments`. |
+| `-32000` | `scope=session` and the named session does not exist on this server (`errs.ErrSessionNotFound`).                 |
+| `-32603` | tmux refused the `set-environment` for any other reason.                                                         |
+| Field    | Type    | Notes                                                                          |
+| -------- | ------- | ------------------------------------------------------------------------------ |
+| `locked` | boolean | Always `true` on success. The shape leaves room for future extensions without breaking callers that read only the boolean. |
+
+A headless server with nothing attached returns `{"locked": true}` —
+a clean success rather than an error — so callers can fire-and-forget
+a lock without first running `list_clients` to know whether there is
+anything to lock. The boundary swallows tmux's `no current client`
+stderr in this case; any other tmux failure surfaces as `-32603`.
+
+### Errors
+
+| Code     | Cause                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| `-32602` | Malformed args (bad regex / over the length cap on `client`) or an unknown field on the schema.  |
+| `-32000` | `client` named a terminal that is not currently attached (`errs.ErrSessionNotFound`).            |
+| `-32011` | Server is running in `-read-only` mode (this tool mutates client state).                         |
+| `-32603` | tmux failed for an unexpected reason (server crashed, IO error).                                 |
+| `-32602` | `path` missing, longer than 4096 bytes, relative, contains a control character / NUL byte, contains a `..` segment, or an unknown field on `arguments`. |
+| `-32000` | `path` does not exist on the filesystem (`errs.ErrSessionNotFound`); only when `quiet=false`. With `quiet=true` tmux silently swallows the missing-file case. |
+| `-32603` | tmux's source-file failed for an unexpected reason (rare; typically a fork/exec error or syntactically-broken config under quiet=false). |
+| `-32602` | `name` missing / outside regex/length policy; `command` missing on bind path or > 4 KiB / contains NUL or other control bytes; `target` missing on the per-session bind path or outside the session-name policy; unknown field on `arguments`. |
+| `-32000` | Target session does not exist (`errs.ErrSessionNotFound`); also covers tmux's "no such window" / "invalid option" stderr shapes for an unknown hook name on the unset path. |
+| `-32603` | tmux refused the set-hook for an unexpected reason (rare; typically a fork/exec error). |
+
+---
+
+## `display_menu`
+
+Render an interactive tmux menu via
+`tmux display-menu [-O] [-b BORDER-LINES] [-c TARGET-CLIENT]
+[-C STARTING-CHOICE] [-H SELECTED-STYLE] [-S BORDER-STYLE]
+[-T TITLE] [-t TARGET-PANE] [-x POSITION] [-y POSITION]
+name key command ...`. Each entry in `items` is one menu row
+carrying a label, an optional single-key shortcut, and an optional
+tmux command run on selection — the boundary expands the array into
+the alternating positional triples tmux's parser consumes.
+
+tmux's `display-menu` requires an attached client to draw on, so the
+headless tmux servers tmux-mcp typically owns will surface tmux's
+`no current client` diagnostic verbatim until a client attaches.
+Pass `target_client` (a TTY path like `/dev/pts/3`) to scope the
+draw call when the server is multi-tenant. This tool is
+**not read-only** — it changes UI state on the chosen client and is
+rejected when the server runs with `-read-only`.
+
+### Input
+
+Top-level fields:
+
+| Field             | Type    | Required | Default | Notes                                                                                                                                                              |
+| ----------------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `items`           | array   | yes      | —       | Menu rows; `minItems: 1`, `maxItems: 256`. Schema below.                                                                                                           |
+| `target_pane`     | string  | no       | —       | Pane the menu's commands run against (`-t`). Conservative regex; len 1-256.                                                                                        |
+| `target_client`   | string  | no       | —       | Client to draw the menu on (`-c`); typically a TTY path. Same regex as `show_messages`'s `client`.                                                                 |
+| `title`           | string  | no       | —       | Menu title format (`-T`). Max 4096 bytes; no embedded newlines/NULs.                                                                                               |
+| `border_lines`    | string  | no       | —       | Border-line style passed to `-b` (e.g. `single`, `double`, `none`). Max 256 bytes.                                                                                 |
+| `border_style`    | string  | no       | —       | tmux style spec for the border (`-S`), e.g. `fg=red`. Max 256 bytes.                                                                                               |
+| `selected_style`  | string  | no       | —       | tmux style spec for the highlighted row (`-H`). Max 256 bytes.                                                                                                     |
+| `starting_choice` | string  | no       | —       | Index/label of the row pre-selected when the menu opens (`-C`). Max 256 bytes.                                                                                     |
+| `x`               | string  | no       | —       | Horizontal position (`-x`): integer column, magic letter (`C`/`R`/`P`/`M`/`W`), or `#{...}` format.                                                                |
+| `y`               | string  | no       | —       | Vertical position (`-y`): integer row, magic letter (`C`/`P`/`M`/`W`/`S`), or `#{...}` format.                                                                     |
+| `no_callbacks`    | boolean | no       | `false` | When true, pass `-O` so the menu does not close on mouse release without a selection.                                                                              |
+
+Per-item schema (`items[i]`):
+
+| Field     | Type   | Required | Default | Notes                                                                          |
+| --------- | ------ | -------- | ------- | ------------------------------------------------------------------------------ |
+| `name`    | string | yes      | —       | Row label (format-evaluated by tmux). Min 1, max 1024 bytes; no newlines.      |
+| `key`     | string | no       | —       | Optional single-key shortcut. Max 64 bytes; printable subset of `bind-key`.    |
+| `command` | string | no       | —       | Optional tmux command run when the row is chosen. Max 4096 bytes; no newlines. |
+
+`additionalProperties: false` is locked at both the top level and the
+per-item level so a typoed field gets a fast schema-shaped rejection
+rather than a silent no-op.
+
+### Output
+
+JSON block:
+
+```jsonc
+{ "displayed": true }
+```
+
+The boundary deliberately does not echo the items back because
+display-menu is a fire-and-forget UX trigger; a follow-up
+`list_clients` or `show_messages` call is one tool away if the agent
+wants confirmation the menu reached the client.
+
+### Errors
+
+| Code     | Cause                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `-32602` | `items` empty/missing; per-item `name` empty; bound violation on any field; `target_pane`/`target_client` outside the regex/length policy. |
+| `-32000` | Target client/pane is missing on this server (`errs.ErrSessionNotFound`).                                                            |
+| `-32603` | tmux refused the call for any other reason (e.g. headless server with `no current client`).                                          |
+
+### Examples
+
+```jsonc
+// Set a per-session variable. Future panes spawned inside `mysession`
+// inherit it; existing panes keep their current environment.
+{ "name": "FOO", "value": "bar", "scope": "session", "session": "mysession" }
+
+// scope is optional — the documented default is "session".
+{ "name": "FOO", "value": "bar", "session": "mysession" }
+
+// Set to empty string explicitly. Distinct from omitting `value`,
+// which would remove the variable instead.
+{ "name": "FOO", "value": "", "session": "mysession" }
+
+// Remove a per-session variable (`tmux set-environment -t mysession -u FOO`).
+{ "name": "FOO", "scope": "session", "session": "mysession" }
+
+// Set a server-wide variable that subsequently created sessions
+// inherit. `session` is ignored for scope=global.
+{ "name": "PATH", "value": "/usr/local/bin:/usr/bin", "scope": "global" }
+
+// Remove a global variable (`tmux set-environment -g -u PATH`).
+{ "name": "PATH", "scope": "global" }
+```
+
+`set_environment` is a mutating tool and is therefore rejected when
+the server is armed with `-read-only` (CodeReadOnly, `-32011`). Use
+the read-only tool surface (`show_options`, `capture`, `session_list`,
+`list_buffers`, …) for inspection-only access.
+// Stash a snippet, then paste it into the session's active pane.
+{ "name": "set_buffer",
+  "arguments": { "data": "echo HELLO_FROM_PASTE\n", "name": "snippet" } }
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0", "buffer_name": "snippet" } }
+
+// Default-name path: paste the most-recently-added buffer.
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0" } }
+
+// One-shot snippet: paste then delete so the buffer does not linger.
+{ "name": "paste_buffer",
+  "arguments": { "target": "demo:0.0", "buffer_name": "snippet", "delete_after": true } }
+// lock the caller's current client (no-op on a headless server)
+{}
+
+// lock a specific attached terminal by TTY path
+{ "client": "/dev/pts/0" }
+```
+
+Pair with `list_clients` to discover an attached terminal's TTY
+before locking it:
+
+```jsonc
+{ "name": "list_clients", "arguments": {} }
+{ "name": "lock_client",  "arguments": { "client": "/dev/pts/0" } }
+// Strict reload: fail loudly if the path is wrong.
+{ "path": "/etc/tmux-mcp/tmux.conf" }
+
+// Best-effort reload: ignore missing files / unknown options.
+{ "path": "/home/agent/.tmux.conf", "quiet": true }
+```
+
+Pair with `show_options` to confirm the reload took effect:
+
+```jsonc
+{ "name": "source_file",  "arguments": { "path": "/etc/tmux-mcp/tmux.conf" } }
+{ "name": "show_options", "arguments": { "scope": "server" } }
+// Bind a hook on a single session.
+{ "name": "pane-died", "command": "display-message \"a pane just died\"", "target": "demo" }
+
+// Bind globally so every session inherits the hook.
+{ "name": "client-attached", "command": "run-shell ./on-attach.sh", "global": true }
+
+// Clear a hook a previous run installed.
+{ "name": "pane-died", "target": "demo", "unset": true }
+
+// Clear the global variant.
+{ "name": "client-attached", "global": true, "unset": true }
+```
+
+A typical install-then-clear chain:
+
+```jsonc
+{ "name": "set_hook", "arguments": { "name": "pane-died", "command": "display-message x", "target": "demo" } }
+{ "name": "set_hook", "arguments": { "name": "pane-died", "target": "demo", "unset": true } }
+{ "target": "demo:0" }
+```
+
+A typical chain looks like: split the window to gain panes, anchor on
+a known preset, then step backward to reshape.
+
+```jsonc
+{ "name": "pane_split",      "arguments": { "session": "demo", "direction": "vertical", "detach": true } }
+{ "name": "select_layout",   "arguments": { "target": "demo:0", "layout": "tiled" } }
+{ "name": "previous_layout", "arguments": { "target": "demo:0" } }
+```
+
+
+---
+
+## `command_prompt`
+
+Open the targeted client's interactive command-prompt UI via
+`tmux command-prompt [-1iIN] [-p PROMPTS] [-I INPUTS] [-t TARGET] [TEMPLATE]`.
+Useful for an agent that wants to programmatically launch a preset
+prompt dialog (e.g. a rename-window flow whose template is
+`rename-window %%`). On a headless server (no client attached, no
+`client` pinned) the call is a successful no-op — the prompt has
+nowhere to render — and the response still echoes back the caller's
+arguments with `opened: true` so a chained workflow stays
+deterministic.
+
+### Input
+
+| Field         | Type    | Required | Notes                                                                          |
+| ------------- | ------- | -------- | ------------------------------------------------------------------------------ |
+| `client`      | string  | no       | Optional target client TTY path (e.g. `/dev/pts/3`); maps to `-t TARGET`.       |
+| `prompts`     | string  | no       | Optional comma-separated prompt strings (`-p PROMPTS`); one per `%%` placeholder. |
+| `inputs`      | string  | no       | Optional comma-separated default inputs (`-I INPUTS`); aligned positionally with `prompts`. |
+| `template`    | string  | no       | Optional tmux command tmux runs once the prompt is filled. `%%` → user input.   |
+| `one_key`     | boolean | no       | When `true`, accept a single keypress without Enter (`-1`).                     |
+| `incremental` | boolean | no       | When `true`, run the command on every keystroke (`-i`).                         |
+| `multi_line`  | boolean | no       | When `true`, open the multi-line editor instead of single-line (`-N`). Rare.    |
+
+Every field is optional — tmux itself accepts a bare `command-prompt`
+invocation. In practice an agent will set at least one of `template` /
+`one_key` / `incremental` / `multi_line` to make the call do useful
+work; the schema does not enforce it. Each free-form string field is
+capped at 4096 bytes, must be valid UTF-8, must not contain NUL bytes,
+and must not contain control characters other than tab. Newlines /
+carriage returns inside `template` / `prompts` / `inputs` are
+explicitly rejected because tmux's command-prompt is single-shot per
+call.
+## `show_hooks`
+
+Enumerate every hook binding the tmux server currently holds. Wraps
+`tmux show-options -H` / `-wH` (the `-H` flag exposes hook entries
+that are otherwise hidden from `show-options` output). Sister of
+[`set_hook`](#set_hook), the mutating verb that installs / removes
+the bindings this tool surfaces — pair them in a "ensure / inspect"
+loop to confirm a hook landed where the agent expected it to.
+
+When `target` is omitted, the response covers the **server-global**
+hook tables (`-gH` for server/session-class events like
+`client-attached`, `-gwH` for window-class events like `pane-died`)
+**and** every existing session's hook tables (the controller iterates
+the live session list and probes each one). When `target` names a
+session, only that session's hook tables are scanned, so the response
+is scoped to bindings the named session actually carries — useful for
+"show me only what's on this tenant" inspections.
+
+Read-only: this tool issues nothing but `show-options -H` invocations
+under the hood. It is allowed under `-read-only`.
+
+### Input
+
+| Field    | Type   | Required | Notes                                                                                                                                                                |
+| -------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target` | string | no       | optional session name; same regex/length policy as session names (`^[A-Za-z0-9_-]+$`, len 1-64). When set, scope the scan to this session. When omitted, scan everything. |
+## `source_buffer`
+
+Read the named tmux paste buffer (or the most-recently-added buffer
+when `name` is omitted) and feed its contents to tmux's command
+parser as a sequence of commands — the same parser that processes
+lines from `~/.tmux.conf` or `tmux source-file`. Wraps
+`tmux source-buffer [-b NAME]`.
+
+Useful for staging dynamic config edits in a paste buffer (via
+`set_buffer` / `load_buffer`) and applying them without writing a
+file to disk. Buffers live on the tmux server (not on a session), so
+this tool is not session-scoped.
+
+### Input
+
+| Field  | Type   | Required | Notes                                                                                            |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `name` | string | no       | optional buffer name; len 1-128, regex `^[A-Za-z0-9_-]+$`. Empty / omitted → most-recent buffer. |
+## `wait_for`
+
+Synchronise across tmux clients via `tmux wait-for [-L|-S|-U] CHANNEL`.
+The four modes correspond to tmux's flag matrix:
+
+| Mode       | tmux invocation         | Blocking? | Use case                                                                                                                  |
+| ---------- | ----------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `wait`     | `tmux wait-for CHANNEL` | yes       | block until somebody fires `signal` on the same channel — the canonical "wait for milestone" rendezvous                   |
+| `signal`   | `tmux wait-for -S …`    | no        | wake every blocked waiter on the channel; tmux discards signals that arrive with no waiters listening (no buffering)      |
+| `lock`     | `tmux wait-for -L …`    | when held | acquire the channel as a mutex; second locker blocks until the first releases                                             |
+| `unlock`   | `tmux wait-for -U …`    | no        | release a previously-acquired lock so the next blocked locker can proceed                                                 |
+
+This is a **mutating** tool — `signal` / `unlock` change channel
+state, and the blocking modes hold a tmux client — so a `-read-only`
+deployment rejects it with `-32011` (`errs.CodeReadOnly`) before the
+handler runs.
+
+### Input
+
+| Field        | Type    | Required | Notes                                                                                                                                                                                                                                                                  |
+| ------------ | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`       | string  | no       | one of `wait`, `lock`, `signal`, `unlock`; default `wait`. Anything outside the enum is rejected with `-32602`.                                                                                                                                                        |
+| `channel`    | string  | yes      | rendezvous identifier; regex `^[A-Za-z0-9_-]+$`, len 1-128. Conservative shape rejects whitespace / shell metachars / dots / colons / slashes so a stray quote cannot slip into tmux's argv.                                                                            |
+| `timeout_ms` | integer | no       | caller-side deadline applied via `context.WithTimeout` for blocking modes (`wait`, `lock`); default 10000 (10s); range 0..600000 (10 min). `0` means "honour the request's existing context — no extra timeout". `signal` / `unlock` are non-blocking and ignore this. |
+
+The schema sets `additionalProperties: false`, so a typo'd field
+(e.g. `"channel_name"`, `"timeoutMs"`) fails fast with `-32602`
+instead of silently being ignored.
+
+tmux's own `wait-for` has no built-in deadline — it really does block
+forever until somebody fires `-S` (or the whole tmux server is
+restarted). The boundary attaches `context.WithTimeout` for `wait` /
+`lock` calls so a misbehaving signaller cannot pin a tools/call
+goroutine indefinitely; the schema's 10s default keeps that footgun
+closed by default while still being long enough to cover a realistic
+"wait for the next CI stage to start" rendezvous.
+
+### Output
+
+JSON text block:
+
+```jsonc
+{
+  "opened":      true,
+  "client":      "",
+  "prompts":     "name:",
+  "inputs":      "",
+  "template":    "rename-window %%",
+  "one_key":     false,
+  "incremental": false,
+  "multi_line":  false
+}
+```
+
+`opened` is `true` whenever the controller succeeded — that covers
+both the "actually rendered to a client" branch and the headless
+no-op. The remaining fields echo the caller's logical arguments back
+so a chained workflow can correlate the response with the original
+invocation.
+  "hooks": [
+    {
+      "name":    "pane-died",                  // hook event (no [idx] suffix; multi-binding hooks fan out into multiple rows).
+      "command": "display-message \"x\"",      // tmux command bound to the event, verbatim from show-options.
+      "target":  ""                             // empty for server-global bindings; the session name for per-session bindings.
+    },
+    {
+      "name":    "alert-bell",
+      "command": "display-message \"bell\"",
+      "target":  "demo"
+    }
+  ]
+}
+```
+
+`hooks` is **always** a non-nil array — an empty server (no hooks set
+yet) returns `{"hooks": []}` rather than `null`, so a caller iterating
+the array never has to special-case the "no bindings" path.
+
+When tmux normalises a command's quoting on store (e.g. it strips
+non-essential surrounding quotes around a single arg without
+whitespace), the `command` field reflects the **stored** form, not
+the original input the caller passed to `set_hook`. Bodies with
+embedded whitespace round-trip verbatim because tmux preserves the
+surrounding quotes; bodies without whitespace may come back unquoted.
+  "sourced": true,
+  "name":    "cfg"   // echoed back when the caller pinned a name; empty otherwise.
+}
+```
+
+The buffer body is consumed verbatim by tmux's command parser; one
+command per line, with the same continuation / quoting rules as
+`~/.tmux.conf`. Side-effects (option changes, key bindings, hooks)
+land on the tmux server immediately and persist for the rest of the
+server's lifetime.
+
+### Errors
+
+| Code     | Cause                                                              |
+| -------- | ------------------------------------------------------------------ |
+| `-32602` | A free-form string field exceeded 4096 bytes, contained a control byte, was not UTF-8, or carried a newline. |
+| `-32000` | An explicit `client` did not match any attached TTY (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the call for any other reason.                        |
+
+### Example
+
+```jsonc
+// Preset rename-window dialog. Headless server: returns a successful
+// no-op; attached client: opens the prompt with "name: " label and
+// the current window name as the default input.
+{
+  "template": "rename-window %%",
+  "prompts":  "name:",
+  "inputs":   ""
+}
+```
+
+`command_prompt` is **not** in the read-only allowlist: even a
+template like `rename-window %%` mutates server state once the user
+fills the prompt, and a more aggressive template (`kill-server`) would
+mutate it directly. Operators running with `-read-only` will see
+`-32011` (`CodeReadOnly`) for any `command_prompt` call.
+| `-32602` | Missing/empty `shell_command` or `then_command`, or any of the three commands violating the length / control-char policy. |
+| `-32603` | tmux refused the dispatch for any other reason — typically a syntax error or unknown command in `then_command` / `else_command`. |
+
+`if_shell` does not take `-t`, so there is no `-32000`
+`session_not_found` mapping here. A bad target inside
+`then_command` / `else_command` surfaces as the generic tmux error
+text wrapped in `-32603`.
+
+### Examples
+
+If a build watcher is running, log a "still up" message; otherwise log
+"stopped":
+
+```jsonc
+{
+  "shell_command": "pgrep -x build-watch >/dev/null",
+  "then_command":  "display-message 'build-watch up'",
+  "else_command":  "display-message 'build-watch stopped'"
+}
+```
+
+Use a `#{format}` expression (no fork+exec) to branch on the active
+session name:
+
+```jsonc
+{
+  "shell_command": "#{==:#{session_name},build}",
+  "then_command":  "display-message 'on build session'",
+  "else_command":  "display-message 'on a different session'",
+  "format_expand": true
+}
+```
+
+Fire-and-forget (the call returns before the shell command exits):
+
+```jsonc
+{
+  "shell_command": "sleep 5; pgrep -x my-daemon",
+  "then_command":  "display-message 'daemon recovered'",
+  "background":    true
+}
+```
+| `-32602` | `target` outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | `target` names a session that does not exist on this server (`errs.ErrSessionNotFound`). |
+| `-32603` | tmux refused the show for an unexpected reason (rare; typically a fork/exec error). |
+| `-32602` | `name` outside the regex/length policy, or an unknown field on `arguments`. |
+| `-32000` | The named buffer does not exist on this server, or no tmux server is running yet (`errs.ErrSessionNotFound`). |
+| `-32603` | A command in the buffer body is malformed (unknown verb, bad syntax) or tmux refused the source for an unexpected reason. |
+
+The split between `-32000` and `-32603` is load-bearing: missing
+buffers map to the same code clients already branch on for
+`show_buffer`, while parse errors against the buffer body — which
+are user-input mistakes against tmux's command grammar — surface as
+the generic internal-error code so a client can distinguish "the
+buffer is not here" from "the buffer is here but its contents are
+not valid tmux commands".
+
+### Examples
+
+```jsonc
+// List every binding the server currently holds (global + every session).
+{ "name": "show_hooks", "arguments": {} }
+
+// Scope the scan to a single session.
+{ "name": "show_hooks", "arguments": { "target": "demo" } }
+```
+
+A typical install-then-verify chain pairs with
+[`set_hook`](#set_hook):
+
+```jsonc
+{ "name": "set_hook",  "arguments": { "name": "pane-died", "command": "display-message \"x\"", "target": "demo" } }
+{ "name": "show_hooks", "arguments": { "target": "demo" } }
+// Apply the most-recently-added buffer (the common case after a
+// fresh set_buffer).
+{}
+
+// Apply a specific named buffer.
+{ "name": "cfg" }
+```
+
+A typical chain stages config without touching disk:
+
+```jsonc
+{ "name": "set_buffer",    "arguments": { "data": "set -g status-keys vi", "name": "cfg" } }
+{ "name": "source_buffer", "arguments": { "name": "cfg" } }
+{ "name": "show_options",  "arguments": { "scope": "server" } }
+  "woken":   true,
+  "mode":    "wait",        // resolved mode — echoes the schema default when omitted
+  "channel": "build_done"
+}
+```
+
+| Field     | Type    | Notes                                                                                                                                       |
+| --------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `woken`   | boolean | Always `true` on success — kept as a flat boolean so a future field (e.g. wait duration) can land alongside without breaking existing callers. |
+| `mode`    | string  | Resolved mode, useful when the caller omitted `mode` and wants to confirm the default `wait` is what actually ran.                          |
+| `channel` | string  | Echoed verbatim from the request.                                                                                                           |
+
+### Errors
+
+| Code     | Cause                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602` | `channel` missing / malformed, `mode` outside the enum, `timeout_ms` outside `0..600000`, or an unknown field.                                 |
+| `-32003` | A `wait` / `lock` call exceeded its `timeout_ms` (or the request's parent context expired) — `errs.CodeContextCancelled`.                      |
+| `-32011` | Server is running in `-read-only` mode (this tool can mutate channel state and hold a client).                                                 |
+| `-32603` | tmux failed for an unexpected reason — e.g. `unlock` against a channel that was never locked surfaces here with the verbatim tmux stderr.      |
+
+### Examples
+
+A simple fire-and-forget signal — useful when a long-running command
+finishes and the agent wants to nudge a sibling that may be blocked
+on the same channel:
+
+```jsonc
+{ "mode": "signal", "channel": "build_done" }
+```
+
+The blocking peer of the above. Wait up to 30s for `build_done`,
+returning `{"woken": true, ...}` when the signal arrives or
+`-32003` when the deadline passes:
+
+```jsonc
+{ "mode": "wait", "channel": "build_done", "timeout_ms": 30000 }
+```
+
+Lock / unlock for mutual exclusion. Two callers issuing `lock`
+against the same channel are serialised — the second one blocks
+until the first issues `unlock`:
+
+```jsonc
+{ "mode": "lock",   "channel": "deploy_lock" }
+// ... critical section runs here ...
+{ "mode": "unlock", "channel": "deploy_lock" }
+```
+
+`timeout_ms: 0` is a deliberate sentinel: "no extra timeout — honour
+the request's existing context". Useful when the caller has already
+pinned a longer deadline upstream and does not want the tool to
+override it:
+
+```jsonc
+{ "mode": "wait", "channel": "ci_started", "timeout_ms": 0 }
+```
+
+// Minimal: a two-row menu drawn on whatever client is attached.
+{
+  "name": "display_menu",
+  "arguments": {
+    "items": [
+      { "name": "Build",  "key": "b", "command": "send-keys -t 0 'make' Enter" },
+      { "name": "Cancel", "key": "q", "command": "" }
+    ]
+  }
+}
+```
+
+```jsonc
+// Centered, titled, scoped to a specific client.
+{
+  "name": "display_menu",
+  "arguments": {
+    "title":         "Build options",
+    "target_client": "/dev/pts/3",
+    "x":             "C",
+    "y":             "C",
+    "border_lines":  "double",
+    "selected_style": "bg=blue",
+    "items": [
+      { "name": "Run tests",   "key": "t", "command": "send-keys 'go test ./...' Enter" },
+      { "name": "Run linter",  "key": "l", "command": "send-keys 'golangci-lint run' Enter" },
+      { "name": "Open editor", "key": "e", "command": "send-keys 'vim' Enter" }
+    ]
+  }
+}
+```
+
+```jsonc
+// Pin the starting choice and prevent mouse-release dismissal.
+{
+  "name": "display_menu",
+  "arguments": {
+    "starting_choice": "1",
+    "no_callbacks":    true,
+    "items": [
+      { "name": "Yes", "key": "y", "command": "display 'confirmed'" },
+      { "name": "No",  "key": "n", "command": "display 'cancelled'" }
+    ]
+  }
+}
+```
+
